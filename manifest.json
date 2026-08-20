@@ -1,9 +1,9 @@
 {
   "id": "project-manager-enhanced",
   "name": "Project Manager Enhanced",
-  "version": "1.8.0-enhanced.1",
+  "version": "1.0.0",
   "minAppVersion": "1.7.2",
-  "description": "Project Manager 1.8.0 的独立增强版，包含禅道字段、性能优化和分层快速筛选。",
+  "description": "Enhanced project management with ZenTao fields, virtualized views, and composable filters.",
   "author": "fangzhikun, based on work by Stepan Kropachev",
   "authorUrl": "https://github.com/fzk177",
   "isDesktopOnly": false

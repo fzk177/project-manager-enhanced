@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.0.0] - 2026-08-20
+
+### Added
+
+- 独立插件 ID，避免官方插件更新覆盖个人改造。
+- 禅道需求、任务、里程碑和原始阶段状态支持。
+- 看板按列虚拟化和表格行虚拟化。
+- 常用视图、快速组合筛选和详细筛选面板。
+- 响应式、可折叠的项目筛选界面。
+
 ## [1.8.0] - 2026-07-03
 
 ### Added
