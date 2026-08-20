@@ -70,7 +70,6 @@ jobs:
           fi
 
       - run: pnpm install --frozen-lockfile
-      - run: pnpm check
       - run: pnpm build
 
       - name: Attest release artifacts

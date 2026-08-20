@@ -1,10 +1,10 @@
 {
-  "id": "project-manager",
-  "name": "Project Manager",
-  "version": "1.8.0",
+  "id": "project-manager-enhanced",
+  "name": "Project Manager Enhanced",
+  "version": "1.8.0-enhanced.1",
   "minAppVersion": "1.7.2",
-  "description": "Full-featured project management: stunning Gantt charts, Kanban boards, Table views, customizable fields, due date notifications.",
-  "author": "Stepan Kropachev",
-  "authorUrl": "https://github.com/StepanKropachev",
+  "description": "Project Manager 1.8.0 的独立增强版，包含禅道字段、性能优化和分层快速筛选。",
+  "author": "fangzhikun, based on work by Stepan Kropachev",
+  "authorUrl": "https://github.com/fzk177",
   "isDesktopOnly": false
 }

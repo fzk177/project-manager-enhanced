@@ -1,3 +1,5 @@
+> **Project Manager Enhanced**：独立插件 ID 为 `project-manager-enhanced`。这是基于 Project Manager 1.8.0 的个人增强版，当前发布产物由已验证的定制基线和确定性补丁生成。中文说明见 [README.zh-CN.md](README.zh-CN.md)。原项目由 Stepan Kropachev 开发，本 Fork 继续遵循 MIT License。
+
 <div align="center">
 
 # Project Manager for Obsidian
