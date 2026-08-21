@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.1.1] - 2026-08-21
+
+### Changed
+
+- 统一独立增强版的发布版本与最低 Obsidian 兼容版本元数据。
+
 ## [1.1.0] - 2026-08-21
 
 ### Added
