@@ -10,7 +10,7 @@ const outputDirectory = path.join(repositoryRoot, 'build')
 const outputPath = path.join(outputDirectory, 'insights.js')
 let source = fs.readFileSync(sourcePath, 'utf8')
 
-const expectedHash = '468830cc929ae1a6fa66fe1601a188bf83a507426effef39dbe6f2b46ab8cd17'
+const expectedHash = 'e0f096d3690945852f129f62999966da500ae4ca41a2e9be23575831c4e2fde5'
 const actualHash = crypto.createHash('sha256').update(source).digest('hex')
 if (actualHash !== expectedHash) {
   throw new Error('Project Manager Insights 0.2.4 定制基线校验失败')

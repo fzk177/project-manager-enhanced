@@ -131,7 +131,9 @@ function task(document2, completeStatuses) {
   const syncedRemaining = optionalHours(customFields.remainingHours);
   const displayEstimate = optionalHours(customFields.displayEstimatedHours);
   const displayLogged = optionalHours(customFields.displayConsumedHours);
+  const displayRemaining = optionalHours(customFields.displayRemainingHours);
   const localLogged = loggedHours(frontmatter2.timeLogs);
+  const completedAt = optionalText(frontmatter2.completed);
   const hasSyncedHours = Object.prototype.hasOwnProperty.call(customFields, "estimatedHours") || Object.prototype.hasOwnProperty.call(customFields, "consumedHours") || Object.prototype.hasOwnProperty.call(customFields, "remainingHours");
   return {
     id,
@@ -145,6 +147,7 @@ function task(document2, completeStatuses) {
     path: document2.path,
     status,
     stage: optionalText(frontmatter2.stage),
+    start: optionalText(frontmatter2.start),
     due: optionalText(frontmatter2.due),
     priority: optionalText(frontmatter2.priority),
     tags,
@@ -156,8 +159,13 @@ function task(document2, completeStatuses) {
     remainingOverride: hasSyncedHours ? syncedRemaining : null,
     displayEstimate,
     displayLogged,
+    displayRemaining,
+    completedAt,
+    actualStartedAt: optionalText(customFields.actualStartedAt),
+    actualFinishedAt: optionalText(customFields.actualFinishedAt),
+    dependencies: stringList(frontmatter2.dependencies),
     progress,
-    completed: Boolean(optionalText(frontmatter2.completed)) || progress >= 100 || completeStatuses.has(status),
+    completed: Boolean(completedAt) || progress >= 100 || completeStatuses.has(status),
     archived: truthy(frontmatter2.archived),
     customFields
   };
@@ -185,7 +193,7 @@ function entriesEqual(left, right) {
     return left.record.id === right.record.id && left.record.title === right.record.title && left.record.path === right.record.path && left.record.icon === right.record.icon;
   }
   if (left.kind !== "task" || right.kind !== "task") return false;
-  return left.record.id === right.record.id && left.record.projectId === right.record.projectId && left.record.parentId === right.record.parentId && left.record.type === right.record.type && left.record.sourceType === right.record.sourceType && left.record.zentaoId === right.record.zentaoId && left.record.module === right.record.module && left.record.title === right.record.title && left.record.path === right.record.path && left.record.stage === right.record.stage && left.record.due === right.record.due && left.record.status === right.record.status && left.record.priority === right.record.priority && left.record.completedBy === right.record.completedBy && stringArraysEqual(left.record.tags, right.record.tags) && stringArraysEqual(left.record.assignees, right.record.assignees) && left.record.estimate === right.record.estimate && left.record.logged === right.record.logged && left.record.remainingOverride === right.record.remainingOverride && left.record.displayEstimate === right.record.displayEstimate && left.record.displayLogged === right.record.displayLogged && left.record.progress === right.record.progress && left.record.completed === right.record.completed && left.record.archived === right.record.archived;
+  return left.record.id === right.record.id && left.record.projectId === right.record.projectId && left.record.parentId === right.record.parentId && left.record.type === right.record.type && left.record.sourceType === right.record.sourceType && left.record.zentaoId === right.record.zentaoId && left.record.module === right.record.module && left.record.title === right.record.title && left.record.path === right.record.path && left.record.stage === right.record.stage && left.record.start === right.record.start && left.record.due === right.record.due && left.record.status === right.record.status && left.record.priority === right.record.priority && left.record.completedBy === right.record.completedBy && stringArraysEqual(left.record.tags, right.record.tags) && stringArraysEqual(left.record.assignees, right.record.assignees) && stringArraysEqual(left.record.dependencies, right.record.dependencies) && left.record.estimate === right.record.estimate && left.record.logged === right.record.logged && left.record.remainingOverride === right.record.remainingOverride && left.record.displayEstimate === right.record.displayEstimate && left.record.displayLogged === right.record.displayLogged && left.record.displayRemaining === right.record.displayRemaining && left.record.completedAt === right.record.completedAt && left.record.actualStartedAt === right.record.actualStartedAt && left.record.actualFinishedAt === right.record.actualFinishedAt && left.record.progress === right.record.progress && left.record.completed === right.record.completed && left.record.archived === right.record.archived;
 }
 function prioritiesEqual(left, right) {
   return left.length === right.length && left.every((priority, index) => {
@@ -524,6 +532,11 @@ var ProjectManagerNavigator = class {
       (_b = view.load) == null ? void 0 : _b.call(view);
       await ((_c = view.onOpen) == null ? void 0 : _c.call(view));
       await view.setState({ filePath: projectPath }, {});
+      // 隐藏导航视图必须使用表格模式，甘特图和看板没有可供任务定位的表格行状态。
+      if (view.currentView !== "table" && typeof view.renderCurrentView === "function") {
+        view.currentView = "table";
+        view.renderCurrentView();
+      }
       return { leaf, view };
     } catch (error) {
       await this.disposeDetachedProjectView(leaf, view).catch(() => void 0);
@@ -573,8 +586,30 @@ var ProjectManagerNavigator = class {
   }
   revealAllTasks(view) {
     var _a, _b, _c, _d;
-    if (view.filter) view.filter.showArchived = true;
-    if ((_b = (_a = view.subview) == null ? void 0 : _a.state) == null ? void 0 : _b.filter) view.subview.state.filter.showArchived = true;
+    const resetFilter = (filter) => {
+      if (!filter) return;
+      Object.assign(filter, {
+        text: "",
+        stages: [],
+        statuses: [],
+        priorities: [],
+        assignees: [],
+        participants: [],
+        tags: [],
+        dueDateFilter: "any",
+        showArchived: true,
+        quickSource: "all",
+        quickWorkType: "all",
+        quickCompletion: "all",
+        quickOwnership: "all",
+        quickAttention: [],
+        quickOwner: "",
+        quickPreset: ""
+      });
+    };
+    resetFilter(view.filter);
+    resetFilter((_b = (_a = view.subview) == null ? void 0 : _a.state) == null ? void 0 : _b.filter);
+    view.activeSavedViewId = null;
     const expand = (tasks) => {
       var _a2;
       for (const task2 of tasks) {
@@ -861,6 +896,8 @@ var DEFAULT_SETTINGS = {
   locale: "auto",
   aliases: [],
   selectedProjectIds: [],
+  memberViewMode: "table",
+  memberGanttScale: "week",
   quickFilter: {
     quickSource: "all"
   }
@@ -1328,6 +1365,49 @@ var TASK_COLUMN_MIN_WIDTHS = [96, 260, 150, 160, 120, 100, 92, 110, 110, 110, 12
 var TASK_COLUMN_GAP = 10;
 var TASK_TABLE_INLINE_PADDING = 22;
 var TASK_COLUMN_KEYBOARD_STEP = 12;
+var MEMBER_GANTT_DAY_MS = 24 * 60 * 60 * 1e3;
+var MEMBER_GANTT_MIN_WIDTH = 720;
+var MEMBER_GANTT_SCALE_WIDTHS = { day: 132, week: 66, month: 27 };
+var MEMBER_GANTT_MIN_DAYS = { day: 30, week: 90, month: 365 };
+var MEMBER_GANTT_START_PADDING_DAYS = 7;
+var MEMBER_GANTT_END_PADDING_DAYS = 14;
+var MEMBER_GANTT_LABEL_DEFAULT_WIDTH = 420;
+var MEMBER_GANTT_LABEL_MIN_WIDTH = 300;
+var MEMBER_GANTT_LABEL_MAX_WIDTH = 720;
+var MEMBER_GANTT_BAR_LABEL_MIN_WIDTH = 56;
+function memberDateValue(value) {
+  const match = String(value ?? "").match(/^(\d{4})-(\d{2})-(\d{2})/u);
+  if (!match) return null;
+  const timestamp = Date.UTC(Number(match[1]), Number(match[2]) - 1, Number(match[3]));
+  return Number.isFinite(timestamp) ? timestamp : null;
+}
+function memberDateText(timestamp, scale) {
+  const options = scale === "month" ? { year: "numeric", month: "short" } : { month: "numeric", day: "numeric" };
+  return new Intl.DateTimeFormat(void 0, options).format(new Date(timestamp));
+}
+function memberCurrentPeriodStart(scale) {
+  const now = /* @__PURE__ */ new Date();
+  const today = Date.UTC(now.getFullYear(), now.getMonth(), now.getDate());
+  if (scale === "month") return Date.UTC(now.getFullYear(), now.getMonth(), 1);
+  if (scale === "week") {
+    const day = new Date(today).getUTCDay();
+    const offset = day === 0 ? 6 : day - 1;
+    return today - offset * MEMBER_GANTT_DAY_MS;
+  }
+  return today;
+}
+function memberWeekdayText(timestamp) {
+  return new Intl.DateTimeFormat(void 0, { weekday: "short" }).format(new Date(timestamp));
+}
+function memberIsoWeek(timestamp) {
+  const date = new Date(timestamp);
+  const day = date.getUTCDay() || 7;
+  date.setUTCDate(date.getUTCDate() + 4 - day);
+  const year = date.getUTCFullYear();
+  const yearStart = Date.UTC(year, 0, 1);
+  const week = Math.ceil(((date.getTime() - yearStart) / MEMBER_GANTT_DAY_MS + 1) / 7);
+  return { year, week };
+}
 var InsightsView = class extends import_obsidian5.ItemView {
   constructor(leaf, host) {
     super(leaf);
@@ -1340,12 +1420,17 @@ var InsightsView = class extends import_obsidian5.ItemView {
     __publicField(this, "taskStatuses", null);
     __publicField(this, "taskPriorities", null);
     __publicField(this, "taskPrioritySort", "none");
+    __publicField(this, "memberViewMode", "table");
+    __publicField(this, "memberGanttScale", "week");
+    __publicField(this, "memberGanttLabelWidth", MEMBER_GANTT_LABEL_DEFAULT_WIDTH);
     __publicField(this, "dashboardEl", null);
     __publicField(this, "projectSummaryEl", null);
     __publicField(this, "selectedProjectTagsEl", null);
     __publicField(this, "taskColumnWidths", null);
     __publicField(this, "projectTableColumnWidths", null);
     __publicField(this, "renderVersion", 0);
+    this.memberViewMode = ["table", "gantt", "kanban"].includes(host.settings.memberViewMode) ? host.settings.memberViewMode : "table";
+    this.memberGanttScale = ["day", "week", "month"].includes(host.settings.memberGanttScale) ? host.settings.memberGanttScale : "week";
     this.navigation = true;
   }
   getViewType() {
@@ -1721,6 +1806,10 @@ var InsightsView = class extends import_obsidian5.ItemView {
       return;
     }
     this.renderMemberRatios(header, member, t);
+    this.renderMemberViewSwitcher(header, () => {
+      root.empty();
+      this.renderTaskDetail(root, member, projects, priorities, stages, statuses, t);
+    });
     const projectOptions = [...new Map(member.tasks.map((task2) => [task2.projectId, task2.projectTitle]))].map(([value, label]) => ({
       value,
       label,
@@ -1804,7 +1893,7 @@ var InsightsView = class extends import_obsidian5.ItemView {
       }).map(({ task: task2 }) => task2);
       result.setText(t.memberWorkResult(tasks, member.tasks));
       reset.disabled = this.taskQuery.length === 0 && this.taskProjectIds === null && this.taskStatuses === null && this.taskPriorities === null;
-      this.renderTaskRows(root, sortedTasks, projects, priorities, stages, statuses, t, () => {
+      this.renderMemberTaskView(root, sortedTasks, projects, priorities, stages, statuses, t, () => {
         this.taskPrioritySort = this.taskPrioritySort === "none" ? "high-to-low" : this.taskPrioritySort === "high-to-low" ? "low-to-high" : "none";
         renderRows();
       });
@@ -1858,6 +1947,28 @@ var InsightsView = class extends import_obsidian5.ItemView {
       this.renderTaskDetail(root, member, projects, priorities, stages, statuses, t);
     });
     renderRows();
+  }
+  renderMemberViewSwitcher(root, onChange) {
+    const switcher = root.createDiv("pm-view-switcher pmi-member-view-switcher");
+    const options = [
+      { id: "table", icon: "table", label: "表格" },
+      { id: "gantt", icon: "git-fork", label: "甘特图" },
+      { id: "kanban", icon: "layout-dashboard", label: "看板" }
+    ];
+    for (const option of options) {
+      const button = switcher.createEl("button", {
+        cls: `clickable-icon pm-view-btn${this.memberViewMode === option.id ? " pm-view-btn--active" : ""}`,
+        attr: { type: "button", title: option.label, "aria-label": option.label, "aria-pressed": String(this.memberViewMode === option.id) }
+      });
+      (0, import_obsidian5.setIcon)(button, option.icon);
+      button.addEventListener("click", () => {
+        if (this.memberViewMode === option.id) return;
+        this.memberViewMode = option.id;
+        this.host.settings.memberViewMode = option.id;
+        void this.host.saveSettings();
+        onChange();
+      });
+    }
   }
   renderMemberRatios(root, member, t) {
     const ledger = root.createDiv({
@@ -2022,6 +2133,439 @@ var InsightsView = class extends import_obsidian5.ItemView {
       event.preventDefault();
       event.stopPropagation();
     });
+  }
+  clearMemberTaskViews(detail) {
+    for (const selector of [
+      ".pmi-pm-table-wrapper",
+      ".pmi-member-kanban",
+      ".pmi-member-gantt",
+      ".pmi-list-empty.pmi-task-empty"
+    ]) {
+      for (const element of detail.querySelectorAll(selector)) element.remove();
+    }
+  }
+  orderMemberTasks(tasks) {
+    const taskById = new Map(tasks.map((task2) => [task2.id, task2]));
+    const childrenByParent = new Map();
+    for (const task2 of tasks) {
+      if (!task2.parentId || !taskById.has(task2.parentId)) continue;
+      const children = childrenByParent.get(task2.parentId) ?? [];
+      children.push(task2);
+      childrenByParent.set(task2.parentId, children);
+    }
+    const ordered = [];
+    const visited = new Set();
+    const visit = (task2, depth = 0) => {
+      if (visited.has(task2.id)) return;
+      visited.add(task2.id);
+      ordered.push({ task: task2, depth });
+      for (const child of childrenByParent.get(task2.id) ?? []) visit(child, depth + 1);
+    };
+    for (const task2 of tasks) if (!task2.parentId || !taskById.has(task2.parentId)) visit(task2);
+    for (const task2 of tasks) visit(task2);
+    return ordered;
+  }
+  createMemberChip(root, label, color = "var(--text-muted)", variant = "outline") {
+    const chip = root.createSpan({ cls: `pm-chip pm-chip--${variant} pm-chip--sm` });
+    chip.style.setProperty("--pm-chip-color", color);
+    chip.createSpan({ cls: "pm-chip-dot" });
+    chip.createSpan({ text: label });
+    return chip;
+  }
+  renderMemberTaskView(detail, tasks, projects, priorities, stages, statuses, t, onPrioritySort) {
+    if (this.memberViewMode === "kanban") {
+      this.renderMemberKanban(detail, tasks, projects, priorities, stages, statuses, t);
+      return;
+    }
+    if (this.memberViewMode === "gantt") {
+      this.renderMemberGantt(detail, tasks, projects, priorities, stages, statuses, t);
+      return;
+    }
+    this.renderTaskRows(detail, tasks, projects, priorities, stages, statuses, t, onPrioritySort);
+  }
+  renderMemberKanban(detail, tasks, projects, priorities, stages, statuses, t) {
+    this.clearMemberTaskViews(detail);
+    if (tasks.length === 0) {
+      detail.createDiv({ cls: "pmi-list-empty pmi-task-empty", text: t.noTasks });
+      return;
+    }
+    const root = detail.createDiv("pm-root pmi-member-kanban");
+    const board = root.createDiv("pm-kanban-board");
+    const projectRecords = new Map(projects.map((project2) => [project2.id, project2]));
+    const priorityDefinitions = new Map(priorities.map((definition) => [definition.id, definition]));
+    const source = this.getQuickFilter().quickSource;
+    const groupBy = source === "task" ? "status" : "stage";
+    const definitions = groupBy === "status" ? statuses : stages;
+    const definitionMap = new Map(definitions.map((definition) => [definition.id, definition]));
+    const orderedTasks = this.orderMemberTasks(tasks).map(({ task: task2 }) => task2);
+    const groupKeys = new Set(orderedTasks.map((task2) => String(task2[groupBy] ?? "")));
+    const columns = [
+      ...definitions.filter((definition) => groupKeys.has(definition.id)),
+      ...[...groupKeys].filter((key) => !definitionMap.has(key)).sort().map((key) => ({ id: key, label: key || "未设置", color: "var(--text-muted)" }))
+    ];
+    for (const definition of columns) {
+      const columnTasks = orderedTasks.filter((task2) => String(task2[groupBy] ?? "") === definition.id);
+      const column = board.createDiv("pm-kanban-col pmi-member-kanban-col");
+      const header = column.createDiv("pm-kanban-col-header");
+      const topbar = header.createDiv("pm-kanban-col-topbar");
+      topbar.style.background = definition.color || "var(--text-muted)";
+      const titleRow = header.createDiv("pm-kanban-col-title-row");
+      const badge = titleRow.createSpan({ cls: "pm-kanban-col-badge", text: definition.label || definition.id || "未设置" });
+      badge.style.color = definition.color || "var(--text-muted)";
+      titleRow.createSpan({ cls: "pm-kanban-col-count", text: String(columnTasks.length) });
+      const cards = column.createDiv("pm-kanban-cards");
+      for (const task2 of columnTasks) {
+        const projectRecord = projectRecords.get(task2.projectId);
+        const card = cards.createDiv(`pm-kanban-card${task2.completed ? " pm-table-row--done" : ""}`);
+        card.setAttribute("role", "button");
+        card.setAttribute("tabindex", "0");
+        const priority = task2.priority ? priorityDefinitions.get(task2.priority) : null;
+        const priorityBar = card.createDiv("pm-kanban-card-priority-bar");
+        priorityBar.style.background = priority?.color ?? "var(--background-modifier-border)";
+        const body = card.createDiv("pm-kanban-card-body");
+        body.createEl("h4", { cls: "pm-kanban-card-title", text: task2.title });
+        if (task2.parentId) {
+          const parent = orderedTasks.find((candidate) => candidate.id === task2.parentId);
+          if (parent) body.createDiv({ cls: "pm-kanban-card-parent", text: parent.title });
+        }
+        const tags = body.createDiv("pm-kanban-card-tags");
+        this.createMemberChip(tags, task2.sourceType === "requirement" ? t.requirement : t.task, task2.sourceType === "requirement" ? "var(--color-yellow)" : "var(--color-pink)");
+        if (projectRecord) this.createMemberChip(tags, projectRecord.title, "var(--interactive-accent)");
+        for (const tag of task2.tags.filter((tag) => !["zentao", "zentao-task", "zentao-requirement"].includes(tag)).slice(0, 2)) {
+          this.createMemberChip(tags, tag, tag.startsWith("超时") ? "var(--color-red)" : "var(--text-muted)");
+        }
+        const footer = body.createDiv("pm-kanban-card-footer");
+        footer.createSpan({ cls: "pmi-member-card-hours", text: t.workHours(task2.displayLogged ?? task2.logged, task2.displayEstimate ?? task2.estimate) });
+        footer.createSpan({ cls: "pmi-member-card-date", text: task2.due ?? "—" });
+        this.bindCellAction(card, () => {
+          if (!projectRecord) return;
+          void this.host.openTask(task2.id, projectRecord.path);
+        });
+      }
+    }
+  }
+  renderMemberGantt(detail, tasks, projects, priorities, stages, statuses, t) {
+    this.clearMemberTaskViews(detail);
+    if (tasks.length === 0) {
+      detail.createDiv({ cls: "pmi-list-empty pmi-task-empty", text: t.noTasks });
+      return;
+    }
+    const root = detail.createDiv("pmi-member-gantt");
+    root.toggleClass("is-day-scale", this.memberGanttScale === "day");
+    root.toggleClass("is-week-scale", this.memberGanttScale === "week");
+    root.toggleClass("is-month-scale", this.memberGanttScale === "month");
+    root.style.setProperty("--pmi-member-gantt-label-width", `${this.memberGanttLabelWidth}px`);
+    const toolbar = root.createDiv("pmi-member-gantt-toolbar");
+    toolbar.createSpan({ cls: "pmi-member-gantt-title", text: "只读排期" });
+    const legend = toolbar.createDiv("pmi-member-gantt-legend");
+    for (const item of [
+      { label: "已消耗", kind: "logged" },
+      { label: "剩余", kind: "remaining" },
+      { label: "超时", kind: "overrun" },
+      { label: "需求推导", kind: "derived" }
+    ]) {
+      const legendItem = legend.createSpan("pmi-member-gantt-legend-item");
+      legendItem.createSpan(`pmi-member-gantt-legend-signal is-${item.kind}`);
+      legendItem.createSpan({ text: item.label });
+    }
+    const locateLabel = this.memberGanttScale === "day" ? "今天" : this.memberGanttScale === "week" ? "本周" : "本月";
+    const locate = toolbar.createEl("button", {
+      cls: "pmi-member-gantt-locate",
+      attr: { type: "button", title: `定位到${locateLabel}`, "aria-label": `定位到${locateLabel}` }
+    });
+    (0, import_obsidian5.setIcon)(locate, "locate-fixed");
+    locate.createSpan({ text: locateLabel });
+    const scale = toolbar.createDiv("pm-segmented pmi-member-gantt-scale");
+    for (const option of [
+      { id: "day", label: "日" },
+      { id: "week", label: "周" },
+      { id: "month", label: "月" }
+    ]) {
+      const button = scale.createEl("button", {
+        cls: `pm-chip-btn${this.memberGanttScale === option.id ? " pm-chip-btn--active" : ""}`,
+        text: option.label,
+        attr: { type: "button", "aria-pressed": String(this.memberGanttScale === option.id) }
+      });
+      button.addEventListener("click", () => {
+        if (this.memberGanttScale === option.id) return;
+        this.memberGanttScale = option.id;
+        this.host.settings.memberGanttScale = option.id;
+        void this.host.saveSettings();
+        this.renderMemberGantt(detail, tasks, projects, priorities, stages, statuses, t);
+      });
+    }
+    const projectRecords = new Map(projects.map((project2) => [project2.id, project2]));
+    const ordered = this.orderMemberTasks(tasks);
+    const taskById = new Map(tasks.map((task2) => [task2.id, task2]));
+    const childrenByParent = new Map();
+    for (const task2 of tasks) {
+      if (!task2.parentId || !taskById.has(task2.parentId)) continue;
+      const children = childrenByParent.get(task2.parentId) ?? [];
+      children.push(task2);
+      childrenByParent.set(task2.parentId, children);
+    }
+    const rangeCache = new Map();
+    const resolveRange = (task2, stack = /* @__PURE__ */ new Set()) => {
+      if (rangeCache.has(task2.id)) return rangeCache.get(task2.id);
+      if (stack.has(task2.id)) return { start: null, end: null, derived: false };
+      const nextStack = new Set(stack);
+      nextStack.add(task2.id);
+      const ownStart = memberDateValue(task2.start);
+      const ownEnd = memberDateValue(task2.due);
+      const childRanges = (childrenByParent.get(task2.id) ?? []).map((child) => resolveRange(child, nextStack)).filter((range) => range.start !== null && range.end !== null);
+      const childStart = childRanges.length > 0 ? Math.min(...childRanges.map((range) => range.start)) : null;
+      const childEnd = childRanges.length > 0 ? Math.max(...childRanges.map((range) => range.end)) : null;
+      let start = ownStart;
+      let end = ownEnd;
+      let derived = false;
+      if (task2.sourceType === "requirement") {
+        if (start === null && childStart !== null) {
+          start = childStart;
+          derived = true;
+        }
+        if (end === null && childEnd !== null) {
+          end = childEnd;
+          derived = true;
+        }
+      }
+      if (start !== null && end === null) end = start;
+      if (end !== null && start === null) start = end;
+      if (start !== null && end !== null && end < start) [start, end] = [end, start];
+      const range = { start, end, derived };
+      rangeCache.set(task2.id, range);
+      return range;
+    };
+    const rows = ordered.map((item) => ({ ...item, range: resolveRange(item.task) }));
+    const scheduled = rows.filter((item) => item.range.start !== null && item.range.end !== null);
+    const unscheduled = rows.filter((item) => item.range.start === null || item.range.end === null);
+    locate.disabled = scheduled.length === 0;
+    if (scheduled.length > 0) {
+      const dayWidth = MEMBER_GANTT_SCALE_WIDTHS[this.memberGanttScale];
+      const currentPeriodStart = memberCurrentPeriodStart(this.memberGanttScale);
+      let rangeStart = Math.min(currentPeriodStart, ...scheduled.map((item) => item.range.start)) - MEMBER_GANTT_START_PADDING_DAYS * MEMBER_GANTT_DAY_MS;
+      let rangeEnd = Math.max(currentPeriodStart, ...scheduled.map((item) => item.range.end)) + MEMBER_GANTT_END_PADDING_DAYS * MEMBER_GANTT_DAY_MS;
+      const minimumDays = MEMBER_GANTT_MIN_DAYS[this.memberGanttScale];
+      const currentSpan = Math.round((rangeEnd - rangeStart) / MEMBER_GANTT_DAY_MS);
+      if (currentSpan < minimumDays) {
+        const extraDays = Math.ceil((minimumDays - currentSpan) / 2);
+        rangeStart -= extraDays * MEMBER_GANTT_DAY_MS;
+        rangeEnd += extraDays * MEMBER_GANTT_DAY_MS;
+      }
+      if (this.memberGanttScale === "week") {
+        const startDay = new Date(rangeStart).getUTCDay() || 7;
+        const endDay = new Date(rangeEnd).getUTCDay() || 7;
+        rangeStart -= (startDay - 1) * MEMBER_GANTT_DAY_MS;
+        rangeEnd += (7 - endDay) * MEMBER_GANTT_DAY_MS;
+      } else if (this.memberGanttScale === "month") {
+        const startDate = new Date(rangeStart);
+        const endDate = new Date(rangeEnd);
+        rangeStart = Date.UTC(startDate.getUTCFullYear(), startDate.getUTCMonth(), 1);
+        rangeEnd = Date.UTC(endDate.getUTCFullYear(), endDate.getUTCMonth() + 1, 0);
+      }
+      const dayCount = Math.max(1, Math.round((rangeEnd - rangeStart) / MEMBER_GANTT_DAY_MS) + 1);
+      const timelineWidth = Math.max(MEMBER_GANTT_MIN_WIDTH, dayCount * dayWidth);
+      const stepDays = this.memberGanttScale === "day" ? 1 : this.memberGanttScale === "week" ? 7 : 30;
+      const dailyWork = new Map();
+      const allocateHours = (hours, start, end, field) => {
+        if (!(hours > 0) || start === null || end === null) return;
+        const first = Math.min(start, end);
+        const last = Math.max(start, end);
+        const days = Math.max(1, Math.round((last - first) / MEMBER_GANTT_DAY_MS) + 1);
+        const perDay = hours / days;
+        for (let timestamp = first; timestamp <= last; timestamp += MEMBER_GANTT_DAY_MS) {
+          const current = dailyWork.get(timestamp) ?? { planned: 0, logged: 0 };
+          current[field] += perDay;
+          dailyWork.set(timestamp, current);
+        }
+      };
+      for (const item of scheduled) {
+        const task2 = item.task;
+        if (task2.sourceType !== "task" || task2.contextOnly) continue;
+        const plannedStart = memberDateValue(task2.start) ?? item.range.start;
+        const plannedEnd = memberDateValue(task2.due) ?? item.range.end;
+        allocateHours(task2.estimate, plannedStart, plannedEnd, "planned");
+        const actualStart = memberDateValue(task2.actualStartedAt) ?? plannedStart;
+        const actualEnd = memberDateValue(task2.actualFinishedAt) ?? memberDateValue(task2.completedAt) ?? plannedEnd;
+        allocateHours(task2.logged, actualStart, actualEnd, "logged");
+      }
+      const scroll = root.createDiv("pmi-member-gantt-scroll");
+      locate.addEventListener("click", () => {
+        const target = memberCurrentPeriodStart(this.memberGanttScale);
+        const targetX = (target - rangeStart) / MEMBER_GANTT_DAY_MS * dayWidth;
+        const viewportWidth = Math.max(0, scroll.clientWidth - this.memberGanttLabelWidth);
+        const nextLeft = this.memberGanttScale === "day" ? targetX - viewportWidth / 2 : targetX - 20;
+        scroll.scrollTo({ left: Math.max(0, nextLeft), behavior: "smooth" });
+      });
+      const header = scroll.createDiv("pmi-member-gantt-row pmi-member-gantt-row--header");
+      const headerLabel = header.createDiv({ cls: "pmi-member-gantt-label", text: "事项 / 项目" });
+      const labelResizer = headerLabel.createDiv("pmi-member-gantt-label-resizer");
+      labelResizer.setAttribute("role", "separator");
+      labelResizer.setAttribute("aria-orientation", "vertical");
+      labelResizer.setAttribute("aria-label", "调整事项区域宽度");
+      labelResizer.addEventListener("pointerdown", (event) => {
+        if (event.button !== 0) return;
+        event.preventDefault();
+        event.stopPropagation();
+        const startX = event.clientX;
+        const startWidth = this.memberGanttLabelWidth;
+        labelResizer.setPointerCapture(event.pointerId);
+        const move = (moveEvent) => {
+          const width = Math.min(MEMBER_GANTT_LABEL_MAX_WIDTH, Math.max(MEMBER_GANTT_LABEL_MIN_WIDTH, Math.round(startWidth + moveEvent.clientX - startX)));
+          this.memberGanttLabelWidth = width;
+          root.style.setProperty("--pmi-member-gantt-label-width", `${width}px`);
+        };
+        const end = () => {
+          labelResizer.removeEventListener("pointermove", move);
+          labelResizer.removeEventListener("pointerup", end);
+          labelResizer.removeEventListener("pointercancel", end);
+          if (labelResizer.hasPointerCapture(event.pointerId)) labelResizer.releasePointerCapture(event.pointerId);
+        };
+        labelResizer.addEventListener("pointermove", move);
+        labelResizer.addEventListener("pointerup", end);
+        labelResizer.addEventListener("pointercancel", end);
+      });
+      const headerTimeline = header.createDiv("pmi-member-gantt-timeline pmi-member-gantt-timeline--header");
+      headerTimeline.style.width = `${timelineWidth}px`;
+      headerTimeline.style.setProperty("--pmi-member-gantt-day-width", `${dayWidth}px`);
+      const periods = [];
+      if (this.memberGanttScale === "month") {
+        for (let timestamp = rangeStart; timestamp <= rangeEnd; ) {
+          const date = new Date(timestamp);
+          const next = Date.UTC(date.getUTCFullYear(), date.getUTCMonth() + 1, 1);
+          const end = Math.min(rangeEnd, next - MEMBER_GANTT_DAY_MS);
+          periods.push({ start: timestamp, end, offsetDays: Math.round((timestamp - rangeStart) / MEMBER_GANTT_DAY_MS) });
+          timestamp = next;
+        }
+      } else {
+        for (let day = 0; day < dayCount; day += stepDays) {
+          periods.push({
+            start: rangeStart + day * MEMBER_GANTT_DAY_MS,
+            end: rangeStart + Math.min(dayCount - 1, day + stepDays - 1) * MEMBER_GANTT_DAY_MS,
+            offsetDays: day
+          });
+        }
+      }
+      for (const period of periods) {
+        const periodDays = Math.max(1, Math.round((period.end - period.start) / MEMBER_GANTT_DAY_MS) + 1);
+        const totals = { planned: 0, logged: 0 };
+        for (let timestamp = period.start; timestamp <= period.end; timestamp += MEMBER_GANTT_DAY_MS) {
+          const daily = dailyWork.get(timestamp);
+          if (!daily) continue;
+          totals.planned += daily.planned;
+          totals.logged += daily.logged;
+        }
+        const cell = headerTimeline.createDiv(`pmi-member-gantt-period-summary is-${this.memberGanttScale}`);
+        cell.style.left = `${period.offsetDays * dayWidth}px`;
+        cell.style.width = `${periodDays * dayWidth}px`;
+        if (this.memberGanttScale === "week") {
+          const week = memberIsoWeek(period.start);
+          const heading = cell.createDiv("pmi-member-gantt-week-heading");
+          heading.createSpan({ cls: "pmi-member-gantt-week-label", text: `${week.year} · 第 ${week.week} 周` });
+          const work = heading.createDiv({ cls: `pmi-member-gantt-day-work${totals.logged > totals.planned ? " is-overrun" : ""}`, attr: { title: `预计 ${t.hours(totals.planned)} · 实际 ${t.hours(totals.logged)}` } });
+          work.createSpan({ text: `预计 ${totals.planned.toLocaleString(void 0, { maximumFractionDigits: 1 })}h` });
+          work.createSpan({ text: `实际 ${totals.logged.toLocaleString(void 0, { maximumFractionDigits: 1 })}h` });
+          const days = cell.createDiv("pmi-member-gantt-week-days");
+          for (let timestamp = period.start; timestamp <= period.end; timestamp += MEMBER_GANTT_DAY_MS) {
+            const day = days.createDiv("pmi-member-gantt-week-day");
+            day.style.width = `${dayWidth}px`;
+            day.createSpan({ cls: "pmi-member-gantt-week-date", text: memberDateText(timestamp, "day") });
+            day.createSpan({ cls: "pmi-member-gantt-week-weekday", text: memberWeekdayText(timestamp) });
+          }
+        } else {
+          cell.createSpan({ cls: "pmi-member-gantt-day-label", text: memberDateText(period.start, this.memberGanttScale) });
+          const work = cell.createDiv({ cls: `pmi-member-gantt-day-work${totals.logged > totals.planned ? " is-overrun" : ""}`, attr: { title: `预计 ${t.hours(totals.planned)} · 实际 ${t.hours(totals.logged)}` } });
+          const compact = this.memberGanttScale === "day";
+          work.createSpan({ text: `${compact ? "预" : "预计 "}${totals.planned.toLocaleString(void 0, { maximumFractionDigits: 1 })}${compact ? "" : "h"}` });
+          work.createSpan({ text: `${compact ? "实" : "实际 "}${totals.logged.toLocaleString(void 0, { maximumFractionDigits: 1 })}${compact ? "" : "h"}` });
+        }
+      }
+      for (const item of scheduled) {
+        const task2 = item.task;
+        const projectRecord = projectRecords.get(task2.projectId);
+        const row = scroll.createDiv("pmi-member-gantt-row");
+        const label = row.createDiv(`pmi-member-gantt-label pmi-member-gantt-label--${task2.sourceType}`);
+        label.style.paddingInlineStart = `${item.depth * 16 + 10}px`;
+        const copy = label.createDiv("pmi-member-gantt-copy");
+        const meta = copy.createDiv("pmi-member-gantt-meta");
+        const itemType = task2.sourceType === "requirement" ? t.requirement : task2.sourceType === "milestone" ? "里程碑" : t.task;
+        const estimatedHours = task2.displayEstimate ?? task2.estimate;
+        const loggedHours2 = task2.displayLogged ?? task2.logged;
+        const remainingHours = task2.displayRemaining ?? task2.remaining;
+        const overrunHours = Math.max(loggedHours2 - estimatedHours, 0);
+        const aheadHours = task2.completed ? Math.max(estimatedHours - loggedHours2, 0) : 0;
+        meta.createSpan({ cls: "pmi-member-gantt-id", text: task2.zentaoId ? `${itemType} #${task2.zentaoId}` : itemType });
+        this.createMemberChip(meta, itemType, task2.sourceType === "requirement" ? "var(--color-yellow)" : task2.sourceType === "milestone" ? "var(--color-purple)" : "var(--color-pink)");
+        meta.createSpan({ cls: "pmi-member-gantt-estimate", text: estimatedHours > 0 ? `预计 ${t.hours(estimatedHours)}` : "未估时" });
+        const title = copy.createDiv({ cls: "pmi-member-gantt-task", text: task2.title, attr: { role: "button", tabindex: "0", title: task2.title } });
+        const bottom = copy.createDiv("pmi-member-gantt-bottom");
+        if (projectRecord) {
+          const projectLine = bottom.createDiv({ cls: "pmi-member-gantt-project", attr: { title: projectRecord.title } });
+          projectLine.createSpan({ cls: "pmi-member-gantt-project-icon", text: projectRecord.icon });
+          projectLine.createSpan({ text: projectRecord.title });
+        }
+        const effortText = estimatedHours > 0 ? `${t.workHours(loggedHours2, estimatedHours)}${overrunHours > 0 ? ` · 超时 ${t.hours(overrunHours)}` : aheadHours > 0 ? ` · 提前 ${t.hours(aheadHours)}` : remainingHours > 0 ? ` · 剩余 ${t.hours(remainingHours)}` : ""}` : `已消耗 ${t.hours(loggedHours2)} · 未估时`;
+        bottom.createSpan({ cls: `pmi-member-gantt-effort-text${overrunHours > 0 ? " is-overrun" : aheadHours > 0 ? " is-ahead" : ""}`, text: effortText });
+        const effortRail = copy.createDiv(`pmi-member-gantt-effort-rail${estimatedHours <= 0 ? " is-unestimated" : ""}`);
+        const effortScale = Math.max(estimatedHours, loggedHours2, 1);
+        const plannedLogged = estimatedHours > 0 ? Math.min(loggedHours2, estimatedHours) : loggedHours2;
+        const loggedSegment = effortRail.createSpan("pmi-member-gantt-effort-logged");
+        loggedSegment.style.width = `${Math.min(plannedLogged / effortScale * 100, 100)}%`;
+        if (remainingHours > 0 && estimatedHours > 0) {
+          const remainingSegment = effortRail.createSpan("pmi-member-gantt-effort-remaining");
+          remainingSegment.style.width = `${Math.min(remainingHours / effortScale * 100, 100)}%`;
+        }
+        if (overrunHours > 0) {
+          const overrunSegment = effortRail.createSpan("pmi-member-gantt-effort-overrun");
+          overrunSegment.style.width = `${Math.min(overrunHours / effortScale * 100, 100)}%`;
+        }
+        const timeline = row.createDiv("pmi-member-gantt-timeline");
+        timeline.style.width = `${timelineWidth}px`;
+        timeline.style.setProperty("--pmi-member-gantt-day-width", `${dayWidth}px`);
+        const left = (item.range.start - rangeStart) / MEMBER_GANTT_DAY_MS * dayWidth;
+        const width = Math.max(dayWidth, ((item.range.end - item.range.start) / MEMBER_GANTT_DAY_MS + 1) * dayWidth);
+        const bar = timeline.createDiv(`pmi-member-gantt-bar${task2.completed ? " is-complete" : ""}${item.range.derived ? " is-derived" : ""}`);
+        bar.style.left = `${left}px`;
+        bar.style.width = `${width}px`;
+        bar.setAttribute("role", "button");
+        bar.setAttribute("tabindex", "0");
+        bar.setAttribute("title", `${task2.title}\n计划日期：${task2.start ?? "未设置"} → ${task2.due ?? "未设置"}\n预计工时：${estimatedHours > 0 ? t.hours(estimatedHours) : "未估时"}\n已消耗：${t.hours(loggedHours2)}\n剩余：${t.hours(remainingHours)}\n进度：${Math.round(task2.progress)}%`);
+        const progress = bar.createSpan("pmi-member-gantt-progress");
+        progress.style.width = `${Math.max(0, Math.min(100, task2.progress))}%`;
+        const barHours = bar.createSpan("pmi-member-gantt-bar-hours");
+        if (width >= MEMBER_GANTT_BAR_LABEL_MIN_WIDTH) barHours.setText(estimatedHours > 0 ? t.hours(estimatedHours) : "未估时");
+        else (0, import_obsidian5.setIcon)(barHours, "clock-3");
+        if (task2.completedAt) {
+          const completedAt = memberDateValue(task2.completedAt);
+          if (completedAt !== null && completedAt >= rangeStart && completedAt <= rangeEnd) {
+            const marker = timeline.createSpan("pmi-member-gantt-completed");
+            marker.style.left = `${(completedAt - rangeStart) / MEMBER_GANTT_DAY_MS * dayWidth}px`;
+            marker.setAttribute("title", `完成：${task2.completedAt}`);
+          }
+        }
+        const open = () => {
+          if (!projectRecord) return;
+          void this.host.openTask(task2.id, projectRecord.path);
+        };
+        this.bindCellAction(title, open);
+        this.bindCellAction(bar, open);
+      }
+    }
+    if (unscheduled.length > 0) {
+      const section = root.createDiv("pmi-member-gantt-unscheduled");
+      section.createEl("h4", { text: `未排期事项（${unscheduled.length}）` });
+      const list = section.createDiv("pmi-member-gantt-unscheduled-list");
+      for (const item of unscheduled) {
+        const projectRecord = projectRecords.get(item.task.projectId);
+        const button = list.createEl("button", { attr: { type: "button" } });
+        button.createSpan({ text: item.task.title });
+        if (projectRecord) button.createSpan({ cls: "pmi-member-gantt-project", text: projectRecord.title });
+        button.createSpan({ cls: "pmi-member-gantt-effort-text", text: t.workHours(item.task.displayLogged ?? item.task.logged, item.task.displayEstimate ?? item.task.estimate) });
+        button.addEventListener("click", () => {
+          if (!projectRecord) return;
+          void this.host.openTask(item.task.id, projectRecord.path);
+        });
+      }
+    }
   }
   renderTaskRows(detail, tasks, projects, priorities, stages, statuses, t, onPrioritySort) {
     return this.renderProjectManagerTaskRows(detail, tasks, projects, priorities, stages, statuses, t, onPrioritySort);

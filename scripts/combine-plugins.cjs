@@ -62,6 +62,8 @@ module.exports = class ProjectManagerEnhancedPlugin extends EnhancedPlugin {
     this.settings.locale = insightsSettings.locale
     this.settings.aliases = structuredClone(insightsSettings.aliases)
     this.settings.selectedProjectIds = [...insightsSettings.selectedProjectIds]
+    this.settings.memberViewMode = insightsSettings.memberViewMode
+    this.settings.memberGanttScale = insightsSettings.memberGanttScale
     this.settings.quickFilter = structuredClone(insightsSettings.quickFilter ?? {
       quickSource: "all"
     })

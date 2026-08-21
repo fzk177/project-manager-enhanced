@@ -462,8 +462,7 @@ replaceOnce(
   '处理快速组合与常用视图',
   'handleFilterMutation(){this.activeSavedViewId===null?',
   'handleQuickFilterMutation(e){this.activeSavedViewId=null,'
-    + 'e.quickSource===`requirement`?this.kanbanGroupBy=`stage`:'
-    + 'e.quickSource===`task`&&(this.kanbanGroupBy=`status`),'
+    + 'this.kanbanGroupBy=e.quickSource===`task`?`status`:`stage`,'
     + 'this.header?.setActiveSavedViewId(null),this.persistFilter(),this.scheduleFilterRender()}'
     + 'handleQuickPresetSelect(t){if(!this.project)return;let n=au(),'
     + 'r=quickCurrentUser(this.project);if(t.startsWith(`my-`)&&!r){'
@@ -616,7 +615,7 @@ const optimizedKanbanView = [
   'let t=this.container.createDiv(`pm-kanban-board`),n=this.groupBy===`status`,',
   'r=q(this.project.tasks);this.parentTitles=new Map;',
   'for(let{task:e}of r)for(let t of e.subtasks)this.parentTitles.set(t.id,e.title);',
-  'this.includeSubtasks=this.config.kanbanShowSubtasks||this.filter.quickSource===`task`,',
+  'this.includeSubtasks=this.config.kanbanShowSubtasks||this.filter.quickSource!==`requirement`,',
   'this.allTasks=this.includeSubtasks?r.map(e=>e.task):this.project.tasks;',
   'let i=new Set(this.allTasks.map(e=>n?e.status:e.stage)),',
   'a=this.allTasks.filter(e=>Od(e,this.filter,this.config.statuses)),o=new Map;',
