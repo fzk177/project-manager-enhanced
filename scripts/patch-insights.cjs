@@ -10,10 +10,10 @@ const outputDirectory = path.join(repositoryRoot, 'build')
 const outputPath = path.join(outputDirectory, 'insights.js')
 let source = fs.readFileSync(sourcePath, 'utf8')
 
-const expectedHash = '46b8982d1c697468b2b7a262a966a3df8138b637a0074df869e94415c5736f95'
+const expectedHash = '2b592ddcc652512a64039524e89c0cf87a9d2dcc9aed402a41b7042c3a03d810'
 const actualHash = crypto.createHash('sha256').update(source).digest('hex')
 if (actualHash !== expectedHash) {
-  throw new Error('Project Manager Insights 0.2.4 基线校验失败')
+  throw new Error('Project Manager Insights 0.2.4 定制基线校验失败')
 }
 
 /** 每个集成补丁必须且只能匹配一次，避免上游构建变化后继续静默套用。 */

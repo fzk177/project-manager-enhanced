@@ -136,9 +136,9 @@
 }
 
 .pmi-view {
-  --pmi-content-max: 1320px;
-  --pmi-page-gutter: clamp(24px, 4.5vw, 72px);
-  --pmi-page-space-block: clamp(24px, 3vw, 44px);
+  --pmi-content-max: none;
+  --pmi-page-gutter: clamp(16px, 1.6vw, 28px);
+  --pmi-page-space-block: clamp(16px, 2vw, 28px);
   --pmi-edge: color-mix(in srgb, var(--text-muted) 26%, transparent);
   --pmi-edge-strong: color-mix(in srgb, var(--text-muted) 48%, transparent);
   --pmi-surface: color-mix(in srgb, var(--background-primary) 94%, var(--interactive-accent) 6%);
@@ -152,9 +152,7 @@
 .pmi-root {
   min-height: 100%;
   overflow: auto;
-  background:
-    linear-gradient(var(--pmi-edge) 1px, transparent 1px) 0 0 / 100% 32px,
-    var(--background-primary);
+  background: var(--background-primary);
 }
 
 .pmi-sr-only {
@@ -236,6 +234,98 @@
   align-items: center;
   gap: 10px;
   margin-block-end: 14px;
+}
+
+.pmi-selected-project-tags {
+  display: flex;
+  min-width: 0;
+  flex: 1 1 auto;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+
+.pmi-selected-project-tag {
+  display: inline-flex;
+  min-width: 0;
+  max-width: min(360px, 100%);
+  align-items: center;
+  gap: 5px;
+  padding: 5px 10px;
+  border: 1px solid color-mix(in srgb, var(--interactive-accent) 25%, var(--pmi-edge));
+  border-radius: 999px;
+  color: var(--text-accent);
+  background: var(--background-primary);
+  font-size: var(--font-ui-smaller);
+}
+
+.pmi-selected-project-tag > span:last-child {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.pmi-selected-project-icon {
+  flex: 0 0 auto;
+}
+
+.pmi-quick-filter-panel {
+  width: 100%;
+  max-width: none;
+  margin: 0 auto 14px;
+  padding: 10px 12px;
+  border: 1px solid color-mix(in srgb, var(--interactive-accent) 18%, var(--pmi-edge));
+  border-radius: var(--radius-m);
+  background: color-mix(in srgb, var(--background-secondary) 72%, var(--background-primary));
+  box-shadow: 0 2px 8px var(--background-modifier-box-shadow);
+  box-sizing: border-box;
+}
+
+.pmi-quick-filter-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 5px;
+  min-height: 32px;
+}
+
+.pmi-quick-filter-row + .pmi-quick-filter-row {
+  margin-top: 7px;
+}
+
+.pmi-quick-filter-label {
+  min-width: 42px;
+  color: var(--text-faint);
+  font-size: 11px;
+  font-weight: var(--font-semibold);
+}
+
+.pmi-quick-filter-button {
+  min-height: 28px;
+  padding: 3px 11px;
+  border: 1px solid transparent;
+  border-radius: 999px;
+  color: var(--text-muted);
+  background: var(--background-modifier-hover);
+  box-shadow: none;
+  font-size: var(--font-ui-smaller);
+}
+
+.pmi-quick-filter-button:hover {
+  color: var(--text-normal);
+  background: color-mix(in srgb, var(--interactive-accent) 10%, var(--background-modifier-hover));
+}
+
+.pmi-quick-filter-button.is-active {
+  border-color: color-mix(in srgb, var(--interactive-accent) 35%, var(--pmi-edge));
+  color: var(--text-accent);
+  background: var(--background-primary);
+  box-shadow: 0 0 0 1px var(--pmi-accent-soft);
+}
+
+.pmi-quick-filter-button:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
 }
 
 .pmi-project-picker {
@@ -494,6 +584,7 @@
 }
 
 .pmi-detail {
+  position: relative;
   container-name: pmi-detail;
   container-type: inline-size;
 }
@@ -675,14 +766,6 @@
   background: var(--pmi-overrun);
 }
 
-.pmi-work-row.is-shared .pmi-work-rail > span {
-  background-image: repeating-linear-gradient(
-    135deg,
-    transparent 0 3px,
-    color-mix(in srgb, var(--background-primary) 42%, transparent) 3px 5px
-  );
-}
-
 .pmi-member-ratios {
   display: grid;
   min-width: 0;
@@ -787,8 +870,8 @@
 
 .pmi-task-filter-bar {
   position: relative;
-  /* Keep open filter panels above the table's column-resize handles (z-index: 4). */
-  z-index: 5;
+  /* 筛选菜单始终高于固定表头、冻结列和列宽拖拽手柄。 */
+  z-index: 100;
   display: grid;
   grid-template:
     "search project status priority reset" auto
@@ -837,6 +920,10 @@
 .pmi-task-filter-menu {
   position: relative;
   min-width: 0;
+}
+
+.pmi-task-filter-menu[open] {
+  z-index: 110;
 }
 
 .pmi-task-filter-menu:nth-of-type(1) {
@@ -930,7 +1017,7 @@
 
 .pmi-task-filter-panel {
   position: absolute;
-  z-index: 8;
+  z-index: 120;
   inset-block-start: calc(100% + 6px);
   inset-inline-end: 0;
   width: min(290px, calc(100vw - 48px));
@@ -1055,9 +1142,66 @@
   letter-spacing: 0.02em;
 }
 
+.pmi-pm-table-wrapper.pm-root {
+  position: relative;
+  z-index: 1;
+  display: block;
+  height: auto;
+  max-height: none;
+  overflow: auto;
+  border: 1px solid var(--background-modifier-border);
+  border-radius: var(--radius-s);
+  background: var(--background-primary);
+}
+
+.pmi-pm-table {
+  min-width: 1560px;
+}
+
+.pmi-pm-table thead th {
+  position: sticky;
+  top: 0;
+}
+
+.pmi-pm-table .pm-table-column-resizer {
+  position: absolute;
+  top: 0;
+  right: -4px;
+  z-index: 30;
+  width: 8px;
+  height: 100%;
+  cursor: col-resize;
+  touch-action: none;
+}
+
+.pmi-pm-table .pm-table-column-resizer:hover,
+.pmi-pm-table .pm-table-column-resizer:focus-visible {
+  background: color-mix(in srgb, var(--interactive-accent) 35%, transparent);
+}
+
+.pmi-pm-table thead th:nth-child(1),
+.pmi-pm-table tbody td:nth-child(1) {
+  position: sticky;
+  left: 0;
+  z-index: 6;
+}
+
+.pmi-pm-table thead th:nth-child(2),
+.pmi-pm-table tbody td:nth-child(2) {
+  position: sticky;
+  left: 96px;
+  z-index: 6;
+  box-shadow: 3px 0 7px -5px var(--text-muted);
+}
+
+.pmi-pm-table thead th:nth-child(-n + 2) {
+  z-index: 22;
+  background: var(--background-primary);
+}
+
 .pmi-task-table {
-  --pmi-task-grid-min-width: 900px;
-  --pmi-task-grid-columns: minmax(260px, 1fr) 160px 92px 100px 66px 66px 74px;
+  --pmi-task-grid-min-width: 1520px;
+  --pmi-task-grid-columns: 96px minmax(260px, 1fr) 150px 160px 120px 100px 92px 110px 110px 110px 120px 90px;
   --pmi-task-header-clearance: 12px;
   overflow-x: auto;
   overflow-y: hidden;
@@ -1302,7 +1446,9 @@
 }
 
 .pmi-task-columns > :first-child,
-.pmi-task-row > :first-child {
+.pmi-task-row > :first-child,
+.pmi-task-columns > :nth-child(2),
+.pmi-task-row > :nth-child(2) {
   position: sticky;
   inset-inline-start: 11px;
   z-index: 2;
@@ -1324,13 +1470,42 @@
   background: var(--background-modifier-hover);
 }
 
+.pmi-task-columns > :nth-child(2),
+.pmi-task-row > :nth-child(2) {
+  inset-inline-start: 117px;
+}
+
+.pmi-task-columns > :nth-child(2) {
+  background: var(--pmi-surface);
+}
+
+.pmi-task-row > :nth-child(2) {
+  background: var(--background-primary);
+}
+
+.pmi-task-row:hover > :nth-child(2) {
+  background: var(--background-modifier-hover);
+}
+
 .pmi-task-title,
-.pmi-task-project {
+.pmi-task-project,
+.pmi-task-id,
+.pmi-task-module,
+.pmi-task-stage,
+.pmi-task-assignee,
+.pmi-task-completed-by,
+.pmi-task-due {
   min-width: 0;
 }
 
 .pmi-task-title > strong,
+.pmi-task-id > span,
 .pmi-task-project > span:last-child,
+.pmi-task-module,
+.pmi-task-stage,
+.pmi-task-assignee,
+.pmi-task-completed-by,
+.pmi-task-due,
 .pmi-task-priority-label,
 .pmi-task-status {
   display: block;
@@ -1354,6 +1529,21 @@
   flex-wrap: wrap;
   gap: 4px;
   margin-block-start: 4px;
+}
+
+.pmi-task-type {
+  border-radius: 999px;
+  font-weight: var(--font-semibold);
+}
+
+.pmi-task-type--requirement {
+  color: var(--text-accent) !important;
+  background: var(--pmi-accent-soft) !important;
+}
+
+.pmi-task-type--task {
+  color: var(--text-muted) !important;
+  background: var(--pmi-surface) !important;
 }
 
 .pmi-task-badges span,
@@ -1401,6 +1591,69 @@
   font-family: var(--font-monospace);
   font-size: var(--font-ui-smaller);
   font-variant-numeric: tabular-nums;
+}
+
+.pmi-task-id,
+.pmi-task-module,
+.pmi-task-stage,
+.pmi-task-assignee,
+.pmi-task-completed-by,
+.pmi-task-due {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-muted);
+  font-size: var(--font-ui-smaller);
+}
+
+.pmi-task-id {
+  display: flex;
+  width: fit-content;
+  align-items: center;
+  padding: 2px 6px;
+  border: 1px solid var(--pmi-edge);
+  border-radius: var(--radius-s);
+  color: var(--text-normal);
+  font-family: var(--font-monospace);
+  font-weight: var(--font-medium);
+  background: var(--pmi-surface);
+}
+
+.pmi-task-stage {
+  width: fit-content;
+  padding: 2px 7px;
+  border: 1px solid var(--pmi-edge);
+  border-radius: var(--radius-s);
+  background: var(--pmi-surface);
+}
+
+.pmi-task-progress {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 7px;
+}
+
+.pmi-task-progress-track {
+  flex: 1 1 auto;
+  min-width: 36px;
+  height: 6px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: var(--background-modifier-border);
+}
+
+.pmi-task-progress-fill {
+  height: 100%;
+  border-radius: inherit;
+  background: var(--interactive-accent);
+}
+
+.pmi-task-progress-label {
+  flex: 0 0 auto;
+  color: var(--text-muted);
+  font-family: var(--font-monospace);
+  font-size: 10px;
 }
 
 .pmi-task-remaining {
@@ -1589,3 +1842,18 @@
     animation: none;
   }
 }
+/* 冻结项目表格左侧识别列。 */
+body .pm-root .pm-table { --pm-freeze-select-width: 32px; --pm-freeze-expand-width: 32px; --pm-freeze-id-width: 96px; }
+body .pm-root .pm-table thead th:nth-child(-n + 4), body .pm-root .pm-table tbody td:nth-child(-n + 4) { position: sticky; background: var(--background-primary); }
+body .pm-root .pm-table thead th:nth-child(-n + 4) { z-index: 20; }
+body .pm-root .pm-table tbody td:nth-child(-n + 4) { z-index: 5; }
+body .pm-root .pm-table thead th:nth-child(1), body .pm-root .pm-table tbody td:nth-child(1) { left: 0; }
+body .pm-root .pm-table thead th:nth-child(2), body .pm-root .pm-table tbody td:nth-child(2) { left: var(--pm-freeze-select-width); }
+body .pm-root .pm-table thead th:nth-child(3), body .pm-root .pm-table tbody td:nth-child(3) { left: calc(var(--pm-freeze-select-width) + var(--pm-freeze-expand-width)); }
+body .pm-root .pm-table thead th:nth-child(4), body .pm-root .pm-table tbody td:nth-child(4) { left: calc(var(--pm-freeze-select-width) + var(--pm-freeze-expand-width) + var(--pm-freeze-id-width)); box-shadow: 3px 0 7px -5px var(--text-muted); }
+body .pm-root .pm-table tbody tr.pm-table-row--selected > td:nth-child(-n + 4) { background: color-mix(in srgb, var(--interactive-accent) 12%, var(--background-primary)); }
+/* PM 洞察复用项目表格时只有事项 ID、事项两列冻结。 */
+body .pm-root .pmi-pm-table thead th:nth-child(n + 3) { position: sticky; top: 0; left: auto; z-index: 10; box-shadow: none; }
+body .pm-root .pmi-pm-table tbody td:nth-child(n + 3) { position: static; left: auto; box-shadow: none; }
+body .pm-root .pmi-pm-table thead th:nth-child(1), body .pm-root .pmi-pm-table tbody td:nth-child(1) { left: 0; }
+body .pm-root .pmi-pm-table thead th:nth-child(2), body .pm-root .pmi-pm-table tbody td:nth-child(2) { left: 96px; box-shadow: 3px 0 7px -5px var(--text-muted); }

@@ -62,8 +62,9 @@ module.exports = class ProjectManagerEnhancedPlugin extends EnhancedPlugin {
     this.settings.locale = insightsSettings.locale
     this.settings.aliases = structuredClone(insightsSettings.aliases)
     this.settings.selectedProjectIds = [...insightsSettings.selectedProjectIds]
-    this.settings.includeArchived = insightsSettings.includeArchived
-    this.settings.countParentTasks = insightsSettings.countParentTasks
+    this.settings.quickFilter = structuredClone(insightsSettings.quickFilter ?? {
+      quickSource: "all"
+    })
   }
 
   async migrateInsightsSettings() {

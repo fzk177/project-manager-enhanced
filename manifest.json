@@ -1,7 +1,7 @@
 {
   "id": "project-manager-enhanced",
   "name": "Project Manager Enhanced",
-  "version": "1.1.1",
+  "version": "1.1.2",
   "minAppVersion": "1.7.2",
   "description": "Enhanced project management with ZenTao fields, virtualized views, composable filters, and workload insights.",
   "author": "fangzhikun, based on work by Stepan Kropachev and CoffeeCheese",

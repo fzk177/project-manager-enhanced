@@ -65,6 +65,15 @@ function stringList(value) {
 function taskTags(value) {
   return stringList(value).map((tag) => tag.trim().replace(/^#+/u, "")).filter(Boolean);
 }
+function quickSourceType(task2) {
+  // 需求与任务以禅道来源字段为准，业务对象不再依赖事项层级。
+  const sourceType = String(task2.customFields?.zentaoSourceType ?? "");
+  if (sourceType === "story" || task2.tags.includes("zentao-requirement")) return "requirement";
+  if (sourceType === "task" || task2.tags.includes("zentao-task")) return "task";
+  if (sourceType === "execution" || task2.type === "milestone" || task2.tags.includes("zentao-milestone")) return "milestone";
+  if (task2.type === "task" || task2.type === "subtask") return "task";
+  return "local";
+}
 function loggedHours(value) {
   if (!Array.isArray(value)) return 0;
   return value.reduce((total, item) => {
@@ -74,13 +83,6 @@ function loggedHours(value) {
 }
 function truthy(value) {
   return value === true || value === "true";
-}
-function taskHierarchy(value) {
-  if (typeof value !== "string") return "unknown";
-  const normalized = value.trim().toLocaleLowerCase();
-  if (normalized === "task") return "root";
-  if (normalized === "subtask") return "subtask";
-  return "unknown";
 }
 function settings(value) {
   var _a, _b;
@@ -102,7 +104,12 @@ function settings(value) {
     }];
   });
   if (configuredPriorities.length > 0) priorities = configuredPriorities;
-  return { completeStatuses, priorities };
+  const definitions = (items) => (Array.isArray(items) ? items : []).flatMap((item) => {
+    const id = text(item?.id).trim();
+    if (!id) return [];
+    return [{ id, label: text(item?.label, id).trim() || id, color: text(item?.color).trim() }];
+  });
+  return { completeStatuses, priorities, stages: definitions(parsed?.stages), statuses: definitions(parsed?.statuses) };
 }
 function project(document2) {
   const frontmatter2 = document2.frontmatter;
@@ -124,22 +131,32 @@ function task(document2, completeStatuses) {
   if (!id || !projectId) return null;
   const status = text(frontmatter2.status, "todo");
   const progress = number(frontmatter2.progress);
+  const customFields = frontmatter2.customFields && typeof frontmatter2.customFields === "object" ? frontmatter2.customFields : {};
+  const tags = taskTags(frontmatter2.tags);
+  const type = text(frontmatter2.type, "task");
   return {
     id,
     projectId,
     parentId: optionalText(frontmatter2.parentId),
-    hierarchy: taskHierarchy(frontmatter2.type),
+    type,
+    sourceType: quickSourceType({ customFields, tags, type }),
+    zentaoId: optionalText(customFields.zentaoId),
+    module: optionalText(customFields.zentaoModule),
     title: text(frontmatter2.title, document2.basename).trim() || document2.basename,
     path: document2.path,
     status,
+    stage: optionalText(frontmatter2.stage),
+    due: optionalText(frontmatter2.due),
     priority: optionalText(frontmatter2.priority),
-    tags: taskTags(frontmatter2.tags),
+    tags,
     assignees: stringList(frontmatter2.assignees),
+    completedBy: optionalText(customFields.completedBy ?? frontmatter2.completedBy),
     estimate: number(frontmatter2.timeEstimate),
     logged: loggedHours(frontmatter2.timeLogs),
     progress,
     completed: Boolean(optionalText(frontmatter2.completed)) || progress >= 100 || completeStatuses.has(status),
-    archived: truthy(frontmatter2.archived)
+    archived: truthy(frontmatter2.archived),
+    customFields
   };
 }
 function entry(document2, completeStatuses) {
@@ -165,7 +182,7 @@ function entriesEqual(left, right) {
     return left.record.id === right.record.id && left.record.title === right.record.title && left.record.path === right.record.path && left.record.icon === right.record.icon;
   }
   if (left.kind !== "task" || right.kind !== "task") return false;
-  return left.record.id === right.record.id && left.record.projectId === right.record.projectId && left.record.parentId === right.record.parentId && left.record.hierarchy === right.record.hierarchy && left.record.title === right.record.title && left.record.path === right.record.path && left.record.status === right.record.status && left.record.priority === right.record.priority && stringArraysEqual(left.record.tags, right.record.tags) && stringArraysEqual(left.record.assignees, right.record.assignees) && left.record.estimate === right.record.estimate && left.record.logged === right.record.logged && left.record.progress === right.record.progress && left.record.completed === right.record.completed && left.record.archived === right.record.archived;
+  return left.record.id === right.record.id && left.record.projectId === right.record.projectId && left.record.parentId === right.record.parentId && left.record.type === right.record.type && left.record.sourceType === right.record.sourceType && left.record.zentaoId === right.record.zentaoId && left.record.module === right.record.module && left.record.title === right.record.title && left.record.path === right.record.path && left.record.stage === right.record.stage && left.record.due === right.record.due && left.record.status === right.record.status && left.record.priority === right.record.priority && left.record.completedBy === right.record.completedBy && stringArraysEqual(left.record.tags, right.record.tags) && stringArraysEqual(left.record.assignees, right.record.assignees) && left.record.estimate === right.record.estimate && left.record.logged === right.record.logged && left.record.progress === right.record.progress && left.record.completed === right.record.completed && left.record.archived === right.record.archived;
 }
 function prioritiesEqual(left, right) {
   return left.length === right.length && left.every((priority, index) => {
@@ -291,7 +308,9 @@ var ProjectManagerCatalog = class {
     return {
       projects: projects.sort((left, right) => left.title.localeCompare(right.title)),
       tasks,
-      priorities: this.currentSettings.priorities.map((priority) => ({ ...priority }))
+      priorities: this.currentSettings.priorities.map((priority) => ({ ...priority })),
+      stages: this.currentSettings.stages.map((stage) => ({ ...stage })),
+      statuses: this.currentSettings.statuses.map((status) => ({ ...status }))
     };
   }
   notify() {
@@ -299,7 +318,7 @@ var ProjectManagerCatalog = class {
     for (const listener of this.listeners) listener(this.current);
   }
   snapshotsEqual(left, right) {
-    if (!prioritiesEqual(left.priorities, right.priorities)) return false;
+    if (!prioritiesEqual(left.priorities, right.priorities) || !prioritiesEqual(left.stages, right.stages) || !prioritiesEqual(left.statuses, right.statuses)) return false;
     if (left.projects.length !== right.projects.length || left.tasks.length !== right.tasks.length) {
       return false;
     }
@@ -607,8 +626,10 @@ var en = {
   projectSearch: "Find a project\u2026",
   selectAll: "Select all",
   clear: "Clear",
-  includeArchived: "Include archived",
-  countParentTasks: "Count parent tasks",
+  object: "Object",
+  all: "All",
+  requirement: "Requirement",
+  task: "Task",
   refresh: "Refresh",
   planned: "Planned",
   logged: "Logged",
@@ -619,8 +640,7 @@ var en = {
   unassigned: "Unassigned",
   unestimated: "Unestimated",
   qualityTitle: "Data quality",
-  qualitySummary: (subtasks, unestimated, unassigned, parents) => `${subtasks} subtasks \xB7 ${unestimated} unestimated \xB7 ${unassigned} unassigned \xB7 ${parents} parent tasks excluded`,
-  parentTaskQualitySummary: (parents, unestimated, unassigned, children) => `${parents} parent tasks \xB7 ${unestimated} unestimated \xB7 ${unassigned} unassigned \xB7 ${children} child tasks excluded`,
+  qualitySummary: (requirements, tasks, unestimated, unassigned) => `${requirements} requirements \xB7 ${tasks} tasks \xB7 ${unestimated} unestimated \xB7 ${unassigned} unassigned`,
   members: "Assignees",
   memberSearch: "Find an assignee\u2026",
   memberRatios: "Delivery ledger",
@@ -644,6 +664,8 @@ var en = {
   ratioTasks: (numerator, denominator) => `${numerator} / ${denominator} tasks`,
   ratioHours: (numerator, denominator) => `${numerator.toLocaleString(void 0, { maximumFractionDigits: 2 })}h / ${denominator.toLocaleString(void 0, { maximumFractionDigits: 2 })}h`,
   tasks: "Tasks",
+  taskId: "Item ID",
+  item: "Item",
   taskSearch: "Find a task\u2026",
   allProjects: "All projects",
   allTaskStatuses: "All statuses",
@@ -653,9 +675,22 @@ var en = {
   optionCount: (count) => `${count} available`,
   resetFilters: "Reset filters",
   taskFilterResult: (visible, total) => `Showing ${visible} of ${total} tasks`,
+  memberWorkResult: (visibleTasks, totalTasks) => {
+    const visibleRequirements = visibleTasks.filter((task2) => task2.sourceType === "requirement").length;
+    const totalRequirements = totalTasks.filter((task2) => task2.sourceType === "requirement").length;
+    return `Showing ${visibleRequirements} requirements · ${visibleTasks.length - visibleRequirements} tasks / ${totalRequirements} requirements · ${totalTasks.length - totalRequirements} tasks`;
+  },
   resizeColumn: (column) => `Resize ${column} column`,
   resizeColumnHint: (column) => `Drag to resize the ${column} column. Use the arrow keys for precise adjustment. Double-click to reset all columns.`,
   project: "Project",
+  module: "Module",
+  stage: "Stage",
+  assignee: "Assignee",
+  completedBy: "Completed by",
+  due: "Due date",
+  progress: "Progress",
+  work: "Work",
+  workHours: (logged, planned) => `${logged.toLocaleString(void 0, { maximumFractionDigits: 2 })}/${planned.toLocaleString(void 0, { maximumFractionDigits: 2 })}h`,
   priority: "Priority",
   status: "Status",
   noPriority: "No priority",
@@ -688,6 +723,11 @@ var en = {
   removeAlias: "Remove member mapping",
   hours: (value) => `${value.toLocaleString(void 0, { maximumFractionDigits: 2 })}h`,
   taskCount: (count) => `${count} task${count === 1 ? "" : "s"}`,
+  memberWorkCount: (tasks) => {
+    const requirements = tasks.filter((task2) => task2.sourceType === "requirement").length;
+    const workItems = tasks.length - requirements;
+    return `${requirements} requirement${requirements === 1 ? "" : "s"} · ${workItems} task${workItems === 1 ? "" : "s"}`;
+  },
   archived: "Archived"
 };
 var zh = {
@@ -703,8 +743,10 @@ var zh = {
   projectSearch: "\u67E5\u627E\u9879\u76EE\u2026",
   selectAll: "\u5168\u9009",
   clear: "\u6E05\u7A7A",
-  includeArchived: "\u5305\u542B\u5DF2\u5F52\u6863",
-  countParentTasks: "\u7EDF\u8BA1\u7236\u4EFB\u52A1",
+  object: "\u5BF9\u8C61",
+  all: "\u5168\u90E8",
+  requirement: "\u9700\u6C42",
+  task: "\u4EFB\u52A1",
   refresh: "\u5237\u65B0",
   planned: "\u8BA1\u5212",
   logged: "\u5DF2\u767B\u8BB0",
@@ -715,8 +757,7 @@ var zh = {
   unassigned: "\u672A\u5206\u914D",
   unestimated: "\u672A\u4F30\u7B97",
   qualityTitle: "\u6570\u636E\u8D28\u91CF",
-  qualitySummary: (subtasks, unestimated, unassigned, parents) => `${subtasks} \u4E2A\u5B50\u4EFB\u52A1 \xB7 ${unestimated} \u4E2A\u672A\u4F30\u7B97 \xB7 ${unassigned} \u4E2A\u672A\u5206\u914D \xB7 \u5DF2\u6392\u9664 ${parents} \u4E2A\u7236\u4EFB\u52A1`,
-  parentTaskQualitySummary: (parents, unestimated, unassigned, children) => `${parents} \u4E2A\u7236\u4EFB\u52A1 \xB7 ${unestimated} \u4E2A\u672A\u4F30\u7B97 \xB7 ${unassigned} \u4E2A\u672A\u5206\u914D \xB7 \u5DF2\u6392\u9664 ${children} \u4E2A\u5B50\u4EFB\u52A1`,
+  qualitySummary: (requirements, tasks, unestimated, unassigned) => `${requirements} \u4E2A\u9700\u6C42 \xB7 ${tasks} \u4E2A\u4EFB\u52A1 \xB7 ${unestimated} \u4E2A\u672A\u4F30\u7B97 \xB7 ${unassigned} \u4E2A\u672A\u5206\u914D`,
   members: "\u6210\u5458",
   memberSearch: "\u67E5\u627E\u6210\u5458\u2026",
   memberRatios: "\u4E2A\u4EBA\u4EA4\u4ED8\u8D26\u672C",
@@ -740,6 +781,8 @@ var zh = {
   ratioTasks: (numerator, denominator) => `${numerator} / ${denominator} \u4E2A\u4EFB\u52A1`,
   ratioHours: (numerator, denominator) => `${numerator.toLocaleString(void 0, { maximumFractionDigits: 2 })}h / ${denominator.toLocaleString(void 0, { maximumFractionDigits: 2 })}h`,
   tasks: "\u4EFB\u52A1",
+  taskId: "\u4E8B\u9879 ID",
+  item: "\u4E8B\u9879",
   taskSearch: "\u67E5\u627E\u4EFB\u52A1\u2026",
   allProjects: "\u5168\u90E8\u9879\u76EE",
   allTaskStatuses: "\u5168\u90E8\u72B6\u6001",
@@ -749,9 +792,22 @@ var zh = {
   optionCount: (count) => `${count} \u4E2A\u53EF\u9009\u9879`,
   resetFilters: "\u91CD\u7F6E\u7B5B\u9009",
   taskFilterResult: (visible, total) => `\u663E\u793A ${visible} / ${total} \u4E2A\u4EFB\u52A1`,
+  memberWorkResult: (visibleTasks, totalTasks) => {
+    const visibleRequirements = visibleTasks.filter((task2) => task2.sourceType === "requirement").length;
+    const totalRequirements = totalTasks.filter((task2) => task2.sourceType === "requirement").length;
+    return `\u663E\u793A ${visibleRequirements} \u4E2A\u9700\u6C42 \xB7 ${visibleTasks.length - visibleRequirements} \u4E2A\u4EFB\u52A1 / ${totalRequirements} \u4E2A\u9700\u6C42 \xB7 ${totalTasks.length - totalRequirements} \u4E2A\u4EFB\u52A1`;
+  },
   resizeColumn: (column) => `\u8C03\u6574\u201C${column}\u201D\u5217\u5BBD`,
   resizeColumnHint: (column) => `\u62D6\u62FD\u53EF\u8C03\u6574\u201C${column}\u201D\u5217\u5BBD\uFF0C\u4E5F\u53EF\u7528\u65B9\u5411\u952E\u7CBE\u7EC6\u8C03\u6574\uFF1B\u53CC\u51FB\u6062\u590D\u6240\u6709\u5217\u7684\u9ED8\u8BA4\u5BBD\u5EA6\u3002`,
   project: "\u9879\u76EE",
+  module: "\u6A21\u5757",
+  stage: "\u9636\u6BB5",
+  assignee: "\u8D1F\u8D23\u4EBA",
+  completedBy: "\u5B8C\u6210\u8005",
+  due: "\u622A\u6B62\u65E5\u671F",
+  progress: "\u8FDB\u5EA6",
+  work: "\u5DE5\u65F6",
+  workHours: (logged, planned) => `${logged.toLocaleString(void 0, { maximumFractionDigits: 2 })}/${planned.toLocaleString(void 0, { maximumFractionDigits: 2 })}h`,
   priority: "\u4F18\u5148\u7EA7",
   status: "\u72B6\u6001",
   noPriority: "\u65E0\u4F18\u5148\u7EA7",
@@ -784,6 +840,11 @@ var zh = {
   removeAlias: "\u5220\u9664\u6210\u5458\u6620\u5C04",
   hours: (value) => `${value.toLocaleString(void 0, { maximumFractionDigits: 2 })}h`,
   taskCount: (count) => `${count} \u4E2A\u4EFB\u52A1`,
+  memberWorkCount: (tasks) => {
+    const requirements = tasks.filter((task2) => task2.sourceType === "requirement").length;
+    const workItems = tasks.length - requirements;
+    return `${requirements} \u4E2A\u9700\u6C42 \xB7 ${workItems} \u4E2A\u4EFB\u52A1`;
+  },
   archived: "\u5DF2\u5F52\u6863"
 };
 function translations(settings2) {
@@ -797,8 +858,9 @@ var DEFAULT_SETTINGS = {
   locale: "auto",
   aliases: [],
   selectedProjectIds: [],
-  includeArchived: false,
-  countParentTasks: false
+  quickFilter: {
+    quickSource: "all"
+  }
 };
 
 // src/settings.ts
@@ -1110,7 +1172,7 @@ function isCancelled(task2) {
   return status === "cancelled" || status === "canceled";
 }
 function memberRatios(tasks) {
-  const eligible = tasks.filter((task2) => !isCancelled(task2));
+  const eligible = tasks.filter((task2) => !task2.contextOnly && !isCancelled(task2));
   const completed = eligible.filter((task2) => task2.completed);
   const estimated = eligible.filter((task2) => !task2.unestimated);
   const startedEstimated = estimated.filter((task2) => task2.logged > 0);
@@ -1150,21 +1212,20 @@ function taskInsight(task2, projectTitle, resolvedAssignees, kind) {
     unestimated
   };
 }
+function quickMatches(task2, filter) {
+  filter = filter ?? {};
+  const source = filter.quickSource ?? "all";
+  return source === "all" || task2.sourceType === source;
+}
 function aggregateInsights(projects, tasks, options) {
   var _a;
   const projectTitles = new Map(projects.map((project2) => [project2.id, project2.title]));
   const selected = tasks.filter((task2) => options.projectIds.has(task2.projectId));
-  const parentIds = new Set(
-    selected.map((task2) => task2.parentId).filter((id) => Boolean(id))
-  );
-  const parentTasks = selected.filter(
-    (task2) => task2.hierarchy === "root" || parentIds.has(task2.id)
-  );
-  const parentTaskIds = new Set(parentTasks.map((task2) => task2.id));
-  const childTasks = selected.filter((task2) => !parentTaskIds.has(task2.id));
-  const scopedTasks = options.countParentTasks ? parentTasks : childTasks;
   const resolver = new IdentityResolver(options.aliases);
-  const included = scopedTasks.filter((task2) => options.includeArchived || !task2.archived);
+  // 先按对象组合筛选，再统一汇总工时；需求和任务不再通过父子层级互斥。
+  const included = selected.filter(
+    (task2) => !task2.archived && quickMatches(task2, options.quickFilter)
+  );
   const members = /* @__PURE__ */ new Map();
   const allTasks = [];
   const team = emptyMetrics();
@@ -1186,12 +1247,15 @@ function aggregateInsights(projects, tasks, options) {
     return member;
   };
   for (const task2 of included) {
-    const assignees = resolver.resolveMany(task2.assignees);
-    const kind = assignees.length === 0 ? "unassigned" : assignees.length === 1 ? "personal" : "shared";
+    // 成员归属只认一个人：任务已完成时归到完成人，否则归到负责人。
+    const completedBy = resolver.resolve(task2.completedBy ?? "");
+    const responsible = resolver.resolveMany(task2.assignees)[0] ?? "";
+    const owner = completedBy || responsible;
+    const kind = owner ? "personal" : "unassigned";
     const insight = taskInsight(
       task2,
       (_a = projectTitles.get(task2.projectId)) != null ? _a : task2.projectId,
-      assignees,
+      owner ? [owner] : [],
       kind
     );
     allTasks.push(insight);
@@ -1202,10 +1266,26 @@ function aggregateInsights(projects, tasks, options) {
       member.tasks.push(insight);
       continue;
     }
-    for (const assignee of assignees) {
-      const member = getMember(assignee);
-      addTask(kind === "shared" ? member.shared : member.personal, insight);
-      member.tasks.push(insight);
+    const member = getMember(owner);
+    addTask(member.personal, insight);
+    member.tasks.push(insight);
+  }
+  if ((options.quickFilter?.quickSource ?? "all") === "all") {
+    const insightById = new Map(allTasks.map((task2) => [task2.id, task2]));
+    for (const member of members.values()) {
+      const existingIds = new Set(member.tasks.map((task2) => task2.id));
+      for (const task2 of [...member.tasks]) {
+        const storyId = String(task2.customFields.storyId ?? "");
+        if ((task2.parentId && existingIds.has(task2.parentId)) || (!task2.parentId && !storyId)) continue;
+        const parent = insightById.get(task2.parentId) ?? allTasks.find((candidate) => candidate.sourceType === "requirement" && candidate.projectId === task2.projectId && String(candidate.zentaoId ?? "") === String(task2.customFields.storyId ?? ""));
+        if (!parent) continue;
+        if (!task2.parentId) {
+          const taskIndex = member.tasks.findIndex((candidate) => candidate.id === task2.id);
+          if (taskIndex >= 0) member.tasks[taskIndex] = { ...task2, parentId: parent.id };
+        }
+        member.tasks.push({ ...parent, contextOnly: true });
+        existingIds.add(parent.id);
+      }
     }
   }
   const finalizedMembers = [...members.values()].map((member) => {
@@ -1230,18 +1310,10 @@ function aggregateInsights(projects, tasks, options) {
     tasks: allTasks,
     team: finalizeMetrics(team),
     quality: {
-      subtaskCount: allTasks.filter((task2) => task2.hierarchy === "subtask").length,
-      parentTaskCount: allTasks.filter((task2) => parentTaskIds.has(task2.id)).length,
+      requirementCount: allTasks.filter((task2) => task2.sourceType === "requirement").length,
+      taskCount: allTasks.filter((task2) => task2.sourceType === "task").length,
       unassignedCount: allTasks.filter((task2) => task2.assignmentKind === "unassigned").length,
-      unestimatedCount: allTasks.filter((task2) => task2.unestimated).length,
-      excludedParentCount: options.countParentTasks ? 0 : parentTasks.length,
-      excludedChildTaskCount: options.countParentTasks ? childTasks.length : 0,
-      excludedParentHours: round(
-        (options.countParentTasks ? [] : parentTasks).reduce(
-          (total, task2) => total + task2.estimate + task2.logged,
-          0
-        )
-      )
+      unestimatedCount: allTasks.filter((task2) => task2.unestimated).length
     }
   };
 }
@@ -1249,7 +1321,7 @@ function aggregateInsights(projects, tasks, options) {
 // src/view.ts
 var INSIGHTS_VIEW_TYPE = "project-manager-insights-view";
 var TASK_PRIORITY_NONE = "";
-var TASK_COLUMN_MIN_WIDTHS = [180, 120, 92, 80, 64, 64, 72];
+var TASK_COLUMN_MIN_WIDTHS = [96, 260, 150, 160, 120, 100, 92, 110, 110, 110, 120, 90];
 var TASK_COLUMN_GAP = 10;
 var TASK_TABLE_INLINE_PADDING = 22;
 var TASK_COLUMN_KEYBOARD_STEP = 12;
@@ -1259,6 +1331,7 @@ var InsightsView = class extends import_obsidian5.ItemView {
     __publicField(this, "host", host);
     __publicField(this, "selectedMemberKey", null);
     __publicField(this, "memberQuery", "");
+    __publicField(this, "quickSource", "all");
     __publicField(this, "taskQuery", "");
     __publicField(this, "taskProjectIds", null);
     __publicField(this, "taskStatuses", null);
@@ -1266,7 +1339,9 @@ var InsightsView = class extends import_obsidian5.ItemView {
     __publicField(this, "taskPrioritySort", "none");
     __publicField(this, "dashboardEl", null);
     __publicField(this, "projectSummaryEl", null);
+    __publicField(this, "selectedProjectTagsEl", null);
     __publicField(this, "taskColumnWidths", null);
+    __publicField(this, "projectTableColumnWidths", null);
     __publicField(this, "renderVersion", 0);
     this.navigation = true;
   }
@@ -1297,7 +1372,11 @@ var InsightsView = class extends import_obsidian5.ItemView {
   }
   async scopeToProjectPath(path) {
     const snapshot = await this.host.readProjectManager();
-    const project2 = snapshot.projects.find((candidate) => candidate.path === path);
+    const normalizedPath = String(path ?? "").replace(/\\/g, "/");
+    const project2 = snapshot.projects.find((candidate) => {
+      const candidatePath = String(candidate.path ?? "").replace(/\\/g, "/");
+      return candidatePath === normalizedPath || candidatePath.endsWith(`/${normalizedPath}`) || normalizedPath.endsWith(`/${candidatePath}`);
+    });
     if (!project2) return;
     this.host.settings.selectedProjectIds = [project2.id];
     this.selectedMemberKey = null;
@@ -1337,6 +1416,62 @@ var InsightsView = class extends import_obsidian5.ItemView {
     const stamp = header.createDiv("pmi-snapshot-stamp");
     (0, import_obsidian5.setIcon)(stamp.createSpan("pmi-snapshot-icon"), "scan-line");
     stamp.createSpan({ text: new Intl.DateTimeFormat(void 0, { hour: "2-digit", minute: "2-digit" }).format(/* @__PURE__ */ new Date()) });
+  }
+  getQuickFilter() {
+    const saved = this.host.settings.quickFilter;
+    const filter = saved && typeof saved === "object" ? saved : {};
+    this.quickSource = ["all", "requirement", "task"].includes(filter.quickSource) ? filter.quickSource : "all";
+    return { quickSource: this.quickSource };
+  }
+  async saveQuickFilter(filter) {
+    this.host.settings.quickFilter = { quickSource: filter.quickSource };
+    await this.host.saveSettings();
+  }
+  renderQuickFilters(root, snapshot, t) {
+    const filter = this.getQuickFilter();
+    const panel = root.createDiv("pmi-quick-filter-panel");
+    const buttons = [];
+    // dashboard 只重绘数据区域，按钮选中态需要在当前面板内立即同步。
+    const syncButtons = () => {
+      for (const button of buttons) {
+        const active = filter.quickSource === button.value;
+        button.element.classList.toggle("is-active", active);
+        button.element.setAttribute("aria-pressed", String(active));
+      }
+    };
+    const update = (patch) => {
+      void (async () => {
+        Object.assign(filter, patch);
+        this.quickSource = filter.quickSource;
+        syncButtons();
+        await this.saveQuickFilter(filter);
+        this.selectedMemberKey = null;
+        this.taskQuery = "";
+        this.taskProjectIds = null;
+        this.taskStatuses = null;
+        this.taskPriorities = null;
+        this.renderDashboard(snapshot, t);
+      })();
+    };
+    const group = (label, options) => {
+      const row = panel.createDiv("pmi-quick-filter-row");
+      row.createSpan({ cls: "pmi-quick-filter-label", text: label });
+      for (const option of options) {
+        const button = row.createEl("button", {
+          cls: "pmi-quick-filter-button",
+          text: option.label,
+          attr: { type: "button", "aria-pressed": "false" }
+        });
+        buttons.push({ element: button, value: option.id });
+        button.addEventListener("click", () => update({ quickSource: option.id }));
+      }
+    };
+    group(t.object, [
+      { id: "all", label: t.all },
+      { id: "requirement", label: t.requirement },
+      { id: "task", label: t.task }
+    ]);
+    syncButtons();
   }
   renderControls(root, snapshot, t) {
     const controls = root.createDiv("pmi-controls");
@@ -1383,6 +1518,7 @@ var InsightsView = class extends import_obsidian5.ItemView {
             this.selectedMemberKey = null;
             await this.host.saveSettings();
             this.updateProjectSummary(t);
+            this.updateSelectedProjectTags(snapshot);
             this.renderDashboard(snapshot, t);
           })();
         });
@@ -1396,6 +1532,7 @@ var InsightsView = class extends import_obsidian5.ItemView {
         this.selectedMemberKey = null;
         await this.host.saveSettings();
         this.updateProjectSummary(t);
+        this.updateSelectedProjectTags(snapshot);
         renderProjects();
         this.renderDashboard(snapshot, t);
       })();
@@ -1407,41 +1544,15 @@ var InsightsView = class extends import_obsidian5.ItemView {
         this.selectedMemberKey = null;
         await this.host.saveSettings();
         this.updateProjectSummary(t);
+        this.updateSelectedProjectTags(snapshot);
         renderProjects();
         this.renderDashboard(snapshot, t);
       })();
     });
     renderProjects();
-    const archived = controls.createEl("label", {
-      cls: "pmi-statistics-toggle pmi-archived-toggle"
-    });
-    const archivedCheckbox = archived.createEl("input", { type: "checkbox" });
-    archivedCheckbox.checked = this.host.settings.includeArchived;
-    archived.createSpan({ text: t.includeArchived });
-    archivedCheckbox.addEventListener("change", () => {
-      void (async () => {
-        this.host.settings.includeArchived = archivedCheckbox.checked;
-        await this.host.saveSettings();
-        this.renderDashboard(snapshot, t);
-      })();
-    });
-    const parentTasks = controls.createEl("label", {
-      cls: "pmi-statistics-toggle pmi-parent-task-toggle"
-    });
-    const parentTasksCheckbox = parentTasks.createEl("input", { type: "checkbox" });
-    parentTasksCheckbox.checked = this.host.settings.countParentTasks;
-    parentTasks.createSpan({ text: t.countParentTasks });
-    parentTasksCheckbox.addEventListener("change", () => {
-      void (async () => {
-        this.host.settings.countParentTasks = parentTasksCheckbox.checked;
-        this.taskQuery = "";
-        this.taskProjectIds = null;
-        this.taskStatuses = null;
-        this.taskPriorities = null;
-        await this.host.saveSettings();
-        this.renderDashboard(snapshot, t);
-      })();
-    });
+    this.selectedProjectTagsEl = controls.createDiv("pmi-selected-project-tags");
+    this.updateSelectedProjectTags(snapshot);
+    this.renderQuickFilters(root, snapshot, t);
     const refresh = controls.createEl("button", {
       cls: "pmi-refresh clickable-icon",
       attr: { "aria-label": t.refresh }
@@ -1457,6 +1568,16 @@ var InsightsView = class extends import_obsidian5.ItemView {
     var _a;
     (_a = this.projectSummaryEl) == null ? void 0 : _a.setText(t.projectCount(this.host.settings.selectedProjectIds.length));
   }
+  updateSelectedProjectTags(snapshot) {
+    if (!this.selectedProjectTagsEl) return;
+    this.selectedProjectTagsEl.empty();
+    const selectedProjects = snapshot.projects.filter((project2) => this.host.settings.selectedProjectIds.includes(project2.id));
+    for (const project2 of selectedProjects) {
+      const tag = this.selectedProjectTagsEl.createSpan({ cls: "pmi-selected-project-tag" });
+      tag.createSpan({ cls: "pmi-selected-project-icon", text: project2.icon });
+      tag.createSpan({ text: project2.title });
+    }
+  }
   renderDashboard(snapshot, t) {
     var _a, _b;
     const dashboard = this.dashboardEl;
@@ -1469,8 +1590,7 @@ var InsightsView = class extends import_obsidian5.ItemView {
     }
     const insights = aggregateInsights(snapshot.projects, snapshot.tasks, {
       projectIds: selectedIds,
-      includeArchived: this.host.settings.includeArchived,
-      countParentTasks: this.host.settings.countParentTasks,
+      quickFilter: this.getQuickFilter(),
       aliases: this.host.settings.aliases,
       unassignedLabel: t.unassigned
     });
@@ -1479,16 +1599,11 @@ var InsightsView = class extends import_obsidian5.ItemView {
     (0, import_obsidian5.setIcon)(quality.createSpan(), "scan-search");
     quality.createEl("strong", { text: `${t.qualityTitle}:` });
     quality.createSpan({
-      text: this.host.settings.countParentTasks ? t.parentTaskQualitySummary(
-        insights.quality.parentTaskCount,
+      text: t.qualitySummary(
+        insights.quality.requirementCount,
+        insights.quality.taskCount,
         insights.quality.unestimatedCount,
-        insights.quality.unassignedCount,
-        insights.quality.excludedChildTaskCount
-      ) : t.qualitySummary(
-        insights.quality.subtaskCount,
-        insights.quality.unestimatedCount,
-        insights.quality.unassignedCount,
-        insights.quality.excludedParentCount
+        insights.quality.unassignedCount
       )
     });
     const layout = dashboard.createDiv("pmi-master-detail");
@@ -1509,7 +1624,7 @@ var InsightsView = class extends import_obsidian5.ItemView {
     }
     this.renderMemberList(master, insights.members, visibleMembers, snapshot, t);
     const selected = insights.members.find((member) => member.key === this.selectedMemberKey);
-    this.renderTaskDetail(detail, selected, snapshot.projects, snapshot.priorities, t);
+    this.renderTaskDetail(detail, selected, snapshot.projects, snapshot.priorities, snapshot.stages, snapshot.statuses, t);
   }
   renderTeamStrip(root, metrics, t) {
     const strip = root.createDiv("pmi-team-strip");
@@ -1559,7 +1674,7 @@ var InsightsView = class extends import_obsidian5.ItemView {
     else avatar.setText(Array.from(member.name).slice(0, 2).join(""));
     const identity = head.createDiv("pmi-member-identity");
     identity.createEl("strong", { text: member.name });
-    identity.createSpan({ text: t.taskCount(member.tasks.length) });
+    identity.createSpan({ text: t.memberWorkCount(member.tasks) });
     head.createEl("strong", {
       cls: "pmi-member-total",
       text: t.hours(member.personal.remaining + member.shared.remaining)
@@ -1592,12 +1707,12 @@ var InsightsView = class extends import_obsidian5.ItemView {
       overrun.style.width = `${Math.min(metrics.overrun / scale * 100, 100)}%`;
     }
   }
-  renderTaskDetail(root, member, projects, priorities, t) {
+  renderTaskDetail(root, member, projects, priorities, stages, statuses, t) {
     var _a;
     const header = root.createDiv("pmi-pane-header pmi-detail-header");
     const identity = header.createDiv("pmi-detail-identity");
     identity.createEl("h2", { text: (_a = member == null ? void 0 : member.name) != null ? _a : t.tasks });
-    identity.createSpan({ text: member ? t.taskCount(member.tasks.length) : "0" });
+    identity.createSpan({ text: member ? t.memberWorkCount(member.tasks) : "0" });
     if (!member) {
       root.createDiv({ cls: "pmi-list-empty", text: t.noTasks });
       return;
@@ -1608,9 +1723,10 @@ var InsightsView = class extends import_obsidian5.ItemView {
       label,
       count: member.tasks.filter((task2) => task2.projectId === value).length
     })).sort((left, right) => left.label.localeCompare(right.label));
+    const statusDefinitions = new Map(statuses.map((status) => [status.id, status]));
     const statusOptions = [...new Set(member.tasks.map((task2) => task2.status))].map((value) => ({
       value,
-      label: value,
+      label: statusDefinitions.get(value)?.label ?? value,
       count: member.tasks.filter((task2) => task2.status === value).length
     })).sort((left, right) => left.label.localeCompare(right.label));
     const priorityDefinitions = new Map(priorities.map((priority) => [priority.id, priority]));
@@ -1683,9 +1799,9 @@ var InsightsView = class extends import_obsidian5.ItemView {
         if (rankDifference === 0) return left.index - right.index;
         return this.taskPrioritySort === "high-to-low" ? rankDifference : -rankDifference;
       }).map(({ task: task2 }) => task2);
-      result.setText(t.taskFilterResult(tasks.length, member.tasks.length));
+      result.setText(t.memberWorkResult(tasks, member.tasks));
       reset.disabled = this.taskQuery.length === 0 && this.taskProjectIds === null && this.taskStatuses === null && this.taskPriorities === null;
-      this.renderTaskRows(root, sortedTasks, projects, priorities, t, () => {
+      this.renderTaskRows(root, sortedTasks, projects, priorities, stages, statuses, t, () => {
         this.taskPrioritySort = this.taskPrioritySort === "none" ? "high-to-low" : this.taskPrioritySort === "high-to-low" ? "low-to-high" : "none";
         renderRows();
       });
@@ -1736,7 +1852,7 @@ var InsightsView = class extends import_obsidian5.ItemView {
       this.taskStatuses = null;
       this.taskPriorities = null;
       root.empty();
-      this.renderTaskDetail(root, member, projects, priorities, t);
+      this.renderTaskDetail(root, member, projects, priorities, stages, statuses, t);
     });
     renderRows();
   }
@@ -1904,7 +2020,8 @@ var InsightsView = class extends import_obsidian5.ItemView {
       event.stopPropagation();
     });
   }
-  renderTaskRows(detail, tasks, projects, priorities, t, onPrioritySort) {
+  renderTaskRows(detail, tasks, projects, priorities, stages, statuses, t, onPrioritySort) {
+    return this.renderProjectManagerTaskRows(detail, tasks, projects, priorities, stages, statuses, t, onPrioritySort);
     var _a, _b, _c, _d, _e, _f;
     (_a = detail.querySelector(".pmi-task-table")) == null ? void 0 : _a.remove();
     (_b = detail.querySelector(".pmi-list-empty.pmi-task-empty")) == null ? void 0 : _b.remove();
@@ -1921,17 +2038,23 @@ var InsightsView = class extends import_obsidian5.ItemView {
         "aria-label": t.tasks
       }
     });
-    if (this.taskColumnWidths) this.applyTaskColumnWidths(table, this.taskColumnWidths);
     const columns = table.createDiv("pmi-task-columns");
     const columnLabels = [
+      t.taskId,
       t.tasks,
       t.project,
-      t.priority,
+      t.module,
+      t.stage,
       t.status,
-      t.planned,
-      t.logged,
-      t.remaining
+      t.priority,
+      t.assignee,
+      t.completedBy,
+      t.due,
+      t.progress,
+      t.work
     ];
+    if (this.taskColumnWidths && this.taskColumnWidths.length !== columnLabels.length) this.taskColumnWidths = null;
+    if (this.taskColumnWidths) this.applyTaskColumnWidths(table, this.taskColumnWidths);
     const columnHeaders = columnLabels.map((label) => {
       const header = columns.createDiv({ cls: "pmi-task-column", attr: { role: "columnheader" } });
       if (label === t.priority) {
@@ -1976,6 +2099,11 @@ var InsightsView = class extends import_obsidian5.ItemView {
         cls: "pmi-task-row",
         attr: { role: "row" }
       });
+      const taskId = row.createDiv({
+        cls: "pmi-task-id pmi-task-open",
+        attr: { role: "button", tabindex: "0", "aria-label": `${t.openTask}: ${task2.title}`, title: t.openTask, "data-task-id": task2.id }
+      });
+      taskId.createSpan({ text: task2.zentaoId ? `${task2.sourceType === "requirement" ? t.requirement : t.task} #${task2.zentaoId}` : "—" });
       const title = row.createDiv({
         cls: "pmi-task-title pmi-task-open",
         attr: {
@@ -1988,6 +2116,9 @@ var InsightsView = class extends import_obsidian5.ItemView {
       });
       title.createEl("strong", { text: task2.title });
       const badges = title.createDiv("pmi-task-badges");
+      if (task2.sourceType === "requirement" || task2.sourceType === "task") {
+        badges.createSpan({ cls: `pmi-task-type pmi-task-type--${task2.sourceType}`, text: task2.sourceType === "requirement" ? t.requirement : t.task });
+      }
       if (task2.assignmentKind === "shared") badges.createSpan({ text: t.shared });
       if (task2.unestimated) badges.createSpan({ text: t.unestimated });
       if (task2.archived) badges.createSpan({ text: t.archived });
@@ -2006,6 +2137,9 @@ var InsightsView = class extends import_obsidian5.ItemView {
       });
       project2.createSpan({ text: (_d = projectRecord == null ? void 0 : projectRecord.icon) != null ? _d : "\u{1F4CB}" });
       project2.createSpan({ text: task2.projectTitle });
+      row.createSpan({ cls: "pmi-task-module", text: task2.module ?? "—" });
+      row.createSpan({ cls: "pmi-task-stage", text: task2.stage ?? "—" });
+      row.createSpan({ cls: "pmi-task-status", text: task2.status });
       const priorityDefinition = task2.priority ? priorityDefinitions.get(task2.priority) : void 0;
       const priority = row.createDiv("pmi-task-priority");
       if (priorityDefinition == null ? void 0 : priorityDefinition.color) {
@@ -2019,10 +2153,19 @@ var InsightsView = class extends import_obsidian5.ItemView {
         cls: `pmi-task-priority-label${task2.priority ? "" : " is-empty"}`,
         text: (_f = (_e = priorityDefinition == null ? void 0 : priorityDefinition.label) != null ? _e : task2.priority) != null ? _f : t.noPriority
       });
-      row.createSpan({ cls: "pmi-task-status", text: task2.status });
-      row.createSpan({ cls: "pmi-task-hours", text: t.hours(task2.estimate) });
-      row.createSpan({ cls: "pmi-task-hours", text: t.hours(task2.logged) });
-      row.createSpan({ cls: "pmi-task-hours pmi-task-remaining", text: t.hours(task2.remaining) });
+      row.createSpan({ cls: "pmi-task-assignee", text: task2.resolvedAssignees?.join("、") || task2.assignees.join("、") || "—" });
+      row.createSpan({ cls: "pmi-task-completed-by", text: task2.completedBy ?? "—" });
+      row.createSpan({ cls: "pmi-task-due", text: task2.due ?? "—" });
+      const progress = row.createDiv("pmi-task-progress");
+      const progressTrack = progress.createDiv("pmi-task-progress-track");
+      const progressFill = progressTrack.createDiv("pmi-task-progress-fill");
+      progressFill.style.width = `${Math.max(0, Math.min(100, task2.progress))}%`;
+      progress.createSpan({ cls: "pmi-task-progress-label", text: `${Math.round(task2.progress)}%` });
+      row.createSpan({ cls: "pmi-task-hours", text: t.workHours(task2.logged, task2.estimate) });
+      this.bindCellAction(taskId, () => {
+        if (!projectRecord) return;
+        void this.host.openTask(task2.id, projectRecord.path);
+      });
       this.bindCellAction(title, () => {
         if (!projectRecord) return;
         void this.host.openTask(task2.id, projectRecord.path);
@@ -2031,6 +2174,149 @@ var InsightsView = class extends import_obsidian5.ItemView {
         if (!projectRecord) return;
         void this.host.openProject(projectRecord.path);
       });
+    }
+  }
+  renderProjectManagerTaskRows(detail, tasks, projects, priorities, stages, statuses, t, onPrioritySort) {
+    detail.querySelector(".pmi-task-table")?.remove();
+    detail.querySelector(".pmi-pm-table-wrapper")?.remove();
+    detail.querySelector(".pmi-list-empty.pmi-task-empty")?.remove();
+    if (tasks.length === 0) {
+      detail.createDiv({ cls: "pmi-list-empty pmi-task-empty", text: t.noTasks });
+      return;
+    }
+
+    const projectRecords = new Map(projects.map((project2) => [project2.id, project2]));
+    const priorityDefinitions = new Map(priorities.map((definition) => [definition.id, definition]));
+    const stageDefinitions = new Map(stages.map((definition) => [definition.id, definition]));
+    const statusDefinitions = new Map(statuses.map((definition) => [definition.id, definition]));
+    const groupTones = new Map();
+    let groupIndex = 0;
+    const wrapper = detail.createDiv("pm-root pm-table-wrapper pmi-pm-table-wrapper");
+    const table = wrapper.createEl("table", { cls: "pm-table pmi-pm-table" });
+    table.setCssStyles({ minWidth: "1560px", tableLayout: "fixed" });
+    const headerRow = table.createEl("thead").createEl("tr");
+    const headers = [
+      [t.taskId, 96], [t.item, 397], [t.module, 180], [t.stage, 130], [t.status, 120],
+      [t.priority, 100], [t.assignee, 110], [t.completedBy, 110], [t.due, 110], [t.progress, 120], [t.work, 90]
+    ];
+    for (const [index, [label, width]] of headers.entries()) {
+      const header = headerRow.createEl("th", { text: label });
+      const currentWidth = this.projectTableColumnWidths?.[index] ?? width;
+      header.setCssStyles({ width: `${currentWidth}px`, minWidth: `${currentWidth}px` });
+      if (label === t.priority) {
+        header.addClass("pm-table-th-sortable");
+        header.addEventListener("click", onPrioritySort);
+        header.createSpan({ text: this.taskPrioritySort === "high-to-low" ? " ↓" : this.taskPrioritySort === "low-to-high" ? " ↑" : "", cls: "pm-sort-indicator" });
+      }
+      const resizer = header.createDiv({ cls: "pm-table-column-resizer", attr: { role: "separator", tabindex: "0", "aria-label": t.resizeColumn(label) } });
+      resizer.addEventListener("pointerdown", (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        this.projectTableColumnWidths ??= headers.map(([, defaultWidth]) => defaultWidth);
+        const startX = event.clientX;
+        const startWidth = this.projectTableColumnWidths[index] ?? width;
+        resizer.setPointerCapture(event.pointerId);
+        const move = (moveEvent) => {
+          const nextWidth = Math.max(64, Math.round(startWidth + moveEvent.clientX - startX));
+          this.projectTableColumnWidths[index] = nextWidth;
+          header.setCssStyles({ width: `${nextWidth}px`, minWidth: `${nextWidth}px` });
+        };
+        const end = () => {
+          resizer.removeEventListener("pointermove", move);
+          resizer.removeEventListener("pointerup", end);
+          resizer.removeEventListener("pointercancel", end);
+          if (resizer.hasPointerCapture(event.pointerId)) resizer.releasePointerCapture(event.pointerId);
+        };
+        resizer.addEventListener("pointermove", move);
+        resizer.addEventListener("pointerup", end);
+        resizer.addEventListener("pointercancel", end);
+      });
+    }
+
+    const body = table.createEl("tbody");
+    const taskById = new Map(tasks.map((task2) => [task2.id, task2]));
+    const childrenByParent = new Map();
+    for (const task2 of tasks) {
+      if (!task2.parentId || !taskById.has(task2.parentId)) continue;
+      const children = childrenByParent.get(task2.parentId) ?? [];
+      children.push(task2);
+      childrenByParent.set(task2.parentId, children);
+    }
+    const orderedTasks = [];
+    const taskDepths = new Map();
+    const visited = new Set();
+    const visit = (task2, depth = 0) => {
+      if (visited.has(task2.id)) return;
+      visited.add(task2.id);
+      taskDepths.set(task2.id, depth);
+      orderedTasks.push(task2);
+      for (const child of childrenByParent.get(task2.id) ?? []) visit(child, depth + 1);
+    };
+    for (const task2 of tasks) if (!task2.parentId || !taskById.has(task2.parentId)) visit(task2);
+    for (const task2 of tasks) visit(task2);
+    const createChip = (cell, label, color, variant = "solid") => {
+      const chip = cell.createSpan({ cls: `pm-chip pm-chip--${variant} pm-chip--sm` });
+      chip.style.setProperty("--pm-chip-color", color || "var(--text-muted)");
+      chip.createSpan({ cls: "pm-chip-dot" });
+      chip.createSpan({ text: label });
+      return chip;
+    };
+    const createPerson = (cell, name) => {
+      if (!name) {
+        cell.createSpan({ text: "—", cls: "pm-cf-value" });
+        return;
+      }
+      const stack = cell.createDiv("pm-avatar-stack");
+      const avatar = stack.createSpan({ cls: "pm-avatar", text: Array.from(name).slice(0, 2).join(""), attr: { "aria-label": name } });
+      avatar.style.backgroundColor = "var(--interactive-accent)";
+    };
+
+    for (const task2 of orderedTasks) {
+      const storyId = String(task2.customFields.storyId ?? task2.zentaoId ?? task2.id);
+      const groupKey = `${task2.projectId}:${storyId}`;
+      if (!groupTones.has(groupKey)) groupTones.set(groupKey, groupIndex++ % 2 === 0 ? "a" : "b");
+      const tone = groupTones.get(groupKey);
+      const sourceClass = task2.sourceType === "requirement" ? "story" : "task";
+      const row = body.createEl("tr", { cls: `pm-table-row pm-zentao-type-${sourceClass} pm-requirement-group-${tone}${task2.completed ? " pm-table-row--done" : ""}` });
+      const projectRecord = projectRecords.get(task2.projectId);
+
+      const idCell = row.createEl("td", { cls: "pm-table-cell pm-table-cell-zentao-id" });
+      const idLabel = task2.zentaoId ? `${task2.sourceType === "requirement" ? t.requirement : t.task} #${task2.zentaoId}` : "—";
+      const idChip = idCell.createSpan({ cls: "pm-chip pm-chip--plain pm-chip--sm", text: idLabel });
+      idChip.addEventListener("click", () => projectRecord && void this.host.openTask(task2.id, projectRecord.path));
+
+      const titleCell = row.createEl("td", { cls: "pm-table-cell-title" });
+      titleCell.setCssStyles({ paddingLeft: `${(taskDepths.get(task2.id) ?? 0) * 20 + 8}px` });
+      const title = titleCell.createSpan({ cls: "pm-task-title-text", text: task2.title });
+      title.addEventListener("click", () => projectRecord && void this.host.openTask(task2.id, projectRecord.path));
+      const tagRow = titleCell.createDiv("pm-table-tags");
+      createChip(tagRow, task2.sourceType === "requirement" ? t.requirement : t.task, task2.sourceType === "requirement" ? "var(--color-yellow)" : "var(--color-pink)", "outline").addClass("pm-chip--tag");
+      for (const tag of task2.tags.filter((tag) => !["zentao", "zentao-task", "zentao-requirement"].includes(tag))) createChip(tagRow, tag, "var(--text-muted)", "outline").addClass("pm-chip--tag");
+
+      const moduleCell = row.createEl("td", { cls: "pm-table-cell pm-table-cell-module" });
+      moduleCell.createSpan({ text: task2.module ?? "—", cls: "pm-cf-value" });
+      const stageCell = row.createEl("td", { cls: "pm-table-cell" });
+      const stage = stageDefinitions.get(task2.stage);
+      createChip(stageCell, stage?.label ?? task2.stage ?? "—", stage?.color, "solid");
+      const statusCell = row.createEl("td", { cls: "pm-table-cell" });
+      const status = statusDefinitions.get(task2.status);
+      createChip(statusCell, status?.label ?? task2.status ?? "—", status?.color, "solid");
+      const priorityCell = row.createEl("td", { cls: "pm-table-cell" });
+      const priority = task2.priority ? priorityDefinitions.get(task2.priority) : null;
+      createChip(priorityCell, priority?.label ?? task2.priority ?? t.noPriority, priority?.color, "plain");
+      const assigneeCell = row.createEl("td", { cls: "pm-table-cell pm-table-cell-assignees" });
+      createPerson(assigneeCell, task2.resolvedAssignees?.[0] ?? task2.assignees[0] ?? "");
+      const completedByCell = row.createEl("td", { cls: "pm-table-cell pm-table-cell-assignees" });
+      createPerson(completedByCell, task2.completedBy ?? "");
+      row.createEl("td", { cls: "pm-table-cell", text: task2.due ?? "—" });
+      const progressCell = row.createEl("td", { cls: "pm-table-cell pm-table-cell-progress" });
+      const progress = progressCell.createDiv("pm-progress");
+      const progressTrack = progress.createDiv("pm-progress-track");
+      const progressFill = progressTrack.createDiv("pm-progress-fill");
+      progressFill.style.width = `${Math.max(0, Math.min(100, task2.progress))}%`;
+      progress.createSpan({ cls: "pm-progress-label", text: `${Math.round(task2.progress)}%` });
+      const timeCell = row.createEl("td", { cls: "pm-table-cell pm-table-cell-time" });
+      timeCell.createSpan({ cls: "pm-chip pm-chip--plain pm-chip--sm", text: t.workHours(task2.logged, task2.estimate) });
     }
   }
   bindCellAction(element, action) {
@@ -2172,11 +2458,16 @@ var ProjectManagerInsightsPlugin = class extends import_obsidian6.Plugin {
   }
   async loadSettings() {
     const saved = await this.loadData();
+    const savedQuickFilter = saved?.quickFilter ?? {};
     this.settings = {
       ...structuredClone(DEFAULT_SETTINGS),
       ...saved,
       aliases: Array.isArray(saved == null ? void 0 : saved.aliases) ? saved.aliases : [],
-      selectedProjectIds: Array.isArray(saved == null ? void 0 : saved.selectedProjectIds) ? saved.selectedProjectIds : []
+      selectedProjectIds: Array.isArray(saved == null ? void 0 : saved.selectedProjectIds) ? saved.selectedProjectIds : [],
+      quickFilter: {
+        ...structuredClone(DEFAULT_SETTINGS.quickFilter),
+        ...(savedQuickFilter && typeof savedQuickFilter === "object" ? savedQuickFilter : {})
+      }
     };
   }
   async saveSettings() {
@@ -2209,6 +2500,17 @@ var ProjectManagerInsightsPlugin = class extends import_obsidian6.Plugin {
     await this.app.workspace.revealLeaf(leaf);
     if (projectPath && leaf.view instanceof InsightsView) {
       await leaf.view.scopeToProjectPath(projectPath);
+    } else if (projectPath) {
+      const snapshot = await this.readProjectManager();
+      const normalizedPath = String(projectPath).replace(/\\/g, "/");
+      const project2 = snapshot.projects.find((candidate) => {
+        const candidatePath = String(candidate.path ?? "").replace(/\\/g, "/");
+        return candidatePath === normalizedPath || candidatePath.endsWith(`/${normalizedPath}`) || normalizedPath.endsWith(`/${candidatePath}`);
+      });
+      if (project2) {
+        this.settings.selectedProjectIds = [project2.id];
+        await this.saveSettings();
+      }
     }
   }
   async openTask(taskId, projectPath) {
@@ -2289,8 +2591,9 @@ module.exports = class ProjectManagerEnhancedPlugin extends EnhancedPlugin {
     this.settings.locale = insightsSettings.locale
     this.settings.aliases = structuredClone(insightsSettings.aliases)
     this.settings.selectedProjectIds = [...insightsSettings.selectedProjectIds]
-    this.settings.includeArchived = insightsSettings.includeArchived
-    this.settings.countParentTasks = insightsSettings.countParentTasks
+    this.settings.quickFilter = structuredClone(insightsSettings.quickFilter ?? {
+      quickSource: "all"
+    })
   }
 
   async migrateInsightsSettings() {
