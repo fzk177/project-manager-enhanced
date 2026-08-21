@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.1.0] - 2026-08-21
+
+### Added
+
+- 内置 Project Manager Insights 0.2.4 工作量洞察。
+- 跨项目成员计划、登记、剩余和超支工时统计。
+- 项目、成员、状态、优先级和任务筛选。
+- 从洞察页面打开项目和任务详情。
+- 自动迁移独立 Insights 插件的本地设置。
+
 ## [1.0.0] - 2026-08-20
 
 ### Added
