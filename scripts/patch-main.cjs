@@ -557,6 +557,8 @@ replaceOnce(
 // 只编译替换后的发布代码，不执行插件逻辑或访问 Obsidian API。
 new Function('require', 'module', 'exports', source)
 
-const outputPath = path.join(repositoryRoot, 'main.js')
+const outputDirectory = path.join(repositoryRoot, 'build')
+const outputPath = path.join(outputDirectory, 'enhanced.js')
+fs.mkdirSync(outputDirectory, { recursive: true })
 fs.writeFileSync(outputPath, source, 'utf8')
-process.stdout.write(`Project Manager Enhanced 已生成：${outputPath}\n`)
+process.stdout.write(`Project Manager Enhanced 主模块已生成：${outputPath}\n`)

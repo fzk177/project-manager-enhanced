@@ -12,6 +12,7 @@
 - 提供常用视图和可组合的对象、类型、进度、归属、关注筛选。
 - 快速组合和详细筛选使用可折叠、响应式面板。
 - 项目面板按进行中、待开始、待规划、已完成分类。
+- 内置 Project Manager Insights，可跨项目查看成员工作量、工时比例和任务明细。
 
 ## 安装
 
@@ -23,7 +24,8 @@
    ```
 
 3. 如需保留现有插件设置，将旧目录中的 `data.json` 复制到新目录。
-4. 在 Obsidian 第三方插件中启用 Project Manager Enhanced。
+4. 如果已经安装独立的 Project Manager Insights，请禁用它；增强版会自动迁移其设置。
+5. 在 Obsidian 第三方插件中启用 Project Manager Enhanced。
 
 项目 Markdown、Frontmatter、稳定 ID 和 Wiki-link 不需要迁移。
 
@@ -38,9 +40,10 @@ npm run build
 
 构建过程：
 
-1. 校验 `vendor/main.vendor.js` 的目标代码哈希。
-2. 使用 `scripts/patch-main.cjs` 生成根目录 `main.js`。
-3. 将 `custom/styles.css` 复制为根目录 `styles.css`。
+1. 校验 `vendor/main.vendor.js` 和 `vendor/insights.vendor.js` 的基线哈希。
+2. 生成 Enhanced 主模块和 Insights 内部模块。
+3. 合并两个插件生命周期并输出根目录 `main.js`。
+4. 合并 Enhanced 与 Insights 样式并输出根目录 `styles.css`。
 
 官方 TypeScript 源码仍保留，可以单独执行 `pnpm build:upstream`，但该命令生成的是上游版本，不包含当前完整定制。
 
