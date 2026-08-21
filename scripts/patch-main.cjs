@@ -73,6 +73,50 @@ replaceOnce(
   'color:e.color,icon:e.icon,status:e.status,taskIds:i',
 )
 
+replaceOnce(
+  '统一禅道同步工时读取',
+  'function gu(e){return e.timeLogs?.length?e.timeLogs.reduce((e,t)=>e+t.hours,0):0}',
+  'function projectSyncedHours(e,t){let n=e.customFields?.[t];'
+    + 'if(n===void 0||n===null||n===``)return null;n=Number(n);'
+    + 'return Number.isFinite(n)&&n>=0?n:null}'
+    + 'function projectEstimateHours(e){return projectSyncedHours(e,`displayEstimatedHours`)??'
+    + 'projectSyncedHours(e,`estimatedHours`)??e.timeEstimate??0}'
+    + 'function gu(e){return projectSyncedHours(e,`displayConsumedHours`)??'
+    + 'projectSyncedHours(e,`consumedHours`)??'
+    + '(e.timeLogs?.length?e.timeLogs.reduce((e,t)=>e+t.hours,0):0)}',
+)
+
+replaceOnce(
+  '任务弹窗使用同步预计工时',
+  'i=gu(t),a=t.timeEstimate??0,o=a>0?',
+  'i=gu(t),a=projectEstimateHours(t),o=a>0?',
+)
+
+replaceOnce(
+  '项目表格使用同步预计工时',
+  'new yp(c,{logged:gu(n),estimate:n.timeEstimate??0})',
+  'new yp(c,{logged:gu(n),estimate:projectEstimateHours(n)})',
+)
+
+replaceOnce(
+  '看板使用同步预计工时',
+  'vp(i,t.loggedHours,n.timeEstimate??0,`sm`)',
+  'vp(i,t.loggedHours,projectEstimateHours(n),`sm`)',
+)
+
+replaceOnce(
+  '超时标签使用红色',
+  'function bp(e,t,n){if(t===`zentao`)return null;'
+    + 'let r=t===`zentao-requirement`?`需求`:t===`zentao-task`?`任务`:t,'
+    + 'i=new Z(e).setLabel(r).setVariant(`outline`).setTag();'
+    + 'return n&&i.setDot(!0).setColor(Zu(t)),i}',
+  'function bp(e,t,n){if(t===`zentao`)return null;'
+    + 'let r=t===`zentao-requirement`?`需求`:t===`zentao-task`?`任务`:t,'
+    + 'i=new Z(e).setLabel(r).setVariant(`outline`).setTag();'
+    + 'return t.startsWith(`超时`)?i.setDot(!0).setColor(`var(--color-red)`):'
+    + 'n&&i.setDot(!0).setColor(Zu(t)),i}',
+)
+
 const originalDashboard = [
   'async function qm(t){let n=await t.plugin.store.loadAllProjects(',
   't.plugin.settings.projectsFolder);if(t.isStale())return;',
@@ -234,15 +278,12 @@ const hierarchicalViewHeader = [
   'this.group(`关注`,o,i,t=>{if(t===`all`){this.change({quickAttention:[]});return}',
   'let n=i.includes(t)?i.filter(e=>e!==t):[...i,t];this.change({quickAttention:n})},!0)}};',
   'let Lm=class{props;el;volatileEl=null;constructor(e,t){this.props=t,',
-  'this.el=e.createDiv(`pm-project-header-primary`),this.renderSearchInput(),',
+  'this.el=e.createDiv(`pm-project-header-primary`),',
   'this.volatileEl=this.el.createDiv(`pm-project-header-actions`),this.renderVolatile()}',
   'setActiveSavedViewId(e){this.props.activeSavedViewId=e,this.renderVolatile()}',
   'refresh(){this.renderVolatile()}refreshVolatile(){this.renderVolatile()}',
   'renderVolatile(){this.volatileEl&&(this.volatileEl.empty(),this.renderSavedViewPills(this.volatileEl),',
   'this.renderSaveViewAction(this.volatileEl))}',
-  'renderSearchInput(){let e=this.el.createEl(`input`,{type:`text`,placeholder:`搜索事项…`,',
-  'cls:`pm-project-header-search`});e.value=this.props.filter.text,e.addEventListener(`input`,()=>{',
-  'this.props.filter.text=e.value,this.props.onSearchChange()})}',
   'renderSavedViewPills(t){let n=t.createDiv(`pm-project-header-saved-views`);',
   'n.createSpan({text:`常用`,cls:`pm-quick-filter-label`});',
   'new Im(n).setLabel(`全部`).setShape(`pill`).setActive(!this.props.activeSavedViewId&&',
@@ -272,11 +313,7 @@ const hierarchicalViewHeader = [
   'r.focus();let i=!1,a=()=>{n.remove(),t.buttonEl.removeClass(`pm-hidden`)},o=Y(async()=>{',
   'if(i)return;i=!0;let e=r.value.trim();if(!e){a();return}await this.props.onSavedViewSave(e)});',
   'r.addEventListener(`keydown`,e=>{e.key===`Enter`?(e.preventDefault(),o()):',
-  'e.key===`Escape`&&a()}),r.addEventListener(`blur`,()=>{r.value.trim()?o():a()})}',
-  'renderFilterToggle(e){let t=this.props.filterRowExpanded||Ed(this.props.filter)||',
-  'this.props.filter.showArchived;new Im(e).setLabel(`筛选`).setShape(`pill`).setActive(t)',
-  '.setAriaLabel(`显示或隐藏筛选条件`).onClick(()=>this.props.onToggleFilterRow())',
-  '.el.addClass(`pm-project-header-filter-toggle`)}}',
+  'e.key===`Escape`&&a()}),r.addEventListener(`blur`,()=>{r.value.trim()?o():a()})}}',
 ].join('')
 replaceCheckedRange(
   '分层常用视图与快速组合筛选器',
@@ -286,40 +323,118 @@ replaceCheckedRange(
   hierarchicalViewHeader,
 )
 
+const insightStyleFilterMenus = [
+  'function projectFilterIcon(e){return{阶段:`layers-3`,状态:`workflow`,优先级:`signal-high`,',
+  '负责人:`users`,标签:`tags`,截止日期:`calendar-clock`}[e]??`list-filter`}',
+  'function projectFilterMenuBehavior(e,t,n){e.addEventListener(`toggle`,()=>{',
+  'if(!e.open)return;for(let n of t.querySelectorAll(`.pm-insight-project-filter-menu[open]`))',
+  'n!==e&&(n.open=!1)}),e.addEventListener(`keydown`,t=>{',
+  't.key===`Escape`&&e.open&&(e.open=!1,n.focus(),t.preventDefault(),t.stopPropagation())})}',
+  'function Rm(t,n,r,i,a){let o=t.createEl(`details`,',
+  '{cls:`pmi-task-filter-menu pm-insight-project-filter-menu`}),',
+  's=o.createEl(`summary`,{attr:{"aria-label":`按${n}筛选`}});',
+  '(0,e.setIcon)(s.createSpan(`pmi-task-filter-icon`),projectFilterIcon(n));',
+  'let c=s.createSpan(`pmi-task-filter-copy`);c.createSpan({cls:`pmi-task-filter-label`,text:n});',
+  'let l=c.createSpan(`pmi-task-filter-value`),u=s.createSpan(`pmi-task-filter-chevron`);',
+  '(0,e.setIcon)(u,`chevron-down`);let d=o.createDiv(`pmi-task-filter-panel`),',
+  'f=d.createDiv(`pmi-task-filter-panel-head`);f.createEl(`strong`,{text:n}),',
+  'f.createSpan({text:`${i.length} 项`});let p=d.createDiv(`pmi-task-filter-actions`),',
+  'm=p.createEl(`button`,{text:`全部`,attr:{type:`button`}}),',
+  'h=d.createDiv(`pmi-task-filter-options`),g=[...r],_=()=>{if(g.length===0)return`全部${n}`;',
+  'if(g.length===1)return i.find(e=>e.id===g[0])?.label??`已选 1 项`;',
+  'return`已选 ${g.length} 项`},v=t=>{g=[...t],l.setText(_());',
+  'for(let e of h.querySelectorAll(`input[type="checkbox"]`))e.checked=g.includes(e.dataset.filterValue??``);',
+  'a([...g])};for(let t of i){let n=h.createEl(`label`,{cls:`pmi-task-filter-option`}),',
+  'r=n.createEl(`input`,{type:`checkbox`});r.dataset.filterValue=t.id,r.checked=g.includes(t.id);',
+  'let i=n.createSpan(`pmi-task-filter-option-name`);',
+  'i.createSpan({cls:`pmi-task-filter-option-label`,text:t.label}),',
+  'r.addEventListener(`change`,()=>{let e=new Set(g);r.checked?e.add(t.id):e.delete(t.id),v([...e])})}',
+  'return l.setText(_()),m.addEventListener(`click`,()=>v([])),',
+  'projectFilterMenuBehavior(o,t,s),o}',
+  'function projectSingleFilter(t,n,r,i,a,o){let s=t.createEl(`details`,',
+  '{cls:`pmi-task-filter-menu pm-insight-project-filter-menu`}),',
+  'c=s.createEl(`summary`,{attr:{"aria-label":r}});',
+  '(0,e.setIcon)(c.createSpan(`pmi-task-filter-icon`),n);',
+  'let l=c.createSpan(`pmi-task-filter-copy`);l.createSpan({cls:`pmi-task-filter-label`,text:r});',
+  'let u=l.createSpan(`pmi-task-filter-value`),d=c.createSpan(`pmi-task-filter-chevron`);',
+  '(0,e.setIcon)(d,`chevron-down`);let f=s.createDiv(`pmi-task-filter-panel`),',
+  'p=f.createDiv(`pmi-task-filter-panel-head`);p.createEl(`strong`,{text:r}),',
+  'p.createSpan({text:`${a.length} 项`});let m=f.createDiv(`pmi-task-filter-options`),',
+  'h=()=>u.setText(a.find(e=>e.id===i)?.label??r);for(let t of a){',
+  'let n=m.createEl(`label`,{cls:`pmi-task-filter-option`}),',
+  'r=n.createEl(`input`,{type:`radio`,attr:{name:`pm-filter-${i}`}});',
+  'r.checked=t.id===i,n.createSpan({cls:`pmi-task-filter-option-label`,text:t.label}),',
+  'r.addEventListener(`change`,()=>{if(!r.checked)return;i=t.id,h(),o(i),s.open=!1})}',
+  'return h(),projectFilterMenuBehavior(s,t,c),s}',
+].join('')
+replaceCheckedRange(
+  'PM 洞察风格筛选下拉菜单',
+  'function Rm(',
+  'const zm=',
+  '3e0e44f315478b2041333dccc3ccd42b2fb0a5e9cf68fb88942fbb302524931a',
+  insightStyleFilterMenus,
+)
+
+const insightStyleDetailedFilter = [
+  'Bm=class{props;el;clearBtn=null;constructor(e,t){this.props=t,',
+  'this.el=e.createDiv(`pm-project-header-filter`),this.render()}',
+  'refresh(){this.render()}',
+  'render(){this.el.empty();let{filter:t,stages:n,statuses:r,priorities:i,project:a}=this.props,',
+  'o=()=>{this.props.onFilterChange(),this.updateClearButton()},',
+  's=this.el.createDiv(`pm-insight-filter-search`);(0,e.setIcon)(s.createSpan(),`search`);',
+  'let c=s.createEl(`input`,{type:`search`,placeholder:`搜索事项…`,',
+  'cls:`pm-insight-filter-search-input`});c.value=t.text,c.addEventListener(`input`,()=>{',
+  't.text=c.value,o()}),Rm(this.el,`阶段`,t.stages??[],',
+  'n.map(e=>({id:e.id,label:pd(e.icon,e.label)})),e=>{t.stages=e,o()}),',
+  'Rm(this.el,`状态`,t.statuses,r.map(e=>({id:e.id,label:pd(e.icon,e.label)})),',
+  'e=>{t.statuses=e,o()}),Rm(this.el,`优先级`,t.priorities,',
+  'i.map(e=>({id:e.id,label:pd(e.icon,e.label)})),e=>{t.priorities=e,o()});',
+  'let l=mu(a.tasks);l.length&&Rm(this.el,`负责人`,t.assignees,',
+  'l.map(e=>({id:e,label:e})),e=>{t.assignees=e,o()});let u=hu(a.tasks);',
+  'u.length&&Rm(this.el,`标签`,t.tags,u.map(e=>({id:e,label:e})),',
+  'e=>{t.tags=e,o()}),this.renderDueDateButton(o),this.renderArchivedButton(o),',
+  'this.renderClearButton()}',
+  'renderDueDateButton(t){let{filter:n}=this.props,r=',
+  '[`any`,`overdue`,`this-week`,`this-month`,`no-date`].map(e=>({id:e,label:zm[e]}));',
+  'projectSingleFilter(this.el,`calendar-clock`,`截止日期`,n.dueDateFilter,r,e=>{',
+  'n.dueDateFilter=e,t()})}',
+  'renderArchivedButton(e){let{filter:t}=this.props,n=new Im(this.el).setLabel(`已归档`)',
+  '.setActive(t.showArchived);n.el.addClass(`pm-insight-filter-archive`),n.onClick(()=>{',
+  't.showArchived=!t.showArchived,n.setActive(t.showArchived),e()})}',
+  'renderClearButton(){let e=Dd(this.props.filter)+(this.props.filter.text?1:0);',
+  'this.clearBtn=new Im(this.el).setLabel(`重置筛选`),',
+  'this.clearBtn.el.addClass(`pm-insight-filter-reset`),this.clearBtn.el.disabled=e===0,',
+  'this.clearBtn.onClick(()=>{if(e===0)return;this.props.onClear(),this.render()})}',
+  'refreshClearButton(){this.updateClearButton()}',
+  'updateClearButton(){this.clearBtn&&=(this.clearBtn.el.remove(),null),this.renderClearButton()}}',
+].join('')
+replaceCheckedRange(
+  'PM 洞察风格详细筛选器',
+  'Bm=class',
+  ',Vm=class',
+  'fdfaa57d6309550c56fc86f2d43a4b0e89671b24c283a763066b29eac67f1248',
+  insightStyleDetailedFilter,
+)
+
 const hierarchicalViewContainer = [
-  'Vm=class{props;el;filterRowExpanded=!1;primaryRow=null;quickRow=null;',
-  'filterPanel=null;filterToggle=null;filterRow=null;',
+  'Vm=class{props;el;primaryRow=null;quickRow=null;filterPanel=null;filterRow=null;',
   'constructor(e,t){this.props=t,this.el=e.createDiv(`pm-project-header`),this.render()}',
   'refresh(){this.render()}notifyMutation(){this.primaryRow?.refreshVolatile(),',
-  'this.quickRow?.refresh(),this.filterRow?.refreshClearButton(),this.refreshFilterPanel()}',
+  'this.quickRow?.refresh(),this.filterRow?.refreshClearButton()}',
   'setActiveSavedViewId(e){this.props.activeSavedViewId=e,',
-  'this.primaryRow?.setActiveSavedViewId(e),this.quickRow?.refresh(),this.refreshFilterPanel()}',
+  'this.primaryRow?.setActiveSavedViewId(e),this.quickRow?.refresh(),this.filterRow?.refresh()}',
   'render(){this.el.empty(),this.primaryRow=new Lm(this.el,{project:this.props.project,',
   'filter:this.props.filter,activeSavedViewId:this.props.activeSavedViewId,',
-  'onSearchChange:this.props.onFilterChange,',
   'onSavedViewSelect:this.props.onSavedViewSelect,onQuickPresetSelect:this.props.onQuickPresetSelect,',
   'onSavedViewSave:this.props.onSavedViewSave,onSavedViewUpdate:this.props.onSavedViewUpdate,',
   'onSavedViewDelete:this.props.onSavedViewDelete}),this.quickRow=new QuickFilterBar(this.el,{',
   'project:this.props.project,stages:this.props.stages,filter:this.props.filter,',
   'onChange:this.props.onQuickFilterChange}),this.mountFilterPanel()}',
-  'mountFilterPanel(){this.filterPanel=this.el.createDiv(`pm-project-header-filter-panel`);',
-  'let e=this.filterPanel.createDiv(`pm-project-header-filter-toggle-row`);',
-  'this.filterToggle=new Im(e).setShape(`pill`).onClick(()=>{',
-  'this.filterRowExpanded=!this.filterRowExpanded,this.syncFilterRowVisibility()}),',
-  'this.filterRowExpanded&&this.mountFilterRow(),this.refreshFilterPanel()}',
-  'refreshFilterPanel(){if(!this.filterPanel||!this.filterToggle)return;',
-  'let e=detailedFilterCount(this.props.filter),t=this.filterRowExpanded?`▾`:`▸`,',
-  'n=e>0?`筛选（${e}） ${t}`:`筛选 ${t}`;',
-  'this.filterToggle.setLabel(n).setActive(this.filterRowExpanded),',
-  'this.filterPanel.toggleClass(`is-expanded`,this.filterRowExpanded)}',
-  'syncFilterRowVisibility(){this.filterRowExpanded&&!this.filterRow?',
-  'this.mountFilterRow():!this.filterRowExpanded&&this.filterRow&&(',
-  'this.filterRow.el.remove(),this.filterRow=null),this.refreshFilterPanel()}',
-  'mountFilterRow(){this.filterRow=new Bm(this.filterPanel,{project:this.props.project,',
-  'stages:this.props.stages,statuses:this.props.statuses,priorities:this.props.priorities,',
-  'filter:this.props.filter,onFilterChange:this.props.onFilterChange,',
-  'onClear:this.props.onClearFilter})}',
-  'shouldShowFilterRow(){return this.filterRowExpanded}}',
+  'mountFilterPanel(){this.filterPanel=this.el.createDiv(`pm-project-header-filter-panel`),',
+  'this.filterPanel.addClass(`pm-insight-filter-bar`),this.filterRow=new Bm(this.filterPanel,{',
+  'project:this.props.project,stages:this.props.stages,statuses:this.props.statuses,',
+  'priorities:this.props.priorities,filter:this.props.filter,',
+  'onFilterChange:this.props.onFilterChange,onClear:this.props.onClearFilter})}}',
 ].join('')
 replaceCheckedRange(
   '挂载快速组合筛选器',
@@ -370,7 +485,7 @@ replaceOnce(
 replaceOnce(
   '清除详细筛选时保留快速组合',
   'handleClearFilter(){Object.assign(this.filter,au()),',
-  'handleClearDetailedFilter(){Object.assign(this.filter,{stages:[],statuses:[],priorities:[],'
+  'handleClearDetailedFilter(){Object.assign(this.filter,{text:``,stages:[],statuses:[],priorities:[],'
     + 'assignees:[],participants:[],tags:[],dueDateFilter:`any`,showArchived:!1}),'
     + 'this.filter.quickPreset=``,this.activeSavedViewId=null,this.persistFilter(),'
     + 'this.header?.setActiveSavedViewId(null),this.scheduleFilterRender()}'
@@ -484,7 +599,8 @@ replaceCheckedRange(
 
 const optimizedKanbanView = [
   'let Pm=class{container;project;plugin;onRefresh;filter;groupBy;dragTask=null;config;',
-  'columns=[];parentTitles=new Map;allTasks=[];scrollPositions=new Map;heightCaches=new Map;boardScrollLeft=0;',
+  'columns=[];parentTitles=new Map;allTasks=[];includeSubtasks=!1;',
+  'scrollPositions=new Map;heightCaches=new Map;boardScrollLeft=0;',
   'constructor(e,t,n,r,i,a=`stage`){this.container=e,this.project=t,this.plugin=n,',
   'this.onRefresh=r,this.filter=i,this.groupBy=a}',
   'render(){this.renderBoard(),this.config.kanbanShowDescriptionPreview&&this.hydrateDescriptions()}',
@@ -500,7 +616,8 @@ const optimizedKanbanView = [
   'let t=this.container.createDiv(`pm-kanban-board`),n=this.groupBy===`status`,',
   'r=q(this.project.tasks);this.parentTitles=new Map;',
   'for(let{task:e}of r)for(let t of e.subtasks)this.parentTitles.set(t.id,e.title);',
-  'this.allTasks=this.config.kanbanShowSubtasks?r.map(e=>e.task):this.project.tasks;',
+  'this.includeSubtasks=this.config.kanbanShowSubtasks||this.filter.quickSource===`task`,',
+  'this.allTasks=this.includeSubtasks?r.map(e=>e.task):this.project.tasks;',
   'let i=new Set(this.allTasks.map(e=>n?e.status:e.stage)),',
   'a=this.allTasks.filter(e=>Od(e,this.filter,this.config.statuses)),o=new Map;',
   'for(let e of a){let t=n?e.status:e.stage,r=o.get(t);r?r.push(e):o.set(t,[e])}',
@@ -521,7 +638,7 @@ const optimizedKanbanView = [
   '.replace(/```[\\s\\S]*?```/g,` `).replace(/`([^`]*)`/g,`$1`)',
   '.replace(/!?\\[([^\\]]*)\\]\\([^)]*\\)/g,`$1`).replace(/^[ \\t]*[#>\\-*+]+[ \\t]+/gm,``)',
   '.replace(/[*~]/g,``).replace(/\\s+/g,` `).trim();i=t?t.slice(0,240):void 0}',
-  'let a=this.config.kanbanShowSubtasks&&e.type===`subtask`?this.parentTitles.get(e.id):void 0;',
+  'let a=this.includeSubtasks&&e.type===`subtask`?this.parentTitles.get(e.id):void 0;',
   'return{task:e,draggable:!e.customFields.zentaoSourceType,statusLabel:n?.label??e.status,',
   'statusColor:n?.color??`var(--text-muted)`,priorityColor:r,descriptionPreview:i,parentTitle:a,',
   'loggedHours:gu(e),overdue:rd(e,this.config.statuses)===`overdue`,',

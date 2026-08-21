@@ -45,6 +45,11 @@ function number(value) {
   const result = typeof value === "number" ? value : Number(value);
   return Number.isFinite(result) && result > 0 ? result : 0;
 }
+function optionalHours(value) {
+  if (value === null || value === void 0 || typeof value === "string" && !value.trim()) return null;
+  const result = typeof value === "number" ? value : Number(value);
+  return Number.isFinite(result) && result >= 0 ? result : null;
+}
 function stringList(value) {
   if (Array.isArray(value)) return value.filter((item) => typeof item === "string");
   return typeof value === "string" && value.trim() ? [value.trim()] : [];
@@ -62,7 +67,7 @@ function quickSourceType(task2) {
   return "local";
 }
 function loggedHours(value) {
-  if (!Array.isArray(value)) return 0;
+  if (!Array.isArray(value) || value.length === 0) return null;
   return value.reduce((total, item) => {
     if (!item || typeof item !== "object") return total;
     return total + number(item.hours);
@@ -121,6 +126,13 @@ function task(document2, completeStatuses) {
   const customFields = frontmatter2.customFields && typeof frontmatter2.customFields === "object" ? frontmatter2.customFields : {};
   const tags = taskTags(frontmatter2.tags);
   const type = text(frontmatter2.type, "task");
+  const syncedEstimate = optionalHours(customFields.estimatedHours);
+  const syncedLogged = optionalHours(customFields.consumedHours);
+  const syncedRemaining = optionalHours(customFields.remainingHours);
+  const displayEstimate = optionalHours(customFields.displayEstimatedHours);
+  const displayLogged = optionalHours(customFields.displayConsumedHours);
+  const localLogged = loggedHours(frontmatter2.timeLogs);
+  const hasSyncedHours = Object.prototype.hasOwnProperty.call(customFields, "estimatedHours") || Object.prototype.hasOwnProperty.call(customFields, "consumedHours") || Object.prototype.hasOwnProperty.call(customFields, "remainingHours");
   return {
     id,
     projectId,
@@ -138,8 +150,12 @@ function task(document2, completeStatuses) {
     tags,
     assignees: stringList(frontmatter2.assignees),
     completedBy: optionalText(customFields.completedBy ?? frontmatter2.completedBy),
-    estimate: number(frontmatter2.timeEstimate),
-    logged: loggedHours(frontmatter2.timeLogs),
+    // 禅道同步事项以接口返回的三个工时字段为准，本地事项继续使用 Project Manager 原生字段。
+    estimate: hasSyncedHours ? syncedEstimate ?? number(frontmatter2.timeEstimate) : number(frontmatter2.timeEstimate),
+    logged: hasSyncedHours ? syncedLogged ?? localLogged ?? 0 : localLogged ?? 0,
+    remainingOverride: hasSyncedHours ? syncedRemaining : null,
+    displayEstimate,
+    displayLogged,
     progress,
     completed: Boolean(optionalText(frontmatter2.completed)) || progress >= 100 || completeStatuses.has(status),
     archived: truthy(frontmatter2.archived),
@@ -169,7 +185,7 @@ function entriesEqual(left, right) {
     return left.record.id === right.record.id && left.record.title === right.record.title && left.record.path === right.record.path && left.record.icon === right.record.icon;
   }
   if (left.kind !== "task" || right.kind !== "task") return false;
-  return left.record.id === right.record.id && left.record.projectId === right.record.projectId && left.record.parentId === right.record.parentId && left.record.type === right.record.type && left.record.sourceType === right.record.sourceType && left.record.zentaoId === right.record.zentaoId && left.record.module === right.record.module && left.record.title === right.record.title && left.record.path === right.record.path && left.record.stage === right.record.stage && left.record.due === right.record.due && left.record.status === right.record.status && left.record.priority === right.record.priority && left.record.completedBy === right.record.completedBy && stringArraysEqual(left.record.tags, right.record.tags) && stringArraysEqual(left.record.assignees, right.record.assignees) && left.record.estimate === right.record.estimate && left.record.logged === right.record.logged && left.record.progress === right.record.progress && left.record.completed === right.record.completed && left.record.archived === right.record.archived;
+  return left.record.id === right.record.id && left.record.projectId === right.record.projectId && left.record.parentId === right.record.parentId && left.record.type === right.record.type && left.record.sourceType === right.record.sourceType && left.record.zentaoId === right.record.zentaoId && left.record.module === right.record.module && left.record.title === right.record.title && left.record.path === right.record.path && left.record.stage === right.record.stage && left.record.due === right.record.due && left.record.status === right.record.status && left.record.priority === right.record.priority && left.record.completedBy === right.record.completedBy && stringArraysEqual(left.record.tags, right.record.tags) && stringArraysEqual(left.record.assignees, right.record.assignees) && left.record.estimate === right.record.estimate && left.record.logged === right.record.logged && left.record.remainingOverride === right.record.remainingOverride && left.record.displayEstimate === right.record.displayEstimate && left.record.displayLogged === right.record.displayLogged && left.record.progress === right.record.progress && left.record.completed === right.record.completed && left.record.archived === right.record.archived;
 }
 function prioritiesEqual(left, right) {
   return left.length === right.length && left.every((priority, index) => {
@@ -1187,7 +1203,7 @@ function memberRatios(tasks) {
 }
 function taskInsight(task2, projectTitle, resolvedAssignees, kind) {
   const unestimated = task2.estimate <= 0;
-  const remaining = !task2.completed && !task2.archived && !unestimated ? Math.max(task2.estimate - task2.logged, 0) : 0;
+  const remaining = task2.remainingOverride ?? (!task2.completed && !task2.archived && !unestimated ? Math.max(task2.estimate - task2.logged, 0) : 0);
   const overrun = !unestimated ? Math.max(task2.logged - task2.estimate, 0) : 0;
   return {
     ...task2,
@@ -2184,7 +2200,7 @@ var InsightsView = class extends import_obsidian5.ItemView {
     const headerRow = table.createEl("thead").createEl("tr");
     const headers = [
       [t.taskId, 96], [t.item, 397], [t.module, 180], [t.stage, 130], [t.status, 120],
-      [t.priority, 100], [t.assignee, 110], [t.completedBy, 110], [t.due, 110], [t.progress, 120], [t.work, 90]
+      [t.priority, 100], [t.progress, 120], [t.work, 90], [t.assignee, 110], [t.completedBy, 110], [t.due, 110]
     ];
     for (const [index, [label, width]] of headers.entries()) {
       const header = headerRow.createEl("th", { text: label });
@@ -2259,7 +2275,9 @@ var InsightsView = class extends import_obsidian5.ItemView {
     };
 
     for (const task2 of orderedTasks) {
-      const storyId = String(task2.customFields.storyId ?? task2.zentaoId ?? task2.id);
+      // 需求使用自身禅道 ID，任务使用关联需求 ID，确保父需求及其子任务始终属于同一色组。
+      const parentTask = task2.parentId ? taskById.get(task2.parentId) : null;
+      const storyId = task2.sourceType === "requirement" ? String(task2.zentaoId ?? task2.id) : String(task2.customFields.storyId || parentTask?.zentaoId || task2.parentId || task2.zentaoId || task2.id);
       const groupKey = `${task2.projectId}:${storyId}`;
       if (!groupTones.has(groupKey)) groupTones.set(groupKey, groupIndex++ % 2 === 0 ? "a" : "b");
       const tone = groupTones.get(groupKey);
@@ -2278,7 +2296,7 @@ var InsightsView = class extends import_obsidian5.ItemView {
       title.addEventListener("click", () => projectRecord && void this.host.openTask(task2.id, projectRecord.path));
       const tagRow = titleCell.createDiv("pm-table-tags");
       createChip(tagRow, task2.sourceType === "requirement" ? t.requirement : t.task, task2.sourceType === "requirement" ? "var(--color-yellow)" : "var(--color-pink)", "outline").addClass("pm-chip--tag");
-      for (const tag of task2.tags.filter((tag) => !["zentao", "zentao-task", "zentao-requirement"].includes(tag))) createChip(tagRow, tag, "var(--text-muted)", "outline").addClass("pm-chip--tag");
+      for (const tag of task2.tags.filter((tag) => !["zentao", "zentao-task", "zentao-requirement"].includes(tag))) createChip(tagRow, tag, tag.startsWith("超时") ? "var(--color-red)" : "var(--text-muted)", "outline").addClass("pm-chip--tag");
 
       const moduleCell = row.createEl("td", { cls: "pm-table-cell pm-table-cell-module" });
       moduleCell.createSpan({ text: task2.module ?? "—", cls: "pm-cf-value" });
@@ -2291,11 +2309,6 @@ var InsightsView = class extends import_obsidian5.ItemView {
       const priorityCell = row.createEl("td", { cls: "pm-table-cell" });
       const priority = task2.priority ? priorityDefinitions.get(task2.priority) : null;
       createChip(priorityCell, priority?.label ?? task2.priority ?? t.noPriority, priority?.color, "plain");
-      const assigneeCell = row.createEl("td", { cls: "pm-table-cell pm-table-cell-assignees" });
-      createPerson(assigneeCell, task2.resolvedAssignees?.[0] ?? task2.assignees[0] ?? "");
-      const completedByCell = row.createEl("td", { cls: "pm-table-cell pm-table-cell-assignees" });
-      createPerson(completedByCell, task2.completedBy ?? "");
-      row.createEl("td", { cls: "pm-table-cell", text: task2.due ?? "—" });
       const progressCell = row.createEl("td", { cls: "pm-table-cell pm-table-cell-progress" });
       const progress = progressCell.createDiv("pm-progress");
       const progressTrack = progress.createDiv("pm-progress-track");
@@ -2303,7 +2316,12 @@ var InsightsView = class extends import_obsidian5.ItemView {
       progressFill.style.width = `${Math.max(0, Math.min(100, task2.progress))}%`;
       progress.createSpan({ cls: "pm-progress-label", text: `${Math.round(task2.progress)}%` });
       const timeCell = row.createEl("td", { cls: "pm-table-cell pm-table-cell-time" });
-      timeCell.createSpan({ cls: "pm-chip pm-chip--plain pm-chip--sm", text: t.workHours(task2.logged, task2.estimate) });
+      timeCell.createSpan({ cls: "pm-chip pm-chip--plain pm-chip--sm", text: t.workHours(task2.displayLogged ?? task2.logged, task2.displayEstimate ?? task2.estimate) });
+      const assigneeCell = row.createEl("td", { cls: "pm-table-cell pm-table-cell-assignees" });
+      createPerson(assigneeCell, task2.resolvedAssignees?.[0] ?? task2.assignees[0] ?? "");
+      const completedByCell = row.createEl("td", { cls: "pm-table-cell pm-table-cell-assignees" });
+      createPerson(completedByCell, task2.completedBy ?? "");
+      row.createEl("td", { cls: "pm-table-cell", text: task2.due ?? "—" });
     }
   }
   bindCellAction(element, action) {

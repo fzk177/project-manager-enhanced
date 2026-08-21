@@ -1735,9 +1735,11 @@ body .pm-root .pm-table thead th:nth-child(1), body .pm-root .pm-table tbody td:
 body .pm-root .pm-table thead th:nth-child(2), body .pm-root .pm-table tbody td:nth-child(2) { left: var(--pm-freeze-select-width); }
 body .pm-root .pm-table thead th:nth-child(3), body .pm-root .pm-table tbody td:nth-child(3) { left: calc(var(--pm-freeze-select-width) + var(--pm-freeze-expand-width)); }
 body .pm-root .pm-table thead th:nth-child(4), body .pm-root .pm-table tbody td:nth-child(4) { left: calc(var(--pm-freeze-select-width) + var(--pm-freeze-expand-width) + var(--pm-freeze-id-width)); box-shadow: 3px 0 7px -5px var(--text-muted); }
+body .pm-root .pm-table:not(.pmi-pm-table) thead th:nth-child(4)::after, body .pm-root .pm-table:not(.pmi-pm-table) tbody td:nth-child(4)::after { content: ""; position: absolute; top: 0; right: 0; bottom: 0; width: 1px; background: var(--background-modifier-border-hover); pointer-events: none; }
 body .pm-root .pm-table tbody tr.pm-table-row--selected > td:nth-child(-n + 4) { background: color-mix(in srgb, var(--interactive-accent) 12%, var(--background-primary)); }
 /* PM 洞察复用项目表格时只有事项 ID、事项两列冻结。 */
 body .pm-root .pmi-pm-table thead th:nth-child(n + 3) { position: sticky; top: 0; left: auto; z-index: 10; box-shadow: none; }
 body .pm-root .pmi-pm-table tbody td:nth-child(n + 3) { position: static; left: auto; box-shadow: none; }
 body .pm-root .pmi-pm-table thead th:nth-child(1), body .pm-root .pmi-pm-table tbody td:nth-child(1) { left: 0; }
 body .pm-root .pmi-pm-table thead th:nth-child(2), body .pm-root .pmi-pm-table tbody td:nth-child(2) { left: 96px; box-shadow: 3px 0 7px -5px var(--text-muted); }
+body .pm-root .pmi-pm-table thead th:nth-child(2)::after, body .pm-root .pmi-pm-table tbody td:nth-child(2)::after { content: ""; position: absolute; top: 0; right: 0; bottom: 0; width: 1px; background: var(--background-modifier-border-hover); pointer-events: none; }
