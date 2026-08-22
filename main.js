@@ -8,6 +8,1147 @@ let e=require("obsidian");const t=globalThis.Temporal,n=(e,t)=>`Non-positive ${e
 `)}function gd(e,t,n){let r={"pm-task":!0,projectId:t.id,parentId:n?.id??null,id:e.id,title:e.title,type:e.type,stage:e.stage,status:e.status,priority:e.priority,start:e.start,due:e.due,progress:e.progress,assignees:e.assignees,tags:e.tags,subtaskIds:e.subtasks.map(e=>e.id),dependencies:e.dependencies,createdAt:e.createdAt,updatedAt:e.updatedAt};return e.completed&&(r.completed=e.completed),e.recurrence&&(r.recurrence=e.recurrence),e.timeEstimate!==void 0&&(r.timeEstimate=e.timeEstimate),e.timeLogs?.length&&(r.timeLogs=e.timeLogs),Object.keys(e.customFields).length&&(r.customFields=e.customFields),r}function _d(e,t,n,r=[]){let i=gd(e,t,n),a=[`---`];Bu(a,i,0),a.push(`---`),a.push(``);let o=zu(e.description);if(o&&(a.push(o),a.push(``)),n?.filePath){let e=n.filePath.replace(/^.*\//,``).replace(/\.md$/,``);a.push(`Parent: [[${e}|${n.title}]]`)}else{let e=t.filePath.replace(/^.*\//,``).replace(/\.md$/,``);a.push(`Project: [[${e}|${t.title}]]`)}if(e.subtasks.length){a.push(``),a.push(`## Subtasks`);for(let t of e.subtasks){let e=t.filePath?t.filePath.replace(/^.*\//,``).replace(/\.md$/,``):vd(t.title),n=t.completed?`x`:` `;a.push(`- [${n}] [[${e}|${t.title}]]`)}}return a.join(`
 `)}function vd(e){return od(e).toLowerCase().replace(/\s+/g,`-`).slice(0,60)}function yd(e,t){return`${t}/${vd(e)}.md`}function bd(e){return e.description!==void 0||e.archived!==void 0||e.subtasks!==void 0}function xd(e,t,n){let r=yd(e.title,t);if(!n)return r;let i=r.slice(r.lastIndexOf(`/`)+1).replace(/\.md$/,``),a=n.slice(0,n.lastIndexOf(`/`)),o=n.slice(n.lastIndexOf(`/`)+1).replace(/\.md$/,``);return a===t&&(o===`${i}-${e.id.slice(0,8)}`||o.length===40&&o===i.slice(0,40))?n:r}var Sd=class extends Error{path;constructor(e){super(`A note named "${Cd(e)}" already exists.`),this.path=e,this.name=`TaskFileNameConflictError`}get fileName(){return Cd(this.path)}};function Cd(e){return e.slice(e.lastIndexOf(`/`)+1).replace(/\.md$/,``)}function wd(e){return/\/00\.[^/]+\.md$/.test(e)?e.replace(/\/00\.[^/]+\.md$/,`/01.需求与任务`):e.replace(/\.md$/,`_tasks`)}var Td=class t{app;getSettings;saveQueues=new Map;dirtyTasks=new Map;hydratedBodies=new WeakSet;projectCache=new Map;changeHandlers=new Set;reloadTimers=new Map;static RELOAD_DEBOUNCE_MS=300;selfWrites=new Map;static SELF_WRITE_WINDOW_MS=5e3;constructor(e,t=()=>tu){this.app=e,this.getSettings=t}configFor(e){return Mu(e,this.getSettings())}statusesFor(e){return this.configFor(e).statuses}markDirty(e,t,n){let r=this.dirtyTasks.get(e.filePath);r||(r=new Map,this.dirtyTasks.set(e.filePath,r));for(let e of t)r.get(e)!==`full`&&r.set(e,n)}markSubtreeDirty(e,t,n){let r=J(e,t);if(r){this.markDirty(e,[t],n);for(let t of q(r.subtasks))this.markDirty(e,[t.task.id],n)}}markAllDirty(e,t){let n=[];for(let t of q(e.tasks))n.push(t.task.id);this.markDirty(e,n,t)}clearDirty(e){this.dirtyTasks.delete(e.filePath)}markSelfWrite(e){if(this.selfWrites.size>256){let e=Date.now()-t.SELF_WRITE_WINDOW_MS;for(let[t,n]of this.selfWrites)n<e&&this.selfWrites.delete(t)}this.selfWrites.set(e,Date.now())}peekSelfWrite(e){let n=this.selfWrites.get(e);return n!==void 0&&Date.now()-n<t.SELF_WRITE_WINDOW_MS}onProjectChanged(e){return this.changeHandlers.add(e),()=>this.changeHandlers.delete(e)}emitChange(e){for(let t of this.changeHandlers)t(e)}registerVaultSync(e){let t=e=>this.syncPath(e.path);e.registerEvent(this.app.vault.on(`create`,t)),e.registerEvent(this.app.vault.on(`modify`,t)),e.registerEvent(this.app.vault.on(`delete`,t)),e.registerEvent(this.app.vault.on(`rename`,(e,t)=>{this.syncPath(e.path),this.syncPath(t)})),e.register(()=>{for(let e of this.reloadTimers.values())window.clearTimeout(e);this.reloadTimers.clear()})}syncPath(e){if(this.projectCache.size!==0&&!this.peekSelfWrite(e)){for(let n of this.projectCache.keys())if(e===n||e.startsWith(wd(n)+`/`)){let e=this.reloadTimers.get(n);e!==void 0&&window.clearTimeout(e),this.reloadTimers.set(n,window.setTimeout(()=>{this.reloadTimers.delete(n),this.reloadProject(n)},t.RELOAD_DEBOUNCE_MS))}}}async reloadProject(t){let n=await this.projectCache.get(t);n&&await this.queue(t,async()=>{let r=this.app.vault.getAbstractFileByPath(t);if(!(r instanceof e.TFile)){this.projectCache.delete(t),this.emitChange(t);return}let i=await this.readProject(r);i&&(this.adopt(n,i),this.emitChange(t))})}adopt(e,t){let{taskIndex:n,...r}=t;Object.assign(e,r),vu(e),this.hydratedBodies.has(t)?this.hydratedBodies.add(e):this.hydratedBodies.delete(e)}queue(e,t){let n=this.saveQueues.get(e)??Promise.resolve(),r=(async()=>(await n,t()))();return this.saveQueues.set(e,(async()=>{try{await r}catch{}})()),r}async ensureFolder(e){await wu(this.app,e)}projectTaskFolder(e){return wd(e.filePath)}async loadAllProjects(t){await this.ensureFolder(t);let n=this.app.vault.getAbstractFileByPath(t),r=[],i=t=>{for(let n of t.children)n instanceof e.TFile&&n.extension===`md`?r.push(n):n instanceof e.TFolder&&i(n)};return n instanceof e.TFolder&&i(n),(await Promise.all(r.map(e=>this.loadProject(e)))).filter(e=>e!==null).sort((e,t)=>e.title.localeCompare(t.title))}async loadProject(e){let t=this.projectCache.get(e.path);if(t)return t;let n=this.readProject(e);this.projectCache.set(e.path,n);let r=await n;return r||this.projectCache.delete(e.path),r}async readProject(t){try{let e=this.app.metadataCache.getFileCache(t)?.frontmatter,n=e&&e[`pm-project`]===!0&&!Array.isArray(e.tasks)&&Array.isArray(e.taskIds),r=null,i=``,a=!1;if(n)r=e;else{let e=Ru(await this.app.vault.cachedRead(t));r=e.frontmatter,i=e.body,a=!0}if(!r||r[`pm-project`]!==!0)return null;let o=Array.isArray(r.tasks)&&r.tasks.length>0,s=Ku(r,i,t.path,t.basename);if(a&&this.hydratedBodies.add(s),o)s.tasks=Wu(r.tasks??[]),vu(s),this.markAllDirty(s,`full`);else{let e=this.projectTaskFolder(s),t=Array.isArray(r.taskIds)?r.taskIds:[];s.tasks=await this.loadTasksFromFolder(e,t),vu(s),this.clearDirty(s)}return s}catch(n){return console.error(`[PM] Failed to load project ${t.path}:`,n),new e.Notice(`Project Manager: Failed to load "${t.basename}". Check console for details.`),null}}async loadTasksFromFolder(t,n){let r=this.app.vault.getAbstractFileByPath(t);if(!(r instanceof e.TFolder))return[];let i=new Map,a=new Map,o=new Map,s=(0,e.normalizePath)(t+`/Archive`)+`/`,c=[],l=t=>{for(let n of t.children)n instanceof e.TFile&&n.extension===`md`?c.push(n):n instanceof e.TFolder&&l(n)};l(r);let u=await Promise.all(c.map(e=>this.loadTaskFile(e)));for(let e=0;e<c.length;e++){let{task:t,subtaskIds:n,parentId:r}=u[e];t&&(c[e].path.startsWith(s)&&(t.archived=!0),i.set(t.id,t),n.length&&a.set(t.id,n),r&&o.set(t.id,r))}for(let[e,t]of a){let n=i.get(e);if(n){n.subtasks=[];for(let e of t){let t=i.get(e);t&&n.subtasks.push(t)}}}let d=new Set;for(let e of i.values())for(let t of e.subtasks)d.add(t.id);for(let[e,t]of o){if(d.has(e))continue;let n=i.get(t);if(!n)continue;let r=i.get(e);if(!r)continue;n.subtasks.push(r),d.add(e),a.has(t)||a.set(t,[]);let o=a.get(t);o&&!o.includes(e)&&o.push(e),console.warn(`[PM] Self-healed orphan: re-parented task "${r.title}" (${e}) under "${n.title}" (${t})`)}let f=[],p=new Set;for(let e of n){if(p.has(e))continue;let t=i.get(e);t&&(f.push(t),p.add(e))}for(let e of i.values())p.has(e.id)||d.has(e.id)||f.push(e);return f}async loadTaskFile(t){try{let e=this.app.metadataCache.getFileCache(t)?.frontmatter;if(e&&e[`pm-task`]===!0)return Gu(e,``,t.path);let{frontmatter:n,body:r}=Ru(await this.app.vault.cachedRead(t));if(!n||n[`pm-task`]!==!0)return{task:null,subtaskIds:[],parentId:null};let i=Gu(n,r,t.path);return this.hydratedBodies.add(i.task),i}catch(n){return n instanceof Error&&n.message.includes(`ENOENT`)?console.warn(`[PM] Task file no longer exists, skipping: ${t.path}`):(console.error(`[PM] Failed to load task ${t.path}:`,n),new e.Notice(`Project Manager: Failed to load task "${t.basename}". Check console for details.`)),{task:null,subtaskIds:[],parentId:null}}}async loadTaskBody(t){if(this.hydratedBodies.has(t))return;if(!t.filePath){this.hydratedBodies.add(t);return}let n=this.app.vault.getAbstractFileByPath(t.filePath);if(!(n instanceof e.TFile)){this.hydratedBodies.add(t);return}let{body:r}=Ru(await this.app.vault.cachedRead(n));t.description=zu(r),this.hydratedBodies.add(t)}async loadProjectBody(t){if(this.hydratedBodies.has(t))return;let n=this.app.vault.getAbstractFileByPath(t.filePath);if(!(n instanceof e.TFile)){this.hydratedBodies.add(t);return}let{frontmatter:r,body:i}=Ru(await this.app.vault.cachedRead(n)),a=r?.description;t.description=typeof a==`string`?a:i.trim(),this.hydratedBodies.add(t)}async saveProject(e){return this.queue(e.filePath,()=>this.doSaveProject(e))}async updateProject(e,t){Object.assign(e,t),t.description!==void 0&&this.hydratedBodies.add(e),await this.saveProject(e)}async doSaveProject(t){let n=this.dirtyTasks.get(t.filePath)??new Map;this.dirtyTasks.delete(t.filePath);try{t.updatedAt=new Date().toISOString();let r=this.projectTaskFolder(t);await this.ensureFolder(r),await this.saveDirtyTasks(t,r,n);let i=this.app.vault.getAbstractFileByPath(t.filePath);if(i instanceof e.TFile)this.markSelfWrite(t.filePath),await this.app.vault.process(i,e=>{if(!this.hydratedBodies.has(t)){let{frontmatter:n,body:r}=Ru(e),i=n?.description;t.description=typeof i==`string`?i:r.trim()}return hd(t,this.statusesFor(t))}),this.hydratedBodies.add(t);else{let e=hd(t,this.statusesFor(t));this.markSelfWrite(t.filePath),await this.app.vault.create(t.filePath,e),this.hydratedBodies.add(t)}this.projectCache.has(t.filePath)||this.projectCache.set(t.filePath,Promise.resolve(t)),this.emitChange(t.filePath)}catch(r){for(let[e,r]of n)this.markDirty(t,[e],r);throw r instanceof Sd?r:(console.error(`[PM] Failed to save project "${t.title}":`,r),new e.Notice(`Project Manager: Failed to save "${t.title}". Check console for details.`),r)}}async saveDirtyTasks(t,n,r){for(let[e,n]of t.taskIndex)!n.task.filePath&&!r.has(e)&&r.set(e,`full`);if(r.size===0)return;let i=[],a=new Set,o=!1;for(let[s,c]of r){let r=t.taskIndex.get(s);if(!r)continue;let{task:l,parentId:u}=r,d=l.archived?(0,e.normalizePath)(n+`/Archive`):n;l.archived&&(o=!0);let f=(0,e.normalizePath)(xd(l,d,l.filePath));if(a.has(f))throw new Sd(f);a.add(f),i.push({task:l,parentTask:u?J(t,u):null,folder:d,kind:c})}o&&await this.ensureFolder((0,e.normalizePath)(n+`/Archive`));let s=[];for(let e=0;e<i.length;e+=16){let n=await Promise.allSettled(i.slice(e,e+16).map(e=>this.saveTaskFile(e.task,t,e.parentTask,e.folder,e.kind)));for(let e of n)e.status===`rejected`&&s.push(e.reason instanceof Error?e.reason:Error(String(e.reason)))}if(s.length)throw s.length===1&&s[0]instanceof Sd?s[0]:Error(`Failed to save ${s.length} task(s): ${s.map(e=>e.message).join(`; `)}`)}async saveTaskFile(t,n,r,i,a){let o=t.filePath,s=(0,e.normalizePath)(xd(t,i,o)),c=o!==void 0&&o!==s;try{if(a===`fm`&&o&&!c){let i=this.app.vault.getAbstractFileByPath(s);if(i instanceof e.TFile){this.markSelfWrite(s);let e=gd(t,n,r);await this.app.fileManager.processFrontMatter(i,t=>{for(let e of Object.keys(t))Reflect.deleteProperty(t,e);Object.assign(t,e)});return}}let i=this.app.vault.getAbstractFileByPath(s);if(i instanceof e.TFile&&i.path!==o)throw new Sd(s);if(i instanceof e.TFile)this.markSelfWrite(s),await this.app.vault.process(i,e=>(this.hydratedBodies.has(t)||(t.description=zu(Ru(e).body)),_d(t,n,r,this.statusesFor(n))));else{if(!this.hydratedBodies.has(t)&&o){let n=this.app.vault.getAbstractFileByPath(o);n instanceof e.TFile&&(t.description=zu(Ru(await this.app.vault.cachedRead(n)).body))}let i=_d(t,n,r,this.statusesFor(n));this.markSelfWrite(s),await this.app.vault.create(s,i)}if(t.filePath=s,this.hydratedBodies.add(t),c&&o){let t=this.app.vault.getAbstractFileByPath(o);t instanceof e.TFile&&(this.markSelfWrite(o),await this.app.fileManager.trashFile(t)),this.markSelfWrite(this.taskFolder(o)),this.markSelfWrite(this.taskFolder(s)),await Cu(this.app,o,s)}}catch(e){throw e instanceof Sd||console.error(`[PM] Failed to save task "${t.title}" (${t.id}):`,e),e}}findTaskFileConflict(t,n){let r=this.projectTaskFolder(t),i=n.archived?(0,e.normalizePath)(r+`/Archive`):r,a=(0,e.normalizePath)(xd(n,i,n.filePath));return a===n.filePath?null:this.app.vault.getAbstractFileByPath(a)instanceof e.TFile?new Sd(a):null}async createProject(t,n){let r=t.replace(/[\\/:*?"<>|]/g,`-`),i=iu(t,(0,e.normalizePath)(`${n}/${r}.md`));return await this.ensureFolder(this.projectTaskFolder(i)),await this.saveProject(i),i}async insertTask(e,t,n=null){this.hydratedBodies.add(t),lu(e.tasks,t,n),bu(e,t,n),this.markDirty(e,[t.id],`full`),n&&this.markDirty(e,[n],`full`),await this.saveProject(e)}async importNoteAsTask(t,n,r){let{frontmatter:i,body:a}=Ru(await this.app.vault.read(n));if(i?.[`pm-task`]===!0)return`skipped`;let o=ru({title:n.basename,description:a,status:r.status,priority:r.priority}),s=this.projectTaskFolder(t);await this.ensureFolder(s);let c=yd(o.title,s),l=_d(o,t,null,this.statusesFor(t));if(r.handling===`move`){await this.app.fileManager.renameFile(n,c);let t=this.app.vault.getAbstractFileByPath(c);t instanceof e.TFile&&await this.app.vault.process(t,()=>l)}else await this.app.vault.create(c,l);return`imported`}async importTaskForest(t,n,r,i){let a=this.projectTaskFolder(t);await this.ensureFolder(a);let o=0,s=async(n,c)=>{let l=n.archived?(0,e.normalizePath)(a+`/Archive`):a;n.archived&&await this.ensureFolder(l);let u=r.get(n.id);if(u){let{body:e}=Ru(await this.app.vault.read(u));n.description=e}let d=yd(n.title,l),f=this.uniqueChildPath(l,d.slice(d.lastIndexOf(`/`)+1)),p=_d(n,t,c,this.statusesFor(t));if(i===`move`&&u){await this.app.fileManager.renameFile(u,f);let t=this.app.vault.getAbstractFileByPath(f);t instanceof e.TFile&&await this.app.vault.process(t,()=>p)}else await this.app.vault.create(f,p);o++;for(let e of n.subtasks)await s(e,n)};for(let e of n)await s(e,null);return o}async duplicateTask(t,n,r){let i=J(t,n);if(!i)return null;let a=uu(i,r),o=this.projectTaskFolder(t),s=new Set,c=new Set(q(t.tasks).map(e=>e.task.title)),l=t=>{let n=t.archived?(0,e.normalizePath)(o+`/Archive`):o;this.assignCopyName(t,n,c,s)};l(a),this.hydratedBodies.add(a);for(let e of q(a.subtasks))l(e.task),this.hydratedBodies.add(e.task);let u=yu(t,n);return lu(t.tasks,a,u),pu(t.tasks,a.id,n,`after`),bu(t,a,u),this.markSubtreeDirty(t,a.id,`full`),u&&this.markDirty(t,[u],`full`),await this.saveProject(t),a}assignCopyName(t,n,r,i){let a=t.title.replace(/(?: \(copy(?: \d+)?\))+$/,``);for(let o=1;;o++){let s=o===1?` (copy)`:` (copy ${o})`,c=60-s.length,l=(a.length>c?a.slice(0,c).trimEnd():a)+s,u=(0,e.normalizePath)(yd(l,n));if(!r.has(l)&&!i.has(u)&&!(this.app.vault.getAbstractFileByPath(u)instanceof e.TFile)){r.add(l),i.add(u),t.title=l;return}}}async moveTask(e,t,n){let r=J(e,t);if(!r)return;let i=yu(e,t);cu(e.tasks,t),lu(e.tasks,r,n),Su(e,t,n),this.markDirty(e,[t],`full`),i&&this.markDirty(e,[i],`full`),n&&this.markDirty(e,[n],`full`),await this.saveProject(e)}async moveTasks(e,t,n){for(let r of t){let t=J(e,r);if(!t)continue;let i=yu(e,r);cu(e.tasks,r),lu(e.tasks,t,n),Su(e,r,n),this.markDirty(e,[r],`full`),i&&this.markDirty(e,[i],`full`)}n&&this.markDirty(e,[n],`full`),await this.saveProject(e)}stampCompletion(e,t,n){}completionMoved(e,t){return t.completed!==void 0&&t.completed!==e.completed}async scheduleAfterEarlyFinish(e,t){if(t.length!==0&&this.configFor(e).pullForwardOnEarlyFinish)for(let n of t)await this.scheduleAfterChange(e,n)}async updateTask(e,t,n){let r=J(e,t),i=r?.title;r&&this.stampCompletion(e,r,n);let a=r!==null&&this.completionMoved(r,n),o=r&&n.subtasks!==void 0?q(r.subtasks).map(e=>e.task):[];su(e.tasks,t,n);let s=r&&n.title!==void 0&&n.title!==i,c=bd(n)||s?`full`:`fm`;if(this.markDirty(e,[t],c),r&&n.description!==void 0&&this.hydratedBodies.add(r),r&&n.subtasks!==void 0)await this.reconcileSubtasks(e,r,o);else if(r&&s)for(let t of r.subtasks)this.markDirty(e,[t.id],`full`);await this.saveProject(e),a&&await this.scheduleAfterEarlyFinish(e,[t])}async reconcileSubtasks(e,t,n){bu(e,t,yu(e,t.id));let r=new Map(n.map(e=>[e.id,e])),i=new Set;for(let{task:n}of q(t.subtasks)){i.add(n.id);let t=r.get(n.id);t?t.title===n.title?(t.status!==n.status||t.completed!==n.completed||t.progress!==n.progress)&&this.markDirty(e,[n.id],`fm`):this.markDirty(e,[n.id],`full`):(this.hydratedBodies.add(n),this.markDirty(e,[n.id],`full`))}let a=this.projectTaskFolder(e);for(let t of n)i.has(t.id)||(e.taskIndex.delete(t.id),t.filePath&&await this.deleteTaskFiles({...t,subtasks:[]},a))}async updateTasks(e,t,n){let r=[];for(let i of t){let t=J(e,i);if(!t)continue;let a=typeof n==`function`?n(t):n;if(!a)continue;let o={...a};this.stampCompletion(e,t,o),this.completionMoved(t,o)&&r.push(i);let s=t.title;su(e.tasks,i,o);let c=o.title!==void 0&&o.title!==s,l=bd(o)||c?`full`:`fm`;if(this.markDirty(e,[i],l),o.description!==void 0&&this.hydratedBodies.add(t),c)for(let n of t.subtasks)this.markDirty(e,[n.id],`full`)}await this.saveProject(e),await this.scheduleAfterEarlyFinish(e,r)}async reorderTask(e,t,n,r){if(!pu(e.tasks,t,n,r))return;let i=yu(e,n);i&&this.markDirty(e,[i],`full`),await this.saveProject(e)}async deleteTasks(e,t){let n=this.projectTaskFolder(e),r=new Set;for(let i of t){let t=yu(e,i);t&&r.add(t);let a=J(e,i);a&&(await this.deleteTaskFiles(a,n),xu(e,a)),cu(e.tasks,i)}r.size&&this.markDirty(e,r,`full`),await this.saveProject(e)}async archiveTask(e,t){await ku(this.app,e,t,e=>this.markSelfWrite(e)),await this.saveProject(e)}async unarchiveTask(e,t){await Au(this.app,e,t,e=>this.markSelfWrite(e)),await this.saveProject(e)}async deleteTask(e,t){let n=yu(e,t),r=J(e,t);r&&(await this.deleteTaskFiles(r,this.projectTaskFolder(e)),xu(e,r)),cu(e.tasks,t),n&&this.markDirty(e,[n],`full`),await this.saveProject(e)}async deleteTaskFiles(t,n){for(let e of t.subtasks)await this.deleteTaskFiles(e,n);if(t.filePath){let n=this.app.vault.getAbstractFileByPath(t.filePath);n instanceof e.TFile&&(this.markSelfWrite(t.filePath),await this.app.fileManager.trashFile(n));let r=this.app.vault.getAbstractFileByPath(this.taskFolder(t.filePath));r instanceof e.TFolder&&await this.deleteFolderRecursive(r)}}taskFolder(e){return e.replace(/\.md$/,``)}async saveTaskAttachment(t,n,r,i){let a=n.filePath??yd(n.title,this.projectTaskFolder(t)),o=(0,e.normalizePath)(`${this.taskFolder(a)}/attachments`);this.markSelfWrite(this.taskFolder(a)),this.markSelfWrite(o),await this.ensureFolder(o);let s=this.uniqueChildPath(o,r);return this.markSelfWrite(s),this.app.vault.createBinary(s,i)}uniqueChildPath(t,n){let r=n.lastIndexOf(`.`),i=r>0?n.slice(0,r):n,a=r>0?n.slice(r):``,o=(0,e.normalizePath)(`${t}/${i}${a}`);for(let n=1;this.app.vault.getAbstractFileByPath(o);n++)o=(0,e.normalizePath)(`${t}/${i} ${n}${a}`);return o}async deleteProject(t){let n=this.projectTaskFolder(t),r=this.app.vault.getAbstractFileByPath(n);r instanceof e.TFolder&&await this.deleteFolderRecursive(r);let i=this.app.vault.getAbstractFileByPath(t.filePath);i instanceof e.TFile&&(this.markSelfWrite(t.filePath),await this.app.fileManager.trashFile(i)),this.clearDirty(t),this.saveQueues.delete(t.filePath),this.projectCache.delete(t.filePath),this.emitChange(t.filePath)}async deleteFolderRecursive(t){for(let n of t.children.slice())n instanceof e.TFile?(this.markSelfWrite(n.path),await this.app.fileManager.trashFile(n)):n instanceof e.TFolder&&await this.deleteFolderRecursive(n);await this.app.fileManager.trashFile(t)}async scheduleAfterChange(e,t){let n=this.configFor(e);if(!n.autoSchedule)return 0;let{patches:r}=Lu(e.tasks,t,n.statuses,n.pullForwardOnEarlyFinish);if(r.length===0)return 0;for(let t of r)su(e.tasks,t.taskId,{start:t.start,due:t.due}),this.markDirty(e,[t.taskId],`fm`);return await this.saveProject(e),r.length}};function quickSourceType(e){let t=String(e.customFields.zentaoSourceType??``);return t===`story`||e.tags.includes(`zentao-requirement`)?`requirement`:t===`task`||e.tags.includes(`zentao-task`)?`task`:t===`execution`||e.type===`milestone`?`milestone`:e.type===`task`||e.type===`subtask`?`task`:`local`}function quickCurrentUser(e){for(let t of [`zentao-my-work`,`zentao-my-participated`]){let n=e.savedViews.find(e=>e.id===t),r=n?.filter.participants?.[0]??n?.filter.assignees?.[0];if(r)return r}return``}function quickIsComplete(e,t=[]){let n=t.find(t=>t.id===e.status);return Boolean(e.completed)||n?.complete===!0||[`done`,`closed`,`finished`].includes(String(e.status))}function quickFilterActive(e){return(e.quickSource??`all`)!==`all`||(e.quickWorkType??`all`)!==`all`||(e.quickCompletion??`all`)!==`all`||(e.quickOwnership??`all`)!==`all`||(Array.isArray(e.quickAttention)&&e.quickAttention.length>0)}function detailedFilterCount(e){let t=0;return e.stages?.length&&t++,e.statuses.length&&t++,e.priorities.length&&t++,e.assignees.length&&t++,e.participants?.length&&t++,e.tags.length&&t++,e.dueDateFilter!==`any`&&t++,e.showArchived&&t++,t}function quickMatches(e,t,n=[]){let r=t.quickSource??`all`,i=quickSourceType(e);if(r!==`all`&&i!==r)return!1;let a=t.quickWorkType??`all`;if(a!==`all`&&(i!==`task`&&i!==`requirement`||e.stage!==a))return!1;let o=quickIsComplete(e,n),s=t.quickCompletion??`all`;if(s===`unfinished`&&o||s===`completed`&&!o)return!1;let c=t.quickOwnership??`all`,l=String(t.quickOwner??``),u=String(e.customFields.completedBy??``);if(c===`mine`&&(!l||!e.assignees.includes(l))||c===`participated`&&(!l||!e.assignees.includes(l)&&u!==l)||c===`unassigned`&&e.assignees.length>0)return!1;let d=Array.isArray(t.quickAttention)?t.quickAttention:[];for(let r of d){if(r===`high`&&![`critical`,`high`].includes(e.priority))return!1;if(r===`overdue`&&!jd(e,`overdue`,n))return!1;if(r===`blocked`&&![`blocked`,`pause`,`paused`,`suspended`].includes(String(e.status)))return!1}return!0}function quickStageOptions(e,t,n){let r=new Set(q(e.tasks).map(e=>e.task).filter(e=>quickSourceType(e)===n).map(e=>e.stage).filter(Boolean)),i=[];for(let e of t)r.has(e.id)&&(i.push({id:e.id,label:e.label}),r.delete(e.id));for(let e of r)i.push({id:e,label:e});return i}function quickPreferredStage(e,t,n,r=[]){let i=quickStageOptions(e,t,`task`);return i.find(e=>e.label.includes(n))?.id??i.find(e=>r.includes(e.id))?.id??r[0]??`all`}function Ed(e){return!!(quickFilterActive(e)||e.text||e.stages?.length||e.statuses.length||e.priorities.length||e.assignees.length||e.participants?.length||e.tags.length||e.dueDateFilter!==`any`)}function Dd(e){let t=0;return e.stages?.length&&t++,e.statuses.length&&t++,e.priorities.length&&t++,e.assignees.length&&t++,e.participants?.length&&t++,e.tags.length&&t++,e.dueDateFilter!==`any`&&t++,e.showArchived&&t++,t}function Od(e,t,n=[]){if(e.archived&&!t.showArchived||!quickMatches(e,t,n))return!1;let r=t.text.trim().toLowerCase(),i=String(e.customFields.completedBy??``);return!(r&&!(e.id.toLowerCase()===r||e.title.toLowerCase().includes(r)||e.stage.includes(r)||e.status.includes(r)||e.priority.includes(r)||e.assignees.some(e=>e.toLowerCase().includes(r))||i.toLowerCase().includes(r)||e.tags.some(e=>e.toLowerCase().includes(r)))||t.stages?.length&&!t.stages.includes(e.stage)||t.statuses.length&&!t.statuses.includes(e.status)||t.priorities.length&&!t.priorities.includes(e.priority)||t.assignees.length&&!e.assignees.some(e=>t.assignees.includes(e))||t.participants?.length&&!e.assignees.some(e=>t.participants.includes(e))&&!t.participants.includes(i)||t.tags.length&&!e.tags.some(e=>t.tags.includes(e))||t.dueDateFilter!==`any`&&!jd(e,t.dueDateFilter,n))}function kd(e,t,n=[]){let r=[];for(let i of e){let e=i.subtasks.length?kd(i.subtasks,t,n):[];Od(i,t,n)?r.push({...i,subtasks:e}):r.push(...e)}return r}function Ad(e,t,n=[]){return e.filter(({task:e})=>Od(e,t,n))}function jd(e,t,n){if(t===`no-date`)return!e.due;let r=K(e.due);if(!r)return!1;let i=Zl();switch(t){case`overdue`:return G.PlainDate.compare(r,i)<0&&!e.completed;case`this-week`:{let e=7-i.dayOfWeek%7,t=i.add({days:e});return G.PlainDate.compare(r,i)>=0&&G.PlainDate.compare(r,t)<=0}case`this-month`:return r.year===i.year&&r.month===i.month&&G.PlainDate.compare(r,i)>=0;default:return!0}}function Md(e){let t=e.plugins?.getPlugin?.(`tasknotes`);return t&&typeof t==`object`?t:null}function Nd(e){return Md(e)!==null}function Pd(e){let t=Md(e)?.api;return!t||t.apiVersion!==1||!t.hasCapability(`catalog.read`)?null:t}function Fd(e,t){let n=0,r=0,i=-1;for(let a of t){let t=e.findIndex(e=>e.id===a.id);t>=0?(i=t,a.differs(e[t])&&(a.apply(e[t]),r++)):(i+=1,e.splice(i,0,a.make()),n++)}return{added:n,updated:r}}function Id(e,t){let n=0,r=0;for(let i of t){let t=e.find(e=>e.id===i.id);t?i.differs(t)&&r++:n++}return{added:n,updated:r}}function Ld(e,t,n){let r=t.replace(/^\[\[/,``).replace(/\]\]$/,``).split(`|`)[0].split(`#`)[0].trim();return r?e.vault.getFileByPath(r)?r:e.metadataCache.getFirstLinkpathDest(r,n)?.path??null:null}function Rd(e,t,n,r){let i=0;for(let r of e.getStatuses())n.has(r.value)&&!t.statuses.some(e=>e.id===r.value)&&(t.statuses.push({id:r.value,label:r.label,color:r.color,icon:``,complete:r.isCompleted}),i++);for(let n of e.getPriorities())r.has(n.value)&&!t.priorities.some(e=>e.id===n.value)&&(t.priorities.push({id:n.value,label:n.label,color:n.color,icon:``}),i++);return i}function zd(e){return[...e.getStatuses()].sort((e,t)=>e.order-t.order).map(e=>({id:e.value,make:()=>({id:e.value,label:e.label,color:e.color,icon:``,complete:e.isCompleted}),differs:t=>t.label!==e.label||t.color!==e.color||t.complete!==e.isCompleted,apply:t=>{t.label=e.label,t.color=e.color,t.complete=e.isCompleted}}))}function Bd(e){return[...e.getPriorities()].sort((e,t)=>t.weight-e.weight).map(e=>({id:e.value,make:()=>({id:e.value,label:e.label,color:e.color,icon:``}),differs:t=>t.label!==e.label||t.color!==e.color,apply:t=>{t.label=e.label,t.color=e.color}}))}function Vd(e,t){let n=Fd(t.statuses,zd(e)),r=Fd(t.priorities,Bd(e));return{added:n.added+r.added,updated:n.updated+r.updated}}function Hd(e,t){let n=Id(t.statuses,zd(e)),r=Id(t.priorities,Bd(e));return{added:n.added+r.added,updated:n.updated+r.updated}}var Ud=class{el;button;constructor(t){this.button=new e.ExtraButtonComponent(t),this.el=this.button.extraSettingsEl,this.el.addClass(`pm-icon-btn`)}setIcon(e){return this.button.setIcon(e),this}setTooltip(e){return this.button.setTooltip(e),this}setRevealOnHover(e){return this.el.toggleClass(`pm-icon-btn--hover-only`,e),this}onClick(e){return this.el.addEventListener(`click`,e),this}},Wd=class extends e.AbstractInputSuggest{getSuggestions(t){let n=t.trim().toLowerCase();return n?(0,e.getIconIds)().filter(e=>e.includes(n)).slice(0,24):[]}renderSuggestion(t,n){n.addClass(`pm-icon-suggestion`),(0,e.setIcon)(n.createSpan({cls:`pm-icon-suggestion-glyph`}),t),n.createSpan({text:t})}};function Gd(e,t){let n=new Wd(e,t);n.onSelect(e=>{n.setValue(e),t.dispatchEvent(new Event(`change`)),n.close()})}function Kd(e,t,n,r){e.createSpan({text:`⠿`,cls:`pm-settings-drag-handle`}),e.draggable=!0,e.addEventListener(`dragstart`,n=>{n.dataTransfer?.setData(`text/plain`,String(t)),e.addClass(`pm-settings-row--dragging`)}),e.addEventListener(`dragend`,()=>{e.removeClass(`pm-settings-row--dragging`)}),e.addEventListener(`dragover`,e=>{e.preventDefault()}),e.addEventListener(`drop`,e=>{e.preventDefault();let i=parseInt(e.dataTransfer?.getData(`text/plain`)??``,10);if(isNaN(i)||i===t)return;let[a]=n.splice(i,1);n.splice(t,0,a),r()})}function qd(e,t,n,r){let i=e.createEl(`input`,{type:`text`,value:n.icon});i.addClass(`pm-settings-status-icon`),i.placeholder=`图标`,Gd(t,i),i.addEventListener(`change`,()=>{n.icon=i.value,r()});let a=e.createEl(`input`,{type:`text`,value:n.label});a.addClass(`pm-settings-status-label`),a.addEventListener(`change`,()=>{n.label=a.value,r()});let o=e.createEl(`input`,{type:`color`,value:n.color});o.addEventListener(`change`,()=>{n.color=o.value,r()})}function Jd(t,n){let r=()=>Jd(t,n);t.empty(),n.items.forEach((i,a)=>{let o=t.createDiv(`pm-settings-status-row`);Kd(o,a,n.items,()=>{n.onChanged(),r()}),qd(o,n.app,i,n.onChanged),n.renderExtra?.(o,i),new Ud(o).setIcon(`x`).setTooltip(`移除`).onClick(()=>{if(n.items.length<=1){new e.Notice(n.minOneMessage);return}n.items.splice(a,1),n.onChanged(),r(),n.onDeleted?.(i)})})}function Yd(e,t){Jd(e,{app:t.app,items:t.statuses,onChanged:t.onChanged,onDeleted:t.onDeleted,minOneMessage:`至少需要保留一个状态。`})}function Xd(e,t){Jd(e,{app:t.app,items:t.priorities,onChanged:t.onChanged,onDeleted:t.onDeleted,minOneMessage:`至少需要保留一个优先级。`})}function Zd(e,t){return`${e} 个${t}`}var Qd=class extends e.PluginSettingTab{plugin;constructor(e,t){super(e,t),this.plugin=t,this.icon=`chart-gantt`}getSettingDefinitions(){return[{type:`group`,heading:`常规`,items:[{name:`项目目录`,desc:`保存项目文件的库内目录。`,control:{type:`folder`,key:`projectsFolder`,defaultValue:`04.项目`,placeholder:`04.项目`,validate:e=>e.trim()?void 0:`请输入目录名称。`}},{name:`默认视图`,desc:`打开项目时默认显示的视图。`,control:{type:`dropdown`,key:`defaultView`,options:{table:`表格`,gantt:`甘特图`,kanban:`看板`}}},{name:`关闭时保存任务`,desc:`关闭任务编辑器时自动保存改动。`,control:{type:`toggle`,key:`saveTaskOnClose`}}]},{type:`group`,heading:`样式`,items:[{name:`显示标签颜色`,desc:`根据标签名称显示不同颜色。`,aliases:[`appearance`],control:{type:`toggle`,key:`showTagColors`}}]},{type:`group`,heading:`甘特图`,items:[{name:`默认时间粒度`,desc:`时间轴每列使用的时间单位。`,aliases:[`timeline`,`zoom`],control:{type:`dropdown`,key:`ganttGranularity`,options:{day:`日`,week:`周`,month:`月`,quarter:`季度`}}},{name:`周标签`,desc:`周视图表头显示的内容。`,aliases:[`timeline`],control:{type:`dropdown`,key:`ganttWeekLabel`,options:{weekNumber:`周数（第15周）`,dateRange:`日期范围（4月7日至13日）`,both:`周数和日期范围`}}}]},{type:`group`,heading:`看板`,items:[{name:`显示子任务`,desc:`将子任务作为独立卡片显示。`,aliases:[`kanban`],control:{type:`toggle`,key:`kanbanShowSubtasks`}},{name:`显示描述预览`,desc:`在卡片中显示任务描述的前几行。`,aliases:[`kanban`],control:{type:`toggle`,key:`kanbanShowDescriptionPreview`}}]},{type:`group`,heading:`排期`,items:[{name:`自动排期`,desc:`任务日期变化时自动调整依赖任务。`,aliases:[`dependencies`],control:{type:`toggle`,key:`autoSchedule`}},{name:`提前后续任务`,desc:`任务提前完成时，将依赖任务相应提前。`,aliases:[`dependencies`],control:{type:`toggle`,key:`pullForwardOnEarlyFinish`,disabled:()=>!this.plugin.settings.autoSchedule}}]},{type:`group`,heading:`通知`,items:[{name:`截止日期提醒`,desc:`任务临近截止日期时显示提醒。`,aliases:[`notifications`,`banner`],control:{type:`toggle`,key:`notificationsEnabled`}},{name:`提前天数`,desc:`在截止日期前多少天提醒。`,aliases:[`notifications`,`reminders`,`lead time`],control:{type:`slider`,key:`notificationLeadDays`,min:1,max:14,step:1,disabled:()=>!this.plugin.settings.notificationsEnabled}}]},{type:`group`,heading:`任务字段`,items:[this.stagesPage(),this.statusesPage(),this.prioritiesPage(),this.teamMembersPage()]},{type:`group`,heading:`集成`,visible:()=>Nd(this.app),items:[this.taskNotesPage()]}]}async setControlValue(e,t){await super.setControlValue(e,t),e===`kanbanShowDescriptionPreview`&&this.plugin.refreshProjectViews(),this.refreshDomState()}stagesPage(){let e=this.plugin.settings.stages;return{type:`page`,name:`阶段`,desc:`阶段原始值的中文名称、颜色和显示顺序。`,displayValue:()=>Zd(e.length,`阶段`),items:[{type:`list`,heading:`阶段`,emptyState:`暂无阶段。`,items:e.map(e=>({name:e.label,render:t=>{t.setClass(`pm-palette-row`),qd(t.controlEl,this.app,e,()=>this.persist())}})),onReorder:(t,n)=>this.reorder(e,t,n),onDelete:e=>this.deleteEntry(`stage`,e),addItem:{name:`添加阶段`,action:()=>{e.push({id:`stage-`+nu().slice(0,6),label:`新阶段`,color:`#8a94a0`,icon:``}),this.persist(),this.update()}}}]}}statusesPage(){let e=this.plugin.settings.statuses;return{type:`page`,name:`状态`,desc:`状态原始值的中文名称、颜色和显示顺序。完成判断不再依赖状态。`,displayValue:()=>Zd(this.plugin.settings.statuses.length,`状态`),items:[{type:`list`,heading:`状态`,emptyState:`暂无状态。`,items:e.map(e=>({name:e.label,render:t=>{t.setClass(`pm-palette-row`),qd(t.controlEl,this.app,e,()=>this.persist())}})),onReorder:(t,n)=>this.reorder(e,t,n),onDelete:e=>this.deleteEntry(`status`,e),addItem:{name:`添加状态`,action:()=>{e.push({id:`status-`+nu().slice(0,6),label:`新状态`,color:`#8a94a0`,icon:``,complete:!1}),this.persist(),this.update()}}}]}}prioritiesPage(){let e=this.plugin.settings.priorities;return{type:`page`,name:`优先级`,desc:`优先级的中文名称、颜色和显示顺序。`,displayValue:()=>Zd(this.plugin.settings.priorities.length,`优先级`),items:[{type:`list`,heading:`优先级`,emptyState:`暂无优先级。`,items:e.map(e=>({name:e.label,render:t=>{t.setClass(`pm-palette-row`),qd(t.controlEl,this.app,e,()=>this.persist())}})),onReorder:(t,n)=>this.reorder(e,t,n),onDelete:e=>this.deleteEntry(`priority`,e),addItem:{name:`添加优先级`,action:()=>{e.push({id:`priority-`+nu().slice(0,6),label:`新优先级`,color:`#8a94a0`,icon:``}),this.persist(),this.update()}}}]}}taskNotesPage(){let e=()=>Pd(this.app)!==null;return{type:`page`,name:`TaskNotes`,desc:`与 TaskNotes 插件共享状态和优先级。`,displayValue:()=>this.taskNotesStatus(),status:()=>e()?null:`warning`,items:[{type:`list`,extraButtons:[t=>t.setIcon(`refresh-cw`).setTooltip(`从 TaskNotes 导入`).setDisabled(!e()).onClick(()=>this.importFromTaskNotes())],items:[{name:`状态和优先级`,desc:`从 TaskNotes 4.10 或更高版本复制标签、颜色和完成配置。`,render:e=>{e.controlEl.createDiv({cls:`setting-item-value`,text:this.taskNotesStatus()})}}]}]}}taskNotesStatus(){let e=Pd(this.app);if(!e)return`需要更新`;let{added:t,updated:n}=Hd(e,this.plugin.settings),r=t+n;return r===0?`已是最新`:Zd(r,`改动`)}teamMembersPage(){let e=this.plugin.settings.globalTeamMembers;return{type:`page`,name:`团队成员`,desc:`所有项目中可以选择的负责人。`,displayValue:()=>Zd(this.plugin.settings.globalTeamMembers.length,`成员`),items:[{type:`list`,heading:`团队成员`,emptyState:`暂无团队成员。`,items:e.map((e,t)=>({name:e||`未命名成员`,render:n=>{n.setClass(`pm-palette-row`),n.addText(n=>n.setPlaceholder(`姓名`).setValue(e).onChange(e=>{this.plugin.settings.globalTeamMembers[t]=e,this.persist()}))}})),onReorder:(t,n)=>this.reorder(e,t,n),onDelete:t=>{e.splice(t,1),this.persist(),this.update()},addItem:{name:`添加成员`,action:()=>{e.push(``),this.persist(),this.update()}}}]}}persist(){this.plugin.saveSettings()}reorder(e,t,n){let[r]=e.splice(t,1);e.splice(n,0,r),this.persist(),this.update()}deleteEntry(t,n){let r=t===`stage`?this.plugin.settings.stages:t===`status`?this.plugin.settings.statuses:this.plugin.settings.priorities;if(r.length<=1){new e.Notice(`至少需要保留一个选项。`);return}let[i]=r.splice(n,1);this.persist(),this.update(),this.remapOrphanTasks(t,i.id,i.label)}importFromTaskNotes(){let t=Pd(this.app);if(!t){new e.Notice(`需要安装 TaskNotes 4.10 或更高版本。`);return}let{added:n,updated:r}=Vd(t,this.plugin.settings);this.persist(),this.update(),new e.Notice(n||r?`已从 TaskNotes 导入：新增 ${n} 项，更新 ${r} 项。`:`状态和优先级已与 TaskNotes 一致。`)}async remapOrphanTasks(t,n,r){let i=t===`stage`?this.plugin.settings.stages:t===`status`?this.plugin.settings.statuses:this.plugin.settings.priorities;if(i.length===0)return;let a=i[0],o=this.plugin.settings.projectsFolder,s=await this.plugin.store.loadAllProjects(o),c=0;for(let e of s){if((t===`stage`?e.config?.stages:t===`status`?e.config?.statuses:e.config?.priorities)?.some(e=>e.id===n))continue;let r=q(e.tasks).filter(({task:e})=>e[t]===n).map(({task:e})=>e.id);r.length&&(await this.plugin.store.updateTasks(e,r,{[t]:a.id}),c+=r.length)}c>0&&new e.Notice(`已将 ${c} 个事项从“${r}”调整为“${a.label}”。`)}},Z=class{el;labelEl;dotEl=null;iconEl=null;constructor(e){this.el=e.createSpan({cls:`pm-chip`}),this.labelEl=this.el.createSpan({cls:`pm-chip-label`})}setLeadingIcon(t){return this.iconEl||(this.iconEl=this.el.createSpan({cls:`pm-chip-icon`}),this.el.prepend(this.iconEl)),(0,e.setIcon)(this.iconEl,t),this}setLabel(e){return this.labelEl.setText(e),this}setColor(e){return this.el.style.setProperty(`--pm-chip-color`,e),this}setVariant(e){return this.el.toggleClass(`pm-chip--solid`,e===`solid`),this.el.toggleClass(`pm-chip--outline`,e===`outline`),this.el.toggleClass(`pm-chip--plain`,e===`plain`),this}setDot(e=!0){return e&&!this.dotEl?(this.dotEl=this.el.createSpan({cls:`pm-chip-dot`}),this.el.prepend(this.dotEl)):!e&&this.dotEl&&(this.dotEl.remove(),this.dotEl=null),this}setTag(e=!0){return this.el.toggleClass(`pm-chip--tag`,e),this}setStrong(e=!0){return this.el.toggleClass(`pm-chip--strong`,e),this}setShape(e){return this.el.toggleClass(`pm-chip--pill`,e===`pill`),this}setSize(e){return this.el.toggleClass(`pm-chip--sm`,e===`sm`),this}setTooltip(t){return(0,e.setTooltip)(this.el,t),this}setRemovable(t){let n=this.el.createEl(`button`,{cls:`pm-chip-rm`});return(0,e.setIcon)(n,`x`),n.onclick=e=>{e.preventDefault(),e.stopPropagation(),t()},this}onClick(e){return this.el.addClass(`pm-chip--interactive`),this.el.addEventListener(`click`,e),this}};function $d(t,n,r,i){let a=t.createDiv(`pm-prop-row`),o=a.createSpan({cls:`pm-prop-label`});if(i){o.addClass(`pm-prop-label--with-icon`);let t=o.createSpan({cls:`pm-prop-label-icon`});(0,e.setIcon)(t,i),o.createSpan({text:n})}else o.setText(n);let s=r();return a.appendChild(s),a}function ef(t,n,r){t.empty();let i=r.variant??`default`,a=r.shape??`pill`;for(let e of n){let n=new Z(t).setLabel(r.labelFn?r.labelFn(e):e).setShape(a).setRemovable(()=>r.onRemove(e));i===`accent`?n.setVariant(`solid`).setColor(`var(--interactive-accent)`):n.setVariant(`outline`)}if(r.renderAdd)r.renderAdd(t);else if(r.onAdd){let n=r.onAdd;new e.ButtonComponent(t).setButtonText(r.addLabel??`+ Add`).onClick(e=>n(e))}}function tf(e){return e?.icon&&fd(e.icon)?e.icon:null}function nf(t,n,r,i){let a=sd(r,n.status),o=new Z(t).setLabel(pd(a?.icon,a?.label??n.status)).setColor(a?.color??`var(--text-muted)`).setVariant(`solid`).setDot(!a?.icon).onClick(t=>{let a=new e.Menu;for(let e of r)a.addItem(t=>{t.setTitle(pd(e.icon,e.label)).setChecked(e.id===n.status).onClick(()=>i(e.id));let r=tf(e);r&&t.setIcon(r)});a.showAtMouseEvent(t)}),s=tf(a);return s&&o.setLeadingIcon(s),o.el}function rf(t,n,r,i){let a=cd(r,n.stage),o=new Z(t).setLabel(pd(a?.icon,a?.label??(n.stage||`未设置`))).setColor(a?.color??`var(--text-muted)`).setVariant(`solid`).setDot(!a?.icon).onClick(t=>{let a=new e.Menu;for(let e of r)a.addItem(t=>{t.setTitle(pd(e.icon,e.label)).setChecked(e.id===n.stage).onClick(()=>i(e.id));let r=tf(e);r&&t.setIcon(r)});a.showAtMouseEvent(t)}),s=tf(a);return s&&o.setLeadingIcon(s),o.el}function af(e,t,n){let r=new Z(e).setLabel(pd(n?.icon,n?.label??(t||`未设置`))).setColor(n?.color??`var(--text-muted)`).setVariant(`solid`).setDot(!n?.icon),i=tf(n);return i&&r.setLeadingIcon(i),r.el}const of={critical:`chevrons-up`,high:`chevron-up`,medium:`equal`,low:`chevron-down`};function sf(t,n,r,i){let a=ud(r,n.priority),o=new Z(t).setLabel(pd(a?.icon,a?.label??n.priority)).setColor(a?.color??`var(--text-muted)`).setVariant(`plain`),s=tf(a);return s?o.setLeadingIcon(s):a?.icon||o.setLeadingIcon(of[n.priority]??`equal`),o.onClick(t=>{let a=new e.Menu;for(let e of r)a.addItem(t=>{t.setTitle(pd(e.icon,e.label)).setChecked(e.id===n.priority).onClick(()=>i(e.id));let r=tf(e);r&&t.setIcon(r)});a.showAtMouseEvent(t)}),o.el}function cf(e,t,n,r=`pm-subtask-dot`){let i=sd(n,t),a=e.createSpan({cls:r});return a.style.background=i?.color??`var(--text-muted)`,a}function lf(t,n,r,i){let a=n.customFields[t.id],o=createDiv(`pm-prop-value`);switch(t.type){case`text`:case`url`:{let e=o.createEl(`input`,{type:t.type===`url`?`url`:`text`,cls:`pm-prop-text`});e.value=id(a),e.placeholder=t.name,e.addEventListener(`change`,()=>{n.customFields[t.id]=e.value});break}case`number`:{let e=o.createEl(`input`,{type:`number`,cls:`pm-prop-text`});e.value=id(a),e.addEventListener(`change`,()=>{n.customFields[t.id]=parseFloat(e.value)});break}case`date`:{let e=o.createEl(`input`,{type:`date`,cls:`pm-prop-date`});e.value=id(a),e.addEventListener(`change`,()=>{n.customFields[t.id]=e.value});break}case`checkbox`:{let e=o.createEl(`input`,{type:`checkbox`,cls:`pm-prop-checkbox`});e.checked=!!a,e.addEventListener(`change`,()=>{n.customFields[t.id]=e.checked});break}case`select`:{let e=o.createEl(`select`,{cls:`pm-prop-select`});e.createEl(`option`,{value:``,text:`—`});for(let n of t.options??[]){let t=e.createEl(`option`,{value:n,text:n});n===a&&(t.selected=!0)}e.addEventListener(`change`,()=>{n.customFields[t.id]=e.value});break}case`multiselect`:{let r=Array.isArray(a)?a:[],i=()=>{ef(o,r,{shape:`pill`,onRemove:e=>{let a=r.indexOf(e);a>-1&&r.splice(a,1),n.customFields[t.id]=[...r],i()},onAdd:a=>{let o=new e.Menu;for(let e of t.options??[])r.includes(e)||o.addItem(a=>a.setTitle(e).onClick(()=>{r.push(e),n.customFields[t.id]=[...r],i()}));o.showAtMouseEvent(a)}})};i();break}case`person`:{let e=o.createEl(`input`,{type:`text`,cls:`pm-prop-text`});e.value=id(a),e.placeholder=`人员姓名`;let s=[...new Set([...r.teamMembers,...i.settings.globalTeamMembers])];e.setAttribute(`list`,`pm-persons-${t.id}`);let c=o.createEl(`datalist`,{attr:{id:`pm-persons-${t.id}`}});for(let e of s)c.createEl(`option`,{value:e});e.addEventListener(`change`,()=>{n.customFields[t.id]=e.value});break}}return o}var uf=class{contentEl;el;anchor;host;win;doc;align;width;onCloseCb;opened=!1;constructor(t){this.anchor=t.anchor,this.win=activeWindow,this.doc=activeDocument,this.host=t.host??this.anchor.closest(`.modal`)??this.doc.body,this.align=t.align??`left`,this.width=t.width,this.onCloseCb=t.onClose,this.el=createDiv(`pm-pop`),e.Platform.isPhone&&this.el.addClass(`pm-pop--sheet`),this.width!=null&&this.el.setCssProps({"--pop-width":`${this.width}px`}),this.contentEl=this.el.createDiv(`pm-pop-body`)}get isOpen(){return this.opened}open(){this.opened||(this.opened=!0,this.anchor.setAttribute(`aria-expanded`,`true`),this.host.appendChild(this.el),this.reposition(),this.doc.addEventListener(`mousedown`,this.onOutsideDown,!0),this.doc.addEventListener(`keydown`,this.onKeyDown,!0),this.win.addEventListener(`scroll`,this.reposition,!0),this.win.addEventListener(`resize`,this.reposition))}close(){this.opened&&(this.opened=!1,this.anchor.setAttribute(`aria-expanded`,`false`),this.doc.removeEventListener(`mousedown`,this.onOutsideDown,!0),this.doc.removeEventListener(`keydown`,this.onKeyDown,!0),this.win.removeEventListener(`scroll`,this.reposition,!0),this.win.removeEventListener(`resize`,this.reposition),this.el.remove(),this.onCloseCb?.())}reposition=()=>{if(!this.opened||e.Platform.isPhone)return;let t=this.anchor.getBoundingClientRect(),n=this.win.innerWidth,r=this.win.innerHeight,i=this.el.offsetWidth||this.width||200,a=this.el.offsetHeight||200,o=t.bottom+4;o+a>r-12&&(o=Math.max(12,t.top-a-4));let s=this.align===`right`?t.right-i:t.left;s=Math.max(12,Math.min(s,n-i-12)),this.el.setCssProps({"--pop-top":`${o}px`,"--pop-left":`${s}px`})};onOutsideDown=e=>{let t=e.target;this.el.contains(t)||this.anchor.contains(t)||this.close()};onKeyDown=e=>{e.key===`Escape`&&(e.stopPropagation(),this.close())}};function df(t){let n=t.trim(),r=n.match(/^\[\[([^\]]+)\]\]$/);if(!r)return n;let i=r[1],a=i.indexOf(`|`);if(a>=0){let e=i.slice(a+1).trim();if(e)return e}let o=a>=0?i.slice(0,a):i,{path:s}=(0,e.parseLinktext)(o),c=s.split(`/`).pop()??s;return(c.endsWith(`.md`)?c.slice(0,-3):c).trim()}function ff(e){let t=e.trim().split(/\s+/).filter(Boolean);return(t.length>=2?t[0][0]+t[1][0]:e.slice(0,2)).toUpperCase()}var pf=class{el;constructor(e){this.el=e.createSpan({cls:`pm-avatar`})}setName(t){let n=df(t);return this.el.setText(ff(n)),this.el.style.background=Zu(n),(0,e.setTooltip)(this.el,n),this}setSize(e){return this.el.toggleClass(`pm-avatar--sm`,e===`sm`),this}};function mf(t,n){if(n.icon&&fd(n.icon)){let r=t.createSpan({cls:`pm-glyph-icon`});(0,e.setIcon)(r,n.icon),n.color&&r.setCssProps({"--pm-glyph-color":n.color})}else n.icon?t.createSpan({cls:`pm-glyph-icon pm-glyph-text`,text:n.icon}):n.color&&t.createSpan({cls:`pm-glyph-dot`}).setCssProps({"--pm-glyph-color":n.color})}function hf(t,n){let r=t.createEl(`button`,{cls:`pm-pop-item`});n.accent&&r.addClass(`pm-pop-item--accent`),n.avatar?new pf(r).setName(n.avatar).setSize(`sm`):mf(r,n),r.createSpan({cls:`pm-pop-item-label`,text:n.label});let i=r.createSpan({cls:`pm-pop-check`});return(0,e.setIcon)(i,`check`),n.selected||i.addClass(`pm-pop-check--hidden`),r.addEventListener(`click`,n.onPick),r}function gf(t){let n=t.options.find(e=>e.id===t.value)??null,r=t.container.createEl(`button`,{cls:`pm-prop-inline`});n||r.addClass(`pm-prop-inline--empty`),mf(r,{color:n?.color,icon:n?.icon}),r.createSpan({cls:`pm-prop-inline-label`,text:n?.label??t.placeholder??`请选择`});let i=r.createSpan({cls:`pm-prop-chevron`});(0,e.setIcon)(i,`chevron-down`);let a=null;r.addEventListener(`click`,()=>{if(a?.isOpen){a.close();return}a=new uf({anchor:r,width:t.width??r.offsetWidth,onClose:()=>a=null});let e=t.search?a.contentEl.createEl(`input`,{cls:`pm-pop-field`,attr:{placeholder:t.searchPlaceholder??`搜索……`,spellcheck:`false`}}):null,n=a.contentEl.createDiv(`pm-pop-list`),i=()=>{n.empty();let r=e?.value.trim().toLowerCase()??``;for(let e of t.options.filter(e=>!r||e.label.toLowerCase().includes(r)))hf(n,{label:e.label,color:e.color,icon:e.icon,selected:e.id===t.value,onPick:()=>{a?.close(),t.onChange(e.id)}})};e?.addEventListener(`input`,()=>i()),i(),a.open(),e?.focus()})}function _f(t){let n=!!t.value,r=t.container.createEl(`button`,{cls:`pm-prop-inline`});n||r.addClass(`pm-prop-inline--empty`);let i=r.createSpan({cls:`pm-glyph-icon`});(0,e.setIcon)(i,`calendar`),r.createSpan({cls:`pm-prop-inline-label`,text:n?Ql(t.value):t.emptyLabel??`Set date`}),t.hint&&r.createSpan({cls:`pm-due pm-due--${t.hint.tone}`,text:t.hint.text});let a=null;r.addEventListener(`click`,()=>{if(a?.isOpen){a.close();return}let e=null;a=new uf({anchor:r,width:160,onClose:()=>{a=null;let n=e??i.value;n!==t.value&&t.onChange(n)}});let i=a.contentEl.createEl(`input`,{type:`date`,cls:`pm-pop-field`});i.value=t.value,i.addEventListener(`keydown`,e=>{e.key===`Enter`&&(e.preventDefault(),a?.close())});let o=a.contentEl.createDiv(`pm-pop-actions`);o.createEl(`button`,{cls:`pm-pop-item pm-pop-item--center`,text:`今天`}).addEventListener(`click`,()=>{e=Zl().toString(),a?.close()}),n&&o.createEl(`button`,{cls:`pm-pop-item pm-pop-item--center pm-pop-item--danger`,text:`清除`}).addEventListener(`click`,()=>{e=``,a?.close()}),a.open(),i.focus()})}function vf(e){let{container:t,display:n,inputType:r,value:i,onSave:a}=e,o=t.createEl(`input`,{type:r,cls:`pm-inline-edit`,value:i});n.replaceWith(o),o.focus(),r!==`date`&&o.select();let s=!1,c=Y(async()=>{if(s)return;s=!0;let e=o.value.trim();e===i?o.replaceWith(n):await a(e)});o.addEventListener(`blur`,c),r===`date`?o.addEventListener(`change`,c):o.addEventListener(`keydown`,e=>{e.key===`Enter`&&c(),e.key===`Escape`&&o.replaceWith(n)})}function yf(e){let t=e.inputType??`text`,n=e.value!==``,r=e.container.createEl(`button`,{cls:`pm-prop-inline`});n||r.addClass(`pm-prop-inline--empty`),r.createSpan({cls:`pm-prop-inline-label`,text:n?`${e.value}${e.suffix??``}`:e.placeholder??`设置值`}),r.addEventListener(`click`,()=>{vf({container:e.container,display:r,inputType:t,value:e.value,onSave:async n=>{e.onChange(t===`number`&&e.number?bf(n,e.number):n)}})})}function bf(e,t){let n=Math.round(parseFloat(e)||0);return String(Math.min(t.max??1/0,Math.max(t.min??-1/0,n)))}function xf(t){let n=e=>t.labelFor?t.labelFor(e):e,r=!!t.avatarStack,i=!!t.depsList,a=r||i?null:t.container.createDiv(`pm-prop-chips`),o=i?t.container.createDiv(`pm-prop-deps`):null,s=r?t.container.createEl(`button`):t.container.createEl(`button`,{cls:`pm-prop-add`}),c=null;r||((0,e.setIcon)(s.createSpan({cls:`pm-glyph-icon`}),`plus`),c=s.createSpan({cls:`pm-prop-add-label`,text:t.addLabel}));let l=()=>{s.empty();let r=t.selected();if(r.length===0){s.className=`pm-prop-add`,(0,e.setIcon)(s.createSpan({cls:`pm-glyph-icon`}),`plus`),s.createSpan({cls:`pm-prop-add-label`,text:t.addLabel});return}s.className=`pm-prop-inline pm-assignees-trigger`;let i=s.createSpan({cls:`pm-avatar-stack`});for(let e of r)new pf(i).setName(n(e)).setSize(`sm`);r.length===1&&s.createSpan({cls:`pm-assignees-label`,text:n(r[0])})},u=()=>{if(a){a.empty();for(let e of t.selected()){let r=new Z(a).setLabel(n(e)).setVariant(`outline`).setRemovable(()=>{t.remove(e),f()});t.tag?r.setTag():r.setShape(`pill`);let i=t.colorFor?.(e);i&&r.setDot(!0).setColor(i)}}},d=()=>{if(o){o.empty();for(let r of t.selected()){let i=o.createDiv(`pm-dep-row`);(0,e.setIcon)(i.createSpan({cls:`pm-dep-icon`}),`link-2`),i.createSpan({cls:`pm-dep-id`,text:r}),i.createSpan({cls:`pm-dep-title`,text:n(r)}),new Ud(i).setIcon(`x`).setTooltip(`移除依赖`).onClick(()=>{t.remove(r),f()})}}},f=()=>{r?l():i?d():u(),c&&c.setText(t.selected().length&&t.addLabelMore?t.addLabelMore:t.addLabel)};f();let p=null;s.addEventListener(`click`,()=>{if(p?.isOpen){p.close();return}let e=new uf({anchor:s,width:230,onClose:()=>p=null});p=e;let n=``,i=t.search?e.contentEl.createEl(`input`,{cls:`pm-pop-field`,attr:{placeholder:t.placeholder??`搜索……`,spellcheck:`false`}}):null,a=e.contentEl.createDiv(`pm-pop-list`),o=()=>{a.empty();let e=n.trim().toLowerCase(),s=new Set(t.selected()),c=t.options().filter(t=>!e||t.label.toLowerCase().includes(e));for(let e of c)hf(a,{label:e.label,color:e.color??t.colorFor?.(e.id),icon:e.icon,avatar:r?e.label:void 0,selected:s.has(e.id),onPick:()=>{s.has(e.id)?t.remove(e.id):t.add(e.id),f(),o()}});let l=t.create;if(l&&e&&!t.options().some(t=>t.label.toLowerCase()===e)){let e=n.trim();hf(a,{label:`Create "${e}"`,icon:`plus`,accent:!0,onPick:()=>{l(e),n=``,i&&(i.value=``),f(),o()}})}};i&&i.addEventListener(`input`,()=>{n=i.value,o()}),o(),e.open(),i?.focus()})}function Sf(t,n,r){let i=t.createEl(`button`,{cls:`pm-prop-add`});return(0,e.setIcon)(i.createSpan({cls:`pm-glyph-icon`}),`plus`),i.createSpan({cls:`pm-prop-add-label`,text:n}),i.addEventListener(`click`,r),i}function Cf(t,n,r){if(n.length===0)return;let i=null,a=Sf(t,`Add property`,()=>{if(i?.isOpen){i.close();return}i=new uf({anchor:a,width:190,onClose:()=>i=null});let t=i.contentEl.createDiv(`pm-pop-list`);for(let a of n){let n=t.createEl(`button`,{cls:`pm-pop-item`}),o=n.createSpan({cls:`pm-glyph-icon`});(0,e.setIcon)(o,a.icon),n.createSpan({cls:`pm-pop-item-label`,text:a.label}),n.addEventListener(`click`,()=>{i?.close(),r(a.id)})}i.open()})}const wf=[{id:`task`,label:`任务`,icon:`square-check-big`},{id:`subtask`,label:`子任务`,icon:`git-branch`},{id:`milestone`,label:`里程碑`,icon:`diamond`}],Tf=[{id:`none`,label:`不重复`,icon:`repeat`},{id:`daily`,label:`每天`,icon:`repeat`},{id:`weekly`,label:`每周`,icon:`repeat`},{id:`monthly`,label:`每月`,icon:`repeat`},{id:`yearly`,label:`每年`,icon:`repeat`}];function Ef(e,t){let{task:n,project:r,plugin:i,rerender:a,shownExtras:o}=t,{stages:s,statuses:c,priorities:l}=i.store.configFor(r),u=!!n.customFields.zentaoSourceType,d=e.createDiv(`pm-prop-grid`);if($d(d,`类型`,()=>{let e=createDiv(`pm-prop-value`);return gf({container:e,value:n.type,options:wf,onChange:e=>{n.type=e,e===`milestone`&&(n.start=``,n.progress=0),e!==`subtask`&&t.setParentId(null),a()}}),e},`shapes`),n.type===`subtask`?$d(d,`父任务`,()=>{let e=createDiv(`pm-prop-value`),i=q(r.tasks).map(e=>e.task).filter(e=>e.id!==n.id);return gf({container:e,value:t.parentId,options:[{id:``,label:`无父任务`},...i.map(e=>({id:e.id,label:e.title}))],placeholder:`选择父任务`,search:!0,searchPlaceholder:`搜索任务…`,width:230,onChange:e=>{t.setParentId(e||null),a()}}),e},`corner-up-right`):d.createDiv(),$d(d,`阶段`,()=>{let e=createDiv(`pm-prop-value`),t=cd(s,n.stage);return u?e.createSpan({text:(t?.label??n.stage)||`未设置`,cls:`pm-source-value`}):gf({container:e,value:n.stage,options:s.map(e=>({id:e.id,label:e.label,color:e.color,icon:e.icon||void 0})),onChange:e=>{n.stage=e,a()}}),e},`git-branch`),$d(d,`状态`,()=>{let e=createDiv(`pm-prop-value`),t=sd(c,n.status);return u?e.createSpan({text:(t?.label??n.status)||`未设置`,cls:`pm-source-value`}):gf({container:e,value:n.status,options:c.map(e=>({id:e.id,label:e.label,color:e.color,icon:e.icon||void 0})),onChange:e=>{n.status=e,a()}}),e},`circle-dot`),$d(d,`优先级`,()=>{let e=createDiv(`pm-prop-value`);return gf({container:e,value:n.priority,options:l.map(e=>({id:e.id,label:e.label,color:e.color,icon:e.icon||of[e.id]})),onChange:e=>{n.priority=e,a()}}),e},`flag`),$d(d,n.type===`milestone`?`日期`:`截止日期`,()=>{let e=createDiv(`pm-prop-value`);return _f({container:e,value:n.due,emptyLabel:`设置截止日期`,hint:n.completed?null:$l(n.due),onChange:e=>{n.due=e,a()}}),e},`calendar-clock`),n.type===`milestone`?d.createDiv():$d(d,`开始日期`,()=>{let e=createDiv(`pm-prop-value`);return _f({container:e,value:n.start,emptyLabel:`设置开始日期`,onChange:e=>{n.start=e,a()}}),e},`play`),$d(d,`负责人`,()=>{let e=createDiv(`pm-prop-value`),t=()=>[...new Set([...r.teamMembers,...i.settings.globalTeamMembers])];return xf({container:e,avatarStack:!0,search:!0,addLabel:`分配负责人`,placeholder:`搜索人员…`,selected:()=>n.assignees,options:()=>t().map(e=>({id:e,label:e})),add:e=>{n.assignees.includes(e)||n.assignees.push(e)},remove:e=>{n.assignees=n.assignees.filter(t=>t!==e)},create:e=>{n.assignees.includes(e)||n.assignees.push(e)}}),e},`users`),(n.completed||o.has(`completed`))&&$d(d,`完成日期`,()=>{let e=createDiv(`pm-prop-value`);return u?e.createSpan({text:n.completed||`未设置`,cls:`pm-source-value`}):_f({container:e,value:n.completed,emptyLabel:`设置日期`,hint:eu(n.due,n.completed),onChange:e=>{n.completed=e,a()}}),e},`circle-check-big`),n.type!==`milestone`&&(n.progress>0||o.has(`progress`))&&$d(d,`进度`,()=>{let e=createDiv(`pm-prop-value`);return yf({container:e,value:String(n.progress),inputType:`number`,suffix:`%`,number:{min:0,max:100},onChange:e=>{n.progress=Number(e),a()}}),e},`percent`),(n.recurrence||o.has(`repeat`))&&$d(d,`重复`,()=>{let e=createDiv(`pm-prop-value`);return gf({container:e,value:n.recurrence?.interval??`none`,options:Tf,onChange:e=>{e===`none`?n.recurrence=void 0:n.recurrence={interval:e,every:n.recurrence?.every??1,endDate:n.recurrence?.endDate},a()}}),e},`repeat`),$d(d,`标签`,()=>{let e=createDiv(`pm-prop-value`),t=[...new Set(q(r.tasks).flatMap(e=>e.task.tags))];return xf({container:e,search:!0,addLabel:`添加标签`,placeholder:`查找或创建…`,tag:!0,colorFor:i.settings.showTagColors?e=>Zu(e):void 0,selected:()=>n.tags,options:()=>t.map(e=>({id:e,label:e})),add:e=>{n.tags.includes(e)||n.tags.push(e)},remove:e=>{n.tags=n.tags.filter(t=>t!==e)},create:e=>{n.tags.includes(e)||n.tags.push(e)}}),e},`tag`).addClass(`pm-prop-row--wide`),n.dependencies.length>0||o.has(`depends`)){let e=q(r.tasks).map(e=>e.task).filter(e=>e.id!==n.id),t=t=>e.find(e=>e.id===t)?.title??t;$d(d,`依赖项`,()=>{let i=createDiv(`pm-prop-value`);return xf({container:i,search:!0,addLabel:`添加依赖`,addLabelMore:`继续添加`,placeholder:`搜索任务…`,depsList:!0,labelFor:t,selected:()=>n.dependencies.filter(t=>e.some(e=>e.id===t)),options:()=>e.filter(e=>n.dependencies.includes(e.id)||!Iu(r.tasks,n.id,e.id)).map(e=>({id:e.id,label:e.title})),add:e=>{n.dependencies.includes(e)||n.dependencies.push(e)},remove:e=>{n.dependencies=n.dependencies.filter(t=>t!==e)}}),i},`link-2`).addClass(`pm-prop-row--wide`)}let f=[];if(!u&&!n.completed&&!o.has(`completed`)&&f.push({id:`completed`,label:`完成日期`,icon:`circle-check-big`}),n.type!==`milestone`&&n.progress===0&&!o.has(`progress`)&&f.push({id:`progress`,label:`进度`,icon:`percent`}),!n.recurrence&&!o.has(`repeat`)&&f.push({id:`repeat`,label:`重复`,icon:`repeat`}),n.dependencies.length===0&&!o.has(`depends`)&&f.push({id:`depends`,label:`依赖项`,icon:`link-2`}),f.length>0&&Cf(d.createDiv(`pm-prop-add-cell`),f,e=>{o.add(e),a()}),r.customFields.length>0){let t=e.createDiv(`pm-modal-section`);t.createEl(`h4`,{text:`自定义字段`,cls:`pm-modal-section-title`});let a=t.createDiv(`pm-prop-grid`);for(let e of r.customFields)$d(a,e.name,()=>lf(e,n,r,i))}}function Df(e,t){if(t.type===`milestone`)return;let n=e.createDiv(`pm-modal-section`),r=n.createDiv(`pm-modal-section-header`),i=gu(t),a=projectEstimateHours(t),o=a>0?`工时记录（${i}h / ${a}h）`:`工时记录（已登记 ${i}h）`;r.createEl(`h4`,{text:o,cls:`pm-modal-section-title`});let s=n.createDiv(`pm-time-est-row`);s.createSpan({text:`预计：`,cls:`pm-time-label`});let c=s.createEl(`input`,{type:`number`,cls:`pm-prop-text pm-time-est-input`});c.value=a>0?String(a):``,c.placeholder=`小时`,c.min=`0`,c.step=`0.5`,c.addEventListener(`change`,()=>{let e=parseFloat(c.value);t.timeEstimate=isNaN(e)||e<=0?void 0:e});let l=n.createDiv(`pm-time-log-list`),u=()=>{l.empty(),t.timeLogs||=[];let e=t.timeLogs;for(let t=0;t<e.length;t++){let n=e[t],r=l.createDiv(`pm-time-log-row`),i=r.createEl(`input`,{type:`date`,cls:`pm-prop-date pm-time-log-date`});i.value=n.date,i.addEventListener(`change`,()=>{n.date=i.value});let a=r.createEl(`input`,{type:`number`,cls:`pm-prop-text pm-time-log-hours`});a.value=String(n.hours),a.min=`0`,a.step=`0.25`,a.placeholder=`小时`,a.addEventListener(`change`,()=>{n.hours=parseFloat(a.value)||0});let o=r.createEl(`input`,{type:`text`,cls:`pm-prop-text pm-time-log-note`});o.value=n.note,o.placeholder=`备注…`,o.addEventListener(`change`,()=>{n.note=o.value}),new Ud(r).setIcon(`x`).setTooltip(`移除记录`).onClick(()=>{e.splice(t,1),u()})}};u(),Sf(n,`登记工时`,()=>{t.timeLogs||=[],t.timeLogs.push({date:Zl().toString(),hours:0,note:``}),u()})}function Of(e,t,n,r){let i=e.createDiv(`pm-modal-section`),a=i.createDiv(`pm-subtasks-header`).createEl(`h4`,{text:`子任务 `,cls:`pm-modal-section-title`}).createSpan({cls:`pm-subtasks-count`}),o=i.createDiv(`pm-modal-subtask-list`),s=()=>{let e=t.subtasks.length;if(e===0){a.setText(``);return}let n=t.subtasks.filter(e=>!!e.completed).length;a.setText(`${n}/${e}`)},c=()=>{o.empty();for(let e of t.subtasks){let n=o.createDiv(`pm-modal-subtask-row`),r=!!e.completed,i=n.createEl(`input`,{type:`checkbox`,cls:`pm-subtask-checkbox`});i.checked=r,i.addEventListener(`change`,()=>{e.completed=i.checked?Zl().toString():``,e.progress=i.checked?100:0,c(),d(),s()});let a=n.createSpan({text:e.title,cls:r?`pm-subtask-title pm-subtask-title--done`:`pm-subtask-title`});a.contentEditable=`true`,a.addEventListener(`blur`,()=>{e.title=a.textContent?.trim()??e.title}),new Ud(n).setIcon(`x`).setTooltip(`删除子任务`).setRevealOnHover(!0).onClick(()=>{t.subtasks=t.subtasks.filter(t=>t.id!==e.id),c(),d(),s()})}},d=()=>{window.setTimeout(()=>{try{let e=o.querySelectorAll(`.pm-modal-subtask-row:not(.pm-subtask-add-row)`);e.forEach((e,n)=>{if(e.querySelector(`.pm-subtask-role-meta`))return;let r=t.subtasks[n],i=Array.isArray(r?.assignees)?r.assignees.filter(e=>typeof e===`string`&&e.trim()).join(`、`):``,a=typeof r?.customFields?.completedBy===`string`?r.customFields.completedBy.trim():``;if(!i&&!a)return;let o=e.createDiv(`pm-subtask-role-meta`);i&&o.createSpan({text:`负责人 · ${i}`,cls:`pm-subtask-role pm-subtask-role--assignee`}),a&&o.createSpan({text:`完成者 · ${a}`,cls:`pm-subtask-role pm-subtask-role--completed`})})}catch(e){console.warn(`[PM] Failed to render subtask role metadata`,e)}},0)};c(),d(),s();let l=i.createDiv(`pm-modal-subtask-row pm-subtask-add-row`);l.createSpan({cls:`pm-subtask-checkbox-ghost`,attr:{"aria-hidden":`true`}});let u=l.createEl(`input`,{cls:`pm-subtask-add-input`,attr:{placeholder:`添加子任务…`}});u.addEventListener(`keydown`,e=>{if(e.key!==`Enter`)return;let n=u.value.trim();n&&(t.subtasks.push(ru({title:n,type:`subtask`})),u.value=``,c(),d(),s())})}const kf={canvas:`Canvas`,base:`Database`};var Af=class{app;textarea;onInsert;container;mirror;items=[];activeIndex=0;open=!1;query=``;triggerStart=-1;constructor(e,t,n){this.app=e,this.textarea=t,this.onInsert=n,this.container=createDiv(`pm-note-suggest`),this.mirror=createDiv(`pm-note-suggest-mirror`),activeDocument.body.appendChild(this.mirror),this.textarea.addEventListener(`input`,this.onInput),this.textarea.addEventListener(`keydown`,this.onKeydown),this.textarea.addEventListener(`blur`,this.onBlur),this.textarea.addEventListener(`scroll`,this.onScroll)}attach(e){e.appendChild(this.container)}destroy(){this.textarea.removeEventListener(`input`,this.onInput),this.textarea.removeEventListener(`keydown`,this.onKeydown),this.textarea.removeEventListener(`blur`,this.onBlur),this.textarea.removeEventListener(`scroll`,this.onScroll),this.container.remove(),this.mirror.remove()}onInput=()=>{let e=this.textarea.selectionStart,t=this.textarea.value.slice(0,e).match(/\[\[([^\]]{0,80})$/);t?(this.triggerStart=e-t[0].length,this.query=t[1],this.updateItems(),this.items.length>0?this.show():this.hide()):this.hide()};onKeydown=e=>{if(this.open)switch(e.key){case`ArrowDown`:e.preventDefault(),e.stopPropagation(),this.activeIndex=(this.activeIndex+1)%this.items.length,this.renderItems();break;case`ArrowUp`:e.preventDefault(),e.stopPropagation(),this.activeIndex=(this.activeIndex-1+this.items.length)%this.items.length,this.renderItems();break;case`Enter`:case`Tab`:e.preventDefault(),e.stopPropagation(),this.accept(this.items[this.activeIndex]);break;case`Escape`:e.preventDefault(),e.stopPropagation(),this.hide()}};onBlur=()=>{window.setTimeout(()=>this.hide(),150)};onScroll=()=>{this.open&&this.position()};updateItems(){let t=this.app.vault.getFiles().filter(e=>/\.(md|canvas|base)$/.test(e.extension?`.${e.extension}`:e.path));if(!this.query)this.items=t.sort((e,t)=>t.stat.mtime-e.stat.mtime).slice(0,8);else{let n=(0,e.prepareFuzzySearch)(this.query),r=this.query.toLowerCase(),i=[];for(let e of t){let t=n(e.basename);if(!t)continue;let a=t.score,o=e.basename.toLowerCase();o.startsWith(r)?a-=10:o.includes(r)&&(a-=5),a+=e.basename.length*.01,i.push({file:e,score:a})}i.sort((e,t)=>e.score-t.score),this.items=i.slice(0,8).map(e=>e.file)}this.activeIndex=0}accept(e){if(!e)return;let t=this.textarea.value.slice(0,this.triggerStart),n=this.textarea.value.slice(this.textarea.selectionStart),r=`[[${e.extension===`md`?e.basename:`${e.basename}.${e.extension}`}]]`,i=t+r+n;this.textarea.value=i;let a=t.length+r.length;this.textarea.setSelectionRange(a,a),this.onInsert(i),this.hide(),this.textarea.focus()}show(){this.open=!0,this.container.addClass(`pm-note-suggest--visible`),this.position(),this.renderItems()}hide(){this.open&&(this.open=!1,this.container.removeClass(`pm-note-suggest--visible`),this.triggerStart=-1)}position(){let e=activeWindow.getComputedStyle(this.textarea);for(let t of[`fontFamily`,`fontSize`,`fontWeight`,`lineHeight`,`letterSpacing`,`paddingTop`,`paddingRight`,`paddingBottom`,`paddingLeft`,`borderTopWidth`,`borderRightWidth`,`borderBottomWidth`,`borderLeftWidth`,`boxSizing`,`wordWrap`,`whiteSpace`,`overflowWrap`])this.mirror.style.setProperty(t.replace(/[A-Z]/g,e=>`-`+e.toLowerCase()),e.getPropertyValue(t.replace(/[A-Z]/g,e=>`-`+e.toLowerCase())));this.mirror.style.width=this.textarea.clientWidth+`px`;let t=this.textarea.value.slice(0,this.textarea.selectionStart);this.mirror.textContent=``;let n=activeDocument.createTextNode(t);this.mirror.appendChild(n);let r=activeDocument.createSpan();r.textContent=`​`,this.mirror.appendChild(r);let i=r.offsetTop,a=r.offsetLeft,o=parseFloat(e.lineHeight)||parseFloat(e.fontSize)*1.4,s=this.textarea.getBoundingClientRect(),c=this.container.offsetParent?this.container.offsetParent.getBoundingClientRect():s,l=s.top-c.top+i-this.textarea.scrollTop+o+4,u=s.left-c.left+a;this.container.style.top=l+`px`,this.container.style.left=u+`px`;let d=(this.container.offsetParent?.clientWidth??600)-280;u>d&&(this.container.style.left=Math.max(0,d)+`px`)}renderItems(){this.container.empty(),this.items.forEach((e,t)=>{let n=this.container.createDiv({cls:`pm-note-suggest-item`+(t===this.activeIndex?` pm-note-suggest-item--active`:``)}),r=n.createDiv({cls:`pm-note-suggest-name-row`});r.createSpan({cls:`pm-note-suggest-name`,text:e.basename});let i=kf[e.extension];i&&r.createSpan({cls:`pm-note-suggest-type`,text:i}),e.parent&&e.parent.path!==`/`&&n.createDiv({cls:`pm-note-suggest-path`,text:e.parent.path}),n.addEventListener(`mousedown`,t=>{t.preventDefault(),this.accept(e)}),n.addEventListener(`mouseenter`,()=>{this.activeIndex=t,this.renderItems()})});let e=this.container.querySelector(`.pm-note-suggest-item--active`);e&&e.scrollIntoView({block:`nearest`})}},jf=class extends e.Modal{plugin;project;parentId;onSave;task;original;isNew;originalParentId;cancelled=!1;saved=!1;persistPromise=null;noteSuggest=null;shownExtras=new Set;saveKeyHandler=null;constructor(e,t,n,r,i,a,o){if(super(e),this.plugin=t,this.project=n,this.parentId=i,this.onSave=a,r){if(this.task=JSON.parse(JSON.stringify(r)),this.isNew=!1,i==null){let e=q(n.tasks).find(e=>e.task.id===r.id);this.parentId=e?.parentId??null}}else{let e=t.store.configFor(n);this.task=ru({status:ed(e.statuses),priority:td(e.priorities),type:i?`subtask`:`task`,...o}),this.isNew=!0}this.original=JSON.parse(JSON.stringify(this.task)),this.originalParentId=this.parentId}onOpen(){let{contentEl:e}=this;e.empty(),e.addClass(`pm-task-modal`),this.modalEl.addClass(`pm-modal`,`pm-modal--task`),this.render()}onClose(){if(this.plugin.settings.saveTaskOnClose&&!this.isNew&&!this.cancelled&&!this.saved&&this.task.title.trim()){let t=this.plugin.store.findTaskFileConflict(this.project,this.task);t?new e.Notice(`任务未保存：已存在名为“${t.fileName}”的笔记。`):this.persistTask()}this.saveKeyHandler&&=(this.modalEl.removeEventListener(`keydown`,this.saveKeyHandler),null),this.noteSuggest?.destroy(),this.noteSuggest=null,this.contentEl.empty()}persistTask(){if(this.persistPromise)return this.persistPromise;let e=(async()=>{try{await this.runPersist()}catch(e){throw this.persistPromise=null,e}})();return this.persistPromise=e,e}async insertAttachments(t,n,r){for(let{blob:i,name:a}of n)try{let e=await i.arrayBuffer(),n=`![[${(await this.plugin.store.saveTaskAttachment(this.project,this.task,a,e)).name}]]`;t.setRangeText(n,t.selectionStart,t.selectionEnd,`end`),this.task.description=t.value,r()}catch(t){console.error(`附件保存失败`,t),new e.Notice(`附件保存失败`)}}changedFields(){let e={};for(let t of Object.keys(this.task))JSON.stringify(this.task[t])!==JSON.stringify(this.original[t])&&Object.assign(e,{[t]:this.task[t]});return e}async runPersist(){if(this.isNew)await this.plugin.store.insertTask(this.project,this.task,this.parentId);else{let e=this.changedFields(),t=this.parentId!==this.originalParentId;if(Object.keys(e).length===0&&!t)return;await this.plugin.store.updateTask(this.project,this.task.id,e),t&&await this.plugin.store.moveTask(this.project,this.task.id,this.parentId)}await this.plugin.store.scheduleAfterChange(this.project,this.task.id),await this.onSave(this.task)}openOverflowMenu(t){let n=new e.Menu;if(this.task.filePath){let e=this.task.filePath;n.addItem(t=>t.setTitle(`作为笔记打开`).setIcon(`file-text`).onClick(()=>{this.saved=!1,this.cancelled=!1,this.close(),this.app.workspace.openLinkText(e,``,!0)})),n.addSeparator()}this.task.archived?n.addItem(t=>t.setTitle(`取消归档`).setIcon(`archive-restore`).onClick(Y(async()=>{await this.plugin.store.unarchiveTask(this.project,this.task.id),new e.Notice(`任务已取消归档`),await this.onSave(this.task),this.cancelled=!0,this.close()}))):n.addItem(t=>t.setTitle(`归档`).setIcon(`archive`).onClick(Y(async()=>{await this.plugin.store.archiveTask(this.project,this.task.id),new e.Notice(`任务已归档`),await this.onSave(this.task),this.cancelled=!0,this.close()}))),n.addItem(e=>e.setTitle(`删除`).setIcon(`trash-2`).setWarning(!0).onClick(Y(async()=>{await Wf(this.app,`确定删除“${this.task.title}”吗？`)&&(await this.plugin.store.deleteTask(this.project,this.task.id),await this.onSave(this.task),this.cancelled=!0,this.close())})));let r=t.getBoundingClientRect();n.showAtPosition({x:r.left,y:r.bottom+4})}render(){let{contentEl:t}=this;t.empty();let n=t.createDiv(`pm-te-header`),r=ud(this.plugin.store.configFor(this.project).priorities,this.task.priority);r?.color&&n.setCssProps({"--pm-accent-strip":r.color});let i=n.createDiv(`pm-te-crumb`);if(this.project.icon){let t=i.createSpan({cls:`pm-te-crumb-icon`});/^[a-z0-9-]+$/.test(this.project.icon)?(0,e.setIcon)(t,this.project.icon):t.setText(this.project.icon)}i.createSpan({cls:`pm-te-crumb-name`,text:this.project.title});let a=i.createSpan({cls:`pm-te-crumb-sep`});(0,e.setIcon)(a,`chevron-right`);let o=i.createSpan({cls:`pm-te-crumb-id pm-te-copyable`,text:this.task.id});if((0,e.setTooltip)(o,`复制任务 ID`),o.addEventListener(`click`,Y(async()=>{await navigator.clipboard.writeText(this.task.id),new e.Notice(`任务 ID 已复制`)})),n.createDiv(`pm-te-header-spacer`),!this.isNew){let t=new e.ExtraButtonComponent(n).setIcon(`more-horizontal`).setTooltip(`更多操作`);t.extraSettingsEl.addClass(`pm-te-header-btn`),t.onClick(()=>this.openOverflowMenu(t.extraSettingsEl))}let s=new e.ExtraButtonComponent(n).setIcon(`x`).setTooltip(`关闭`);s.extraSettingsEl.addClass(`pm-te-header-btn`),s.onClick(()=>{this.cancelled=!0,this.close()});let c=t.createDiv(`pm-te-body`),l=c.createDiv(`pm-te-title-wrap`),u=l.createEl(`textarea`,{cls:`pm-te-title`});u.rows=1,u.value=this.task.title,u.placeholder=`任务标题`,u.spellcheck=!1;let d=()=>{u.setCssProps({"--te-title-height":`auto`}),u.setCssProps({"--te-title-height":u.scrollHeight+`px`})},f=l.createDiv({cls:`pm-modal-title-error`,attr:{hidden:``}}),p=()=>{f.hasAttribute(`hidden`)||(f.setAttribute(`hidden`,``),f.setText(``),u.classList.remove(`pm-input-error`))},m=e=>{f.setText(e),f.removeAttribute(`hidden`),u.classList.add(`pm-input-error`),u.focus(),u.select()};u.addEventListener(`input`,()=>{this.task.title=u.value,p(),d()}),u.addEventListener(`keydown`,e=>{e.key===`Enter`&&!e.shiftKey&&e.preventDefault()}),window.setTimeout(d,0),u.focus(),this.isNew&&u.select(),Ef(c.createDiv(`pm-te-props`),{task:this.task,project:this.project,plugin:this.plugin,parentId:this.parentId,setParentId:e=>{this.parentId=e},rerender:()=>this.render(),shownExtras:this.shownExtras}),c.createEl(`hr`,{cls:`pm-te-divider`});let h=c.createDiv(`pm-modal-section pm-modal-desc-section`);h.createEl(`h4`,{text:`描述`,cls:`pm-modal-section-title`});let g=h.createDiv(`pm-modal-desc-preview`),_=h.createEl(`textarea`,{cls:`pm-modal-description`});_.placeholder=`添加描述…`,_.value=this.task.description;let v=()=>{let e=[],t=_.parentElement;for(;t;)t.scrollTop>0&&e.push([t,t.scrollTop]),t=t.parentElement;_.setCssProps({"--desc-height":`auto`}),_.setCssProps({"--desc-height":_.scrollHeight+`px`});for(let[t,n]of e)t.scrollTop=n},y=()=>this.task.description.trim().length>0,b=this.task.filePath||this.project.filePath||``,x=new e.Component;x.load();let ee=e=>{let t=0;this.task.description=this.task.description.replace(/^([ \t]*[-*+] \[)([ x])(\])/gm,(n,r,i,a)=>t++===e?r+(i===` `?`x`:` `)+a:n),_.value=this.task.description,re()},te=()=>{g.querySelectorAll(`input[type="checkbox"]`).forEach((e,t)=>{let n=e;n.removeAttribute(`disabled`),n.addEventListener(`click`,e=>{e.preventDefault(),ee(t)})})},ne=()=>{g.querySelectorAll(`a.external-link`).forEach(e=>{e.href.startsWith(`file://`)&&e.addEventListener(`click`,t=>{t.preventDefault(),activeWindow.open(e.href)})})},re=async()=>{x.unload(),x=new e.Component,x.load(),g.empty(),await e.MarkdownRenderer.render(this.app,this.task.description,g,b,x),te(),ne()},ie=e=>{g.classList.add(`pm-hidden`),_.classList.remove(`pm-hidden`),_.value=this.task.description,window.setTimeout(()=>{v(),_.focus(),e!==void 0&&_.setSelectionRange(e,e)},0)},ae=()=>{y()&&(re(),_.classList.add(`pm-hidden`),g.classList.remove(`pm-hidden`))};_.addEventListener(`input`,()=>{this.task.description=_.value,v()}),_.addEventListener(`blur`,()=>ae()),_.addEventListener(`paste`,e=>{let t=e.clipboardData?.items;if(!t)return;let n=[];for(let e of Array.from(t))if(e.kind===`file`&&e.type.startsWith(`image/`)){let t=e.getAsFile();if(t){let r=new Date().toISOString().replace(/[:.]/g,`-`),i=(e.type.split(`/`)[1]||`png`).split(`+`)[0],a=i===`jpeg`?`jpg`:i;n.push({blob:t,name:`Pasted-${r}.${a}`})}}n.length!==0&&(e.preventDefault(),this.insertAttachments(_,n,v))}),h.addEventListener(`dragover`,e=>{e.dataTransfer&&Array.from(e.dataTransfer.types).includes(`Files`)&&e.preventDefault()}),h.addEventListener(`drop`,e=>{let t=e.dataTransfer?.files;if(!t||t.length===0)return;e.preventDefault(),_.classList.contains(`pm-hidden`)&&(ie(),_.selectionStart=_.selectionEnd=_.value.length);let n=Array.from(t).map(e=>({blob:e,name:e.name}));this.insertAttachments(_,n,v)}),this.noteSuggest?.destroy(),this.noteSuggest=new Af(this.app,_,e=>{this.task.description=e,v()}),this.noteSuggest.attach(h);let S=e=>{let t=g.textContent||``,n=this.task.description,r=e=>/\s/.test(e)?` `:e,i=0;for(let a=0;a<e&&a<t.length;a++){let e=r(t[a]);for(;i<n.length&&r(n[i])!==e;)i++;i++}return Math.min(i,n.length)},C=e=>{let t=g.ownerDocument,n=t.caretPositionFromPoint?.(e.clientX,e.clientY),r=n?.offsetNode;if(!r||r.nodeType!==Node.TEXT_NODE||!g.contains(r))return;let i=t.createTreeWalker(g,NodeFilter.SHOW_TEXT),a=0,o=i.nextNode();for(;o&&o!==r;)a+=(o.textContent||``).length,o=i.nextNode();return o?S(a+n.offset):void 0};g.addEventListener(`click`,e=>{let t=e.target;if(t.instanceOf(HTMLInputElement)&&t.type===`checkbox`)return;let n=t.closest(`a`);if(n){if(n.classList.contains(`internal-link`)){e.preventDefault(),e.stopPropagation();let t=n.getAttribute(`data-href`)||n.getAttribute(`href`)||``;this.saved=!1,this.cancelled=!1,this.close(),this.app.workspace.openLinkText(t,b);return}return}if(t.instanceOf(HTMLImageElement))return;let r=activeWindow.getSelection();r&&!r.isCollapsed&&g.contains(r.anchorNode)||ie(C(e))}),y()?(_.classList.add(`pm-hidden`),re()):(g.classList.add(`pm-hidden`),window.setTimeout(v,0)),Of(c,this.task,this.plugin,this.plugin.store.configFor(this.project).statuses),Df(c,this.task);let oe=t.createDiv(`pm-te-footer`);if(!this.isNew&&this.task.filePath){let t=this.task.filePath,n=oe.createSpan({cls:`pm-te-footer-path pm-te-copyable`}),r=n.createSpan({cls:`pm-te-footer-icon`});(0,e.setIcon)(r,`file-text`),n.createSpan({text:t}),(0,e.setTooltip)(n,`复制文件路径`),n.addEventListener(`click`,Y(async()=>{await navigator.clipboard.writeText(t),new e.Notice(`文件路径已复制`)}))}oe.createDiv(`pm-footer-spacer`),new e.ButtonComponent(oe).setButtonText(`取消`).onClick(()=>{this.cancelled=!0,this.close()});let se=new e.ButtonComponent(oe).setButtonText(this.isNew?`创建（Shift+Enter）`:`保存（Shift+Enter）`).setCta(),ce=!1,le=async()=>{if(!ce){ce=!0;try{if(!this.task.title.trim()){u.focus(),u.classList.add(`pm-input-error`);return}p(),await this.persistTask(),this.saved=!0,this.close()}catch(t){if(t instanceof Sd){m(`已存在名为“${t.fileName}”的笔记，请使用其他标题。`);return}console.error(`[PM]`,t),new e.Notice(`操作失败，请查看控制台了解详情。`)}finally{ce=!1}}};se.onClick(()=>{le()}),this.saveKeyHandler&&this.modalEl.removeEventListener(`keydown`,this.saveKeyHandler),this.saveKeyHandler=e=>{e.key===`Enter`&&e.shiftKey&&(e.preventDefault(),le())},this.modalEl.addEventListener(`keydown`,this.saveKeyHandler)}};const Mf=[`#8b72be`,`#7c6b9a`,`#b07d9e`,`#c47070`,`#b8a06b`,`#79b58d`,`#6ba8a0`,`#7a9ec4`,`#767491`,`#8aab6b`],Nf=[`📋`,`🚀`,`💡`,`🎯`,`🔬`,`🏗`,`📊`,`🎨`,`📱`,`🛠`,`📝`,`⚡`];function Pf(e){let{title:t,description:n,color:r,icon:i,customFields:a,teamMembers:o,config:s}=e;return JSON.parse(JSON.stringify({title:t,description:n,color:r,icon:i,customFields:a,teamMembers:o,config:s}))}var Ff=class extends e.Modal{plugin;existingProject;onSave;draft;original;isNew;constructor(e,t,n,r){super(e),this.plugin=t,this.existingProject=n,this.onSave=r,this.isNew=n===null;let i=n??iu(`新项目`,``);this.draft=Pf(i),this.original=Pf(i)}changedFields(){let e={};for(let t of Object.keys(this.draft))JSON.stringify(this.draft[t])!==JSON.stringify(this.original[t])&&Object.assign(e,{[t]:this.draft[t]});return e}onOpen(){this.modalEl.addClass(`pm-modal`,`pm-modal--project`);let e=this.contentEl;e.empty(),e.addClass(`pm-project-modal`),this.buildForm(e)}onClose(){this.contentEl.empty()}buildForm(t){let n=t.createDiv(`pm-project-modal-header`);n.createSpan({text:`✦`,cls:`pm-project-modal-header-icon`}),n.createEl(`h2`,{text:this.isNew?`新建项目`:`项目设置`,cls:`pm-modal-heading`});let r=t.createDiv(`pm-project-top-row`),i=r.createDiv(`pm-icon-picker`),a=i.createEl(`button`,{text:this.draft.icon,cls:`pm-icon-picker-btn`}),o=i.createDiv(`pm-icon-grid`);o.addClass(`pm-hidden`);for(let e of Nf)o.createEl(`button`,{text:e,cls:`pm-icon-option`}).addEventListener(`click`,()=>{this.draft.icon=e,a.textContent=e,o.addClass(`pm-hidden`)});a.addEventListener(`click`,()=>{o.toggleClass(`pm-hidden`,!o.hasClass(`pm-hidden`))});let s=r.createDiv(`pm-project-title-wrap`);s.createEl(`label`,{text:`项目名称`,cls:`pm-label`});let c=s.createEl(`input`,{type:`text`,value:this.draft.title,cls:`pm-input pm-input--lg`});c.placeholder=`请输入项目名称`,c.addEventListener(`input`,()=>{this.draft.title=c.value}),window.setTimeout(()=>{c.focus(),c.select()},50);let l=t.createDiv(`pm-project-modal-section`);l.createEl(`label`,{text:`颜色`,cls:`pm-label`});let u=l.createDiv(`pm-color-palette`);for(let e of Mf){let t=u.createEl(`button`,{cls:`pm-color-swatch`});t.setCssStyles({background:e}),e===this.draft.color&&t.addClass(`pm-color-swatch--selected`),t.addEventListener(`click`,()=>{this.draft.color=e,u.querySelectorAll(`.pm-color-swatch`).forEach(e=>e.removeClass(`pm-color-swatch--selected`)),t.addClass(`pm-color-swatch--selected`)})}let d=u.createEl(`input`,{type:`color`,cls:`pm-color-custom`});d.value=this.draft.color,d.title=`自定义颜色`,d.addEventListener(`change`,()=>{this.draft.color=d.value,u.querySelectorAll(`.pm-color-swatch`).forEach(e=>e.removeClass(`pm-color-swatch--selected`))});let f=t.createDiv(`pm-project-modal-section`);f.createEl(`label`,{text:`描述`,cls:`pm-label`});let p=f.createEl(`textarea`,{cls:`pm-input pm-project-desc`});p.placeholder=`请输入项目说明`,p.value=this.draft.description,p.addEventListener(`input`,()=>{this.draft.description=p.value});let m=t.createDiv(`pm-modal-section`);m.createEl(`label`,{text:`团队成员`,cls:`pm-label`});let h=m.createDiv(`pm-member-list`),g=()=>{h.empty();for(let e=0;e<this.draft.teamMembers.length;e++){let t=h.createDiv(`pm-member-row`),n=this.draft.teamMembers[e]||`?`;new pf(t).setName(n);let r=t.createEl(`input`,{type:`text`,value:this.draft.teamMembers[e],cls:`pm-input pm-member-input`});r.placeholder=`姓名`,r.addEventListener(`change`,()=>{this.draft.teamMembers[e]=r.value,g()}),new Ud(t).setIcon(`x`).setTooltip(`删除成员`).onClick(()=>{this.draft.teamMembers.splice(e,1),g()})}Sf(h,`添加成员`,()=>{this.draft.teamMembers.push(``),g(),window.setTimeout(()=>{let e=h.querySelectorAll(`input`);e[e.length-1]?.focus()},50)})};g();let _=t.createDiv(`pm-modal-section`),v=_.createDiv(`pm-modal-section-header`);v.createSpan({text:`自定义字段`,cls:`pm-modal-subheading`}),v.createSpan({text:`任务的额外属性`,cls:`pm-modal-hint`});let y=_.createDiv(`pm-cf-list`),b=()=>{y.empty();for(let e=0;e<this.draft.customFields.length;e++)this.renderCustomFieldEditor(y,this.draft.customFields[e],e,b);Sf(y,`添加自定义字段`,()=>{this.draft.customFields.push({id:nu(),name:`新字段`,type:`text`,options:[]}),b()})};b(),this.renderPaletteOverride(t,{heading:`阶段`,hint:`项目的阶段显示目录`,toggleLabel:`使用项目自己的阶段目录`,addLabel:`添加阶段`,get:()=>this.draft.config?.stages,set:e=>this.patchConfig(`stages`,e),copyGlobal:()=>this.plugin.settings.stages.map(e=>({...e})),makeEntry:()=>({id:`stage-`+nu().slice(0,6),label:`新阶段`,color:`#8a94a0`,icon:``}),renderEditor:(e,t)=>Xd(e,{app:this.app,priorities:t,onChanged:()=>{}})}),this.renderPaletteOverride(t,{heading:`状态`,hint:`项目的状态显示目录`,toggleLabel:`使用项目自己的状态目录`,addLabel:`添加状态`,get:()=>this.draft.config?.statuses,set:e=>this.patchConfig(`statuses`,e),copyGlobal:()=>this.plugin.settings.statuses.map(e=>({...e})),makeEntry:()=>({id:`status-`+nu().slice(0,6),label:`新状态`,color:`#8a94a0`,icon:``,complete:!1}),renderEditor:(e,t)=>Yd(e,{app:this.app,statuses:t,onChanged:()=>{}})}),this.renderPaletteOverride(t,{heading:`优先级`,hint:`项目的优先级目录`,toggleLabel:`使用项目自己的优先级目录`,addLabel:`添加优先级`,get:()=>this.draft.config?.priorities,set:e=>this.patchConfig(`priorities`,e),copyGlobal:()=>this.plugin.settings.priorities.map(e=>({...e})),makeEntry:()=>({id:`priority-`+nu().slice(0,6),label:`新优先级`,color:`#8a94a0`,icon:``}),renderEditor:(e,t)=>Xd(e,{app:this.app,priorities:t,onChanged:()=>{}})});let x=t.createDiv(`pm-modal-section`),ee=x.createDiv(`pm-modal-section-header`);ee.createSpan({text:`视图与排期`,cls:`pm-modal-subheading`}),ee.createSpan({text:`仅覆盖当前项目的全局设置`,cls:`pm-modal-hint`});let te=x.createDiv(`pm-config-override-grid`);this.renderOverrideSelect(te,`默认视图`,`defaultView`,[{value:`table`,label:`表格`},{value:`gantt`,label:`甘特图`},{value:`kanban`,label:`看板`}]),this.renderOverrideSelect(te,`自动排期`,`autoSchedule`,[{value:!0,label:`开启`},{value:!1,label:`关闭`}]),this.renderOverrideSelect(te,`提前完成时前移后续事项`,`pullForwardOnEarlyFinish`,[{value:!0,label:`开启`},{value:!1,label:`关闭`}]),this.renderOverrideSelect(te,`看板显示子任务`,`kanbanShowSubtasks`,[{value:!0,label:`显示`},{value:!1,label:`隐藏`}]),this.renderOverrideSelect(te,`看板显示描述预览`,`kanbanShowDescriptionPreview`,[{value:!0,label:`显示`},{value:!1,label:`隐藏`}]);let ne=t.createDiv(`pm-modal-footer`);ne.createDiv(`pm-footer-spacer`),new e.ButtonComponent(ne).setButtonText(`取消`).onClick(()=>this.close()),new e.ButtonComponent(ne).setButtonText(this.isNew?`+ 创建项目`:`保存`).setCta().onClick(Y(async()=>{let e=c.value.trim();if(!e){c.addClass(`pm-input-error`),c.focus();return}this.draft.title=e;let t=this.plugin.settings.projectsFolder;if(this.existingProject)await this.plugin.store.updateProject(this.existingProject,this.changedFields()),await this.onSave(this.existingProject);else{let n=iu(e,`${t}/${e.replace(/[\\/:*?"<>|]/g,`-`)}.md`);Object.assign(n,this.draft),await this.plugin.store.ensureFolder(t),await this.plugin.store.saveProject(n),await this.onSave(n)}this.close()}))}patchConfig(e,t){let n=Object.entries({...this.draft.config,[e]:t}).filter(([,e])=>e!==void 0);this.draft.config=n.length?Object.fromEntries(n):void 0}renderPaletteOverride(e,t){let n=e.createDiv(`pm-modal-section`),r=n.createDiv(`pm-modal-section-header`);r.createSpan({text:t.heading,cls:`pm-modal-subheading`}),r.createSpan({text:t.hint,cls:`pm-modal-hint`});let i=n.createEl(`label`,{cls:`pm-status-toggle`}),a=i.createEl(`input`,{type:`checkbox`});a.checked=!!t.get()?.length,i.createSpan({text:t.toggleLabel});let o=n.createDiv(`pm-settings-statuses`),s=n.createDiv(),c=()=>{o.empty(),s.empty();let e=t.get();e?.length&&(t.renderEditor(o,e),Sf(s,t.addLabel,()=>{e.push(t.makeEntry()),c()}))};a.addEventListener(`change`,()=>{t.set(a.checked?t.copyGlobal():void 0),c()}),c()}renderOverrideSelect(e,t,n,r){let i=e.createDiv(`pm-config-override-row`);i.createEl(`label`,{text:t,cls:`pm-label`});let a=i.createEl(`select`,{cls:`pm-input pm-select`}),o=this.draft.config?.[n],s=a.createEl(`option`,{value:``,text:`使用全局设置`});s.selected=o===void 0,r.forEach((e,t)=>{let n=a.createEl(`option`,{value:String(t),text:e.label});o===e.value&&(n.selected=!0)}),a.addEventListener(`change`,()=>{this.patchConfig(n,a.value===``?void 0:r[Number(a.value)].value)})}renderCustomFieldEditor(e,t,n,r){let i=e.createDiv(`pm-cf-row`),a=i.createEl(`input`,{type:`text`,value:t.name,cls:`pm-input pm-cf-name`});a.placeholder=`字段名称`,a.addEventListener(`change`,()=>{this.draft.customFields[n].name=a.value});let o=i.createEl(`select`,{cls:`pm-input pm-select pm-cf-type`});for(let[e,n]of[[`text`,`文本`],[`number`,`数字`],[`date`,`日期`],[`select`,`单选`],[`multiselect`,`多选`],[`person`,`人员`],[`checkbox`,`复选框`],[`url`,`链接`]]){let r=o.createEl(`option`,{value:e,text:n});e===t.type&&(r.selected=!0)}if(o.addEventListener(`change`,()=>{this.draft.customFields[n].type=o.value,r()}),new Ud(i).setIcon(`x`).setTooltip(`移除字段`).onClick(()=>{this.draft.customFields.splice(n,1),r()}),t.type===`select`||t.type===`multiselect`){let e=i.createDiv(`pm-cf-options`),n=t.options??[],r=()=>{e.empty();for(let i=0;i<n.length;i++){let a=e.createDiv(`pm-cf-opt-row`),o=a.createEl(`input`,{type:`text`,value:n[i],cls:`pm-input pm-cf-opt-input`});o.placeholder=`选项 ${i+1}`,o.addEventListener(`change`,()=>{n[i]=o.value,t.options=n}),new Ud(a).setIcon(`x`).setTooltip(`移除选项`).onClick(()=>{n.splice(i,1),t.options=n,r()})}Sf(e,`添加选项`,()=>{n.push(``),t.options=n,r()})};r()}}},If=class extends e.SuggestModal{projects;onChoose;constructor(e,t,n){super(e),this.projects=t,this.onChoose=n,this.setPlaceholder(`选择项目…`)}getSuggestions(e){let t=e.toLowerCase();return this.projects.filter(e=>e.title.toLowerCase().includes(t))}renderSuggestion(e,t){t.createSpan({text:`${e.icon} ${e.title}`})}onChooseSuggestion(e){this.onChoose(e)}},Lf=class extends e.SuggestModal{tasks;onChoose;constructor(e,t,n,r=`选择父任务…`){super(e),this.tasks=t,this.onChoose=n,this.setPlaceholder(r)}getSuggestions(e){let t=e.toLowerCase();return this.tasks.filter(e=>e.title.toLowerCase().includes(t))}renderSuggestion(e,t){t.createSpan({text:e.title})}onChooseSuggestion(e){this.onChoose(e)}};const Rf={DAILY:`daily`,WEEKLY:`weekly`,MONTHLY:`monthly`,YEARLY:`yearly`};function zf(e){let t=e?.match(/FREQ=(DAILY|WEEKLY|MONTHLY|YEARLY)/);if(!t)return;let n=e?.match(/INTERVAL=(\d+)/);return{interval:Rf[t[1]],every:n?parseInt(n[1],10):1}}function Bf(e){return e?e.slice(0,10):``}function Vf(e,t){let n=e.info,r=ru({title:n.title||e.path.slice(e.path.lastIndexOf(`/`)+1).replace(/\.md$/,``),status:n.status||t.defaultStatus,priority:n.priority||t.defaultPriority,start:Bf(n.scheduled),due:Bf(n.due),completed:Bf(n.completedDate),tags:(n.tags??[]).filter(e=>e!==t.taskTag&&e!==t.archiveTag),recurrence:zf(n.recurrence)});return n.timeEstimate&&n.timeEstimate>0&&(r.timeEstimate=Math.round(n.timeEstimate/60*100)/100),n.dateCreated&&(r.createdAt=n.dateCreated),n.dateModified&&(r.updatedAt=n.dateModified),n.archived&&(r.archived=!0),r}function Hf(e,t){let n=new Map;for(let r of e)n.set(r.path,Vf(r,t));let r=new Map;for(let t of e){let e=t.parentPaths.find(e=>e!==t.path&&n.has(e));if(!e)continue;let i=e,a=!1;for(;i;){if(i===t.path){a=!0;break}i=r.get(i)}a||r.set(t.path,e)}let i=[];for(let t of e){let e=n.get(t.path);if(!e)continue;let a=r.get(t.path);if(a){let t=n.get(a);if(t){e.type=`subtask`,t.subtasks.push(e);continue}}i.push(e)}for(let t of e){let e=n.get(t.path);e&&(e.dependencies=t.blockedByPaths.filter(e=>e!==t.path&&n.has(e)).map(e=>n.get(e)?.id).filter(e=>!!e))}return{roots:i,byPath:n}}var Uf=class extends e.Modal{plugin;files=[];filteredFiles=[];selectedCount=0;searchInput=null;selectAllCheckbox=null;nextButton=null;fileListContainer=null;counterLabel=null;phase=1;defaultStatus;defaultPriority;fileHandling=`move`;project=null;onImportComplete=null;constructor(e,t){super(e),this.plugin=t,this.defaultStatus=ed(t.settings.statuses),this.defaultPriority=td(t.settings.priorities)}get palettes(){return this.project?this.plugin.store.configFor(this.project):this.plugin.settings}onOpen(){let e=this.palettes;this.defaultStatus=ed(e.statuses),this.defaultPriority=td(e.priorities);let{contentEl:t}=this;t.empty(),t.addClass(`import-modal`),this.modalEl.addClass(`import-modal-container`),this.loadVaultFiles(),this.render()}onClose(){this.contentEl.empty()}loadVaultFiles(){let e=this.app.vault.getFiles().filter(e=>e.extension===`md`);this.files=e.map(e=>{let t=e.parent?.path||`/`;return{file:e,folder:t===`/`?`/`:t,selected:!1}}),this.filteredFiles=[...this.files]}render(){this.phase===1?this.renderPhase1():this.renderPhase2()}renderPhase1(){let{contentEl:t}=this;t.empty();let n=t.createDiv(`import-modal-header`);n.createEl(`h2`,{text:`选择要导入的笔记`}),this.counterLabel=n.createDiv(`import-counter`),this.updateCounter();let r=t.createDiv(`import-search-container`);this.searchInput=r.createEl(`input`,{type:`text`,cls:`prompt-input import-search-input`,placeholder:`搜索文件…`}),this.searchInput.addEventListener(`input`,()=>this.handleSearch());let i=t.createDiv(`import-list-wrapper`);this.fileListContainer=i;let a=i.createDiv(`import-select-all-row`);this.selectAllCheckbox=a.createEl(`input`,{type:`checkbox`}),this.selectAllCheckbox.addEventListener(`change`,()=>this.handleSelectAll()),a.createEl(`label`,{text:`全选`}).addEventListener(`click`,()=>{this.selectAllCheckbox&&(this.selectAllCheckbox.checked=!this.selectAllCheckbox.checked,this.handleSelectAll())}),this.renderFileList();let o=t.createDiv(`import-modal-footer`);new e.ButtonComponent(o).setButtonText(`取消`).onClick(()=>this.close()),this.nextButton=new e.ButtonComponent(o).setButtonText(`下一步`).setCta().setDisabled(this.selectedCount===0).onClick(()=>this.handleNext())}renderPhase2(){let{contentEl:t}=this;t.empty(),t.createDiv(`import-options-header`).createEl(`h2`,{text:`导入选项`});let n=t.createDiv(`import-options-content`),r=n.createDiv(`import-option-group`);r.createEl(`label`,{text:`默认状态`});let i=r.createEl(`select`);this.palettes.statuses.forEach(e=>{let t=i.createEl(`option`,{text:e.label});t.value=e.id,e.id===this.defaultStatus&&(t.selected=!0)}),i.addEventListener(`change`,e=>{this.defaultStatus=e.target.value});let a=n.createDiv(`import-option-group`);a.createEl(`label`,{text:`默认优先级`});let o=a.createEl(`select`);this.palettes.priorities.forEach(e=>{let t=o.createEl(`option`,{text:e.label});t.value=e.id,e.id===this.defaultPriority&&(t.selected=!0)}),o.addEventListener(`change`,e=>{this.defaultPriority=e.target.value});let s=n.createDiv(`import-option-group`);s.createEl(`label`,{text:`文件处理方式`});let c=s.createDiv(`import-radio-group`),l=c.createEl(`label`),u=l.createEl(`input`,{type:`radio`});u.name=`file-handling`,u.value=`move`,u.checked=this.fileHandling===`move`,u.addEventListener(`change`,()=>{this.fileHandling=`move`}),l.createSpan({text:`移动到任务目录（默认）`});let d=c.createEl(`label`),f=d.createEl(`input`,{type:`radio`});f.name=`file-handling`,f.value=`copy`,f.checked=this.fileHandling===`copy`,f.addEventListener(`change`,()=>{this.fileHandling=`copy`}),d.createSpan({text:`复制（保留原文件）`});let p=t.createDiv(`import-modal-footer`);new e.ButtonComponent(p).setButtonText(`上一步`).onClick(()=>this.handleBack()),new e.ButtonComponent(p).setButtonText(`导入（${this.selectedCount}）`).setCta().onClick(()=>{this.handleImport()})}applyRowStyles(e,t){e.toggleClass(`import-file-item--selected`,t)}renderFileList(){let e=this.fileListContainer;e&&(e.querySelectorAll(`.import-file-item`).forEach(e=>e.remove()),this.filteredFiles.forEach(t=>{let n=e.createDiv(`import-file-item suggestion-item`);this.applyRowStyles(n,t.selected);let r=n.createEl(`input`,{type:`checkbox`});r.checked=t.selected,r.addEventListener(`change`,e=>{e.stopPropagation(),t.selected=r.checked,this.updateCounter(),this.updateSelectAllCheckbox(),this.updateNextButton(),this.applyRowStyles(n,t.selected)}),n.createSpan({text:t.file.basename,cls:`import-file-name`}),n.createSpan({text:t.folder,cls:`import-file-folder`}),n.addEventListener(`click`,e=>{e.target!==r&&(r.checked=!r.checked,r.dispatchEvent(new Event(`change`,{bubbles:!0})))})}))}handleSearch(){let e=this.searchInput?.value.toLowerCase()||``;this.filteredFiles=this.files.filter(t=>t.file.basename.toLowerCase().includes(e)||t.folder.toLowerCase().includes(e)),this.renderFileList()}handleSelectAll(){let e=this.selectAllCheckbox?.checked||!1;this.filteredFiles.forEach(t=>{t.selected=e}),this.updateCounter(),this.updateNextButton(),this.renderFileList()}updateCounter(){if(!this.counterLabel)return;let e=this.files.filter(e=>e.selected).length;this.selectedCount=e,this.counterLabel.setText(`${e} selected`)}updateSelectAllCheckbox(){if(!this.selectAllCheckbox)return;let e=this.filteredFiles.length>0&&this.filteredFiles.every(e=>e.selected);this.selectAllCheckbox.checked=e}updateNextButton(){this.nextButton?.setDisabled(this.selectedCount===0)}handleNext(){this.selectedCount!==0&&(this.phase=2,this.render())}handleBack(){this.phase=1,this.render()}async handleImport(){if(!this.project){new e.Notice(`导入失败：尚未设置目标项目`,5e3);return}let t=this.files.filter(e=>e.selected).map(e=>e.file),n=0,r=0,i=Pd(this.app),a=i?.hasCapability(`tasks.read`)?i:null,o=[];for(let e of t){let t=this.app.metadataCache.getFileCache(e)?.frontmatter?.[`pm-task`]===!0;if(a&&!t){let t=await a.getTask(e.path).catch(()=>null);if(t){o.push({file:e,info:t});continue}}try{await this.plugin.store.importNoteAsTask(this.project,e,{status:this.defaultStatus,priority:this.defaultPriority,handling:this.fileHandling})===`imported`?r++:n++}catch(t){console.error(`导入 ${e.basename} 失败：`,t),n++}}if(a&&o.length)try{r+=await this.importTaskNotesTasks(a,this.project,o)}catch(e){console.error(`导入 TaskNotes 任务失败：`,e),n+=o.length}this.onImportComplete&&this.onImportComplete();let s=`已导入 ${r} 个任务`;n>0&&(s+=`（跳过 ${n} 个）`),new e.Notice(s,3e3),this.close()}async importTaskNotesTasks(e,t,n){let r=e.hasCapability(`settings.snapshot`)?e.getSettingsSnapshot():{},i=r.taskTag||`task`,a=r.fieldMapping?.archiveTag||`archived`,o=(e,t)=>(e??[]).map(e=>Ld(this.app,e,t)).filter(e=>e!==null),s=n.map(({file:e,info:t})=>({path:e.path,info:t,parentPaths:o(t.projects,e.path),blockedByPaths:o((t.blockedBy??[]).map(e=>typeof e==`string`?e:e.uid),e.path)})),{roots:c,byPath:l}=Hf(s,{defaultStatus:this.defaultStatus,defaultPriority:this.defaultPriority,taskTag:i,archiveTag:a}),u=new Set(s.map(e=>e.info.status).filter(Boolean)),d=new Set(s.map(e=>e.info.priority).filter(Boolean));Rd(e,this.plugin.settings,u,d)>0&&await this.plugin.saveSettings();let f=new Map;for(let{file:e}of n){let t=l.get(e.path);t&&f.set(t.id,e)}return this.plugin.store.importTaskForest(t,c,f,this.fileHandling)}setProject(e){this.project=e}setOnImportComplete(e){this.onImportComplete=e}};function Wf(e,t,n=`删除`){return new Promise(r=>{new Jf(e,t,n,r).open()})}function Gf(e,t){return new Promise(n=>{new Yf(e,t,n).open()})}function Kf(e,t,n=``){return new Promise(r=>{new qf(e,t,n,r).open()})}var qf=class extends e.Modal{label;placeholder;resolve;resolved=!1;constructor(e,t,n,r){super(e),this.label=t,this.placeholder=n,this.resolve=r}finish(e){this.resolved||(this.resolved=!0,this.resolve(e))}onOpen(){let{contentEl:t}=this;this.modalEl.addClass(`pm-prompt-modal`),t.createEl(`p`,{text:this.label,cls:`pm-prompt-text`});let n=t.createEl(`input`,{type:`text`,placeholder:this.placeholder,cls:`pm-prompt-input`}),r=t.createDiv(`pm-modal-btn-row`);new e.ButtonComponent(r).setButtonText(`取消`).onClick(()=>{this.finish(null),this.close()});let i=()=>{let e=n.value.trim();this.finish(e||null),this.close()};new e.ButtonComponent(r).setButtonText(`确定`).setCta().onClick(i),n.addEventListener(`keydown`,e=>{e.key===`Enter`&&(e.preventDefault(),i()),e.key===`Escape`&&(e.preventDefault(),this.finish(null),this.close())}),window.setTimeout(()=>n.focus(),10)}onClose(){this.finish(null),this.contentEl.empty()}},Jf=class extends e.Modal{message;confirmLabel;resolve;resolved=!1;constructor(e,t,n,r){super(e),this.message=t,this.confirmLabel=n,this.resolve=r}finish(e){this.resolved||(this.resolved=!0,this.resolve(e))}onOpen(){let{contentEl:t}=this;this.modalEl.addClass(`pm-confirm-modal`),t.createEl(`p`,{text:this.message,cls:`pm-confirm-text`});let n=t.createDiv(`pm-modal-btn-row`);new e.ButtonComponent(n).setButtonText(`取消`).onClick(()=>{this.finish(!1),this.close()}),new e.ButtonComponent(n).setButtonText(this.confirmLabel).setDestructive().onClick(()=>{this.finish(!0),this.close()})}onClose(){this.finish(!1),this.contentEl.empty()}},Yf=class extends e.Modal{taskTitle;resolve;resolved=!1;constructor(e,t,n){super(e),this.taskTitle=t,this.resolve=n}finish(e){this.resolved||(this.resolved=!0,this.resolve(e))}onOpen(){let{contentEl:t}=this;this.modalEl.addClass(`pm-confirm-modal`),t.createEl(`p`,{text:`是否同时复制“${this.taskTitle}”的子任务？`,cls:`pm-confirm-text`});let n=t.createDiv(`pm-modal-btn-row`);new e.ButtonComponent(n).setButtonText(`取消`).onClick(()=>{this.finish(null),this.close()}),new e.ButtonComponent(n).setButtonText(`仅复制任务`).onClick(()=>{this.finish(`task-only`),this.close()}),new e.ButtonComponent(n).setButtonText(`包含子任务`).setCta().onClick(()=>{this.finish(`with-subtasks`),this.close()})}onClose(){this.finish(null),this.contentEl.empty()}};function Q(e,t,n){let r=()=>{new jf(e.app,e,t,n.task??null,n.parentId??null,n.onSave,n.defaults).open()};if(n.task){let t=n.task;(async()=>{await e.store.loadTaskBody(t),r()})()}else r()}function Xf(e,t){let n=()=>{new Ff(e.app,e,t.project??null,t.onSave??(()=>{})).open()};if(t.project){let r=t.project;(async()=>{await e.store.loadProjectBody(r),n()})()}else n()}function Zf(e,t,n){new If(e.app,t,n).open()}function Qf(e,t,n){new Lf(e.app,t,n).open()}function $f(e,t,n){let r=new Uf(e.app,e);r.setProject(t),n&&r.setOnImportComplete(()=>{n()}),r.open()}function ep(e,t,n,r=[],i=[],a=[]){let o=n.sortDir===`asc`?1:-1;switch(n.sortKey){case`title`:return o*e.title.localeCompare(t.title);case`stage`:return o*(ld(e.stage,r)-ld(t.stage,r));case`status`:return o*(nd(e.status,i)-nd(t.status,i));case`priority`:return o*(tp(e.priority,a)-tp(t.priority,a));case`due`:return o*(e.due||`zzz`).localeCompare(t.due||`zzz`);case`assignees`:return o*(e.assignees[0]??``).localeCompare(t.assignees[0]??``);case`progress`:return o*(e.progress-t.progress);default:return 0}}function tp(e,t){let n=t.findIndex(t=>t.id===e);return n>=0?n:999}function np(t,n,r){return t.addItem(e=>e.setTitle(`编辑任务`).setIcon(`pencil`).onClick(()=>{Q(r.plugin,r.project,{task:n,onSave:async()=>{await r.onRefresh()}})})),t.addItem(e=>e.setTitle(`添加子任务`).setIcon(`plus`).onClick(()=>{Q(r.plugin,r.project,{parentId:n.id,onSave:async()=>{await r.onRefresh()}})})),t.addItem(e=>e.setTitle(`复制任务`).setIcon(`copy`).onClick(Y(async()=>{let e=!1;if(n.subtasks.length>0){let t=await Gf(r.plugin.app,n.title);if(t===null)return;e=t===`with-subtasks`}await r.plugin.store.duplicateTask(r.project,n.id,e),await r.onRefresh()}))),t.addSeparator(),n.archived?t.addItem(t=>t.setTitle(`取消归档`).setIcon(`archive-restore`).onClick(Y(async()=>{await r.plugin.store.unarchiveTask(r.project,n.id),new e.Notice(`任务已取消归档`),await r.onRefresh()}))):t.addItem(t=>t.setTitle(`归档`).setIcon(`archive`).onClick(Y(async()=>{await r.plugin.store.archiveTask(r.project,n.id),new e.Notice(`任务已归档`),await r.onRefresh()}))),t.addItem(e=>e.setTitle(`删除任务`).setIcon(`trash`).onClick(Y(async()=>{await Wf(r.plugin.app,`确定删除“${n.title}”吗？`)&&(await r.plugin.store.deleteTask(r.project,n.id),await r.onRefresh())}))),t}var rp=class{el;constructor(e,t){this.el=e.createEl(`tr`,{cls:`pm-table-row`}),this.el.dataset.taskId=t.taskId,t.isDone&&this.el.addClass(`pm-table-row--done`),t.isArchived&&this.el.addClass(`pm-table-row--archived`),t.isSelected&&this.el.addClass(`pm-table-row--selected`),this.el.style.setProperty(`--depth`,String(t.depth)),this.el.addEventListener(`click`,e=>{e.target.closest(`button, input, .pm-chip--interactive, .pm-task-title-text, .pm-table-cell-select, .pm-icon-btn`)||t.onRowClick()})}},ip=class{el;constructor(e,t){this.el=e.createEl(`td`,{cls:`pm-table-cell pm-table-cell-actions`}),new Ud(this.el).setIcon(`more-horizontal`).setTooltip(`任务操作`).setRevealOnHover(!0).onClick(t.onClick)}},ap=class{el;names=[];max=3;size=`md`;constructor(e){this.el=e.createDiv(`pm-avatar-stack`)}setNames(e){return this.names=e,this.render(),this}setMax(e){return this.max=e,this.render(),this}setSize(e){return this.size=e,this.render(),this}render(){this.el.empty();let e=this.names.slice(0,this.max);for(let t of e)new pf(this.el).setName(t).setSize(this.size);let t=this.names.length-e.length;if(t>0){let e=this.el.createSpan({cls:`pm-avatar pm-avatar--more`});e.setText(`+${t}`),this.size===`sm`&&e.addClass(`pm-avatar--sm`)}}},op=class{el;constructor(e,t){this.el=e.createEl(`td`,{cls:`pm-table-cell pm-table-cell-assignees`}),new ap(this.el).setNames(t).setMax(3)}},sp=class{el;constructor(e,t){this.el=e.createEl(`td`,{cls:`pm-table-cell`}),this.el.createSpan({text:t||`—`,cls:`pm-cf-value`})}};function cp(e,t,n,r=`md`){let i=new Z(e).setLabel(t).setSize(r);return n===`near`?i.setVariant(`solid`).setColor(`var(--color-orange)`):n===`overdue`&&i.setVariant(`solid`).setColor(`var(--color-red)`).setStrong(),i}var lp=class{el;constructor(e,t){let{task:n}=t;this.el=e.createEl(`td`,{cls:`pm-table-cell`});let r=e=>{vf({container:this.el,display:e,inputType:`date`,value:n.due,onSave:t.onSave})};if(!n.due){let e=new Z(this.el).setLabel(`—`).setColor(`var(--text-faint)`).onClick(t=>{t.stopPropagation(),r(e.el)});return}let i=cp(this.el,$u(n.due),t.urgency);i.onClick(e=>{e.stopPropagation(),r(i.el)})}},up=class{el;constructor(t,n){this.el=t.createDiv({cls:`tree-item-icon collapse-icon pm-collapse-toggle`}),(0,e.setIcon)(this.el,`right-triangle`),this.el.toggleClass(`is-collapsed`,n.collapsed),this.el.setAttr(`aria-label`,n.collapsed?`展开子任务`:`折叠子任务`),this.el.addEventListener(`click`,n.onToggle)}},dp=class{el;constructor(e,t){this.el=e.createEl(`td`,{cls:`pm-table-cell-expand`}),t.hasSubtasks&&new up(this.el,{collapsed:t.collapsed,onToggle:t.onToggle})}},fp=class{el;constructor(e,t){this.el=e.createEl(`td`,{cls:`pm-table-cell`}),ud(t.priorities,t.task.priority)&&sf(this.el,t.task,t.priorities,t.onChange)}},pp=class{el;fill;labelEl=null;value=0;constructor(e){this.el=e.createDiv(`pm-progress`);let t=this.el.createDiv(`pm-progress-track`);this.fill=t.createDiv(`pm-progress-fill`)}setValue(e){return this.value=Math.max(0,Math.min(100,e)),this.fill.style.width=`${this.value}%`,this.labelEl&&this.labelEl.setText(`${Math.round(this.value)}%`),this}setColor(e){return this.el.style.setProperty(`--pm-progress-color`,e),this}setSize(e){return this.el.toggleClass(`pm-progress--sm`,e===`sm`),this}setShowLabel(e){return e&&!this.labelEl?this.labelEl=this.el.createSpan({cls:`pm-progress-label`,text:`${Math.round(this.value)}%`}):!e&&this.labelEl&&(this.labelEl.remove(),this.labelEl=null),this}},mp=class{el;constructor(e,t){this.el=e.createEl(`td`,{cls:`pm-table-cell pm-table-cell-progress`});let n=new pp(this.el).setValue(t.value).setColor(t.color).setShowLabel(!0);n.el.addEventListener(`click`,e=>{e.stopPropagation(),vf({container:this.el,display:n.el,inputType:`number`,value:String(t.value),onSave:e=>t.onSave(Math.max(0,Math.min(100,Math.round(parseFloat(e)||0))))})})}},hp=class{el;constructor(e,t){this.el=e.createEl(`td`,{cls:`pm-table-cell-select`});let n=this.el.createEl(`input`,{type:`checkbox`,cls:`pm-select-checkbox`});n.checked=t.checked,n.addEventListener(`click`,e=>{e.stopPropagation(),t.onClick(e)})}},gp=class{el;constructor(e,t){this.el=e.createEl(`td`,{cls:`pm-table-cell`}),t.readonly?af(this.el,t.task.status,sd(t.statuses,t.task.status)):sd(t.statuses,t.task.status)?nf(this.el,t.task,t.statuses,t.onChange):af(this.el,t.task.status,void 0)}},_p=class{el;constructor(e,t){this.el=e.createEl(`td`,{cls:`pm-table-cell`}),t.readonly?af(this.el,t.task.stage,cd(t.stages,t.task.stage)):cd(t.stages,t.task.stage)?rf(this.el,t.task,t.stages,t.onChange):af(this.el,t.task.stage,void 0)}};function vp(e,t,n,r=`md`){if(t<=0&&n<=0)return null;let i=n>0?`${t}/${n}h`:`${t}h`,a=new Z(e).setLabel(i).setSize(r);return n>0&&t>n&&a.setVariant(`solid`).setColor(`var(--color-red)`).setStrong(),a}var yp=class{el;constructor(e,t){this.el=e.createEl(`td`,{cls:`pm-table-cell pm-table-cell-time`}),vp(this.el,t.logged,t.estimate)}};function bp(e,t,n){if(t===`zentao`)return null;let r=t===`zentao-requirement`?`需求`:t===`zentao-task`?`任务`:t,i=new Z(e).setLabel(r).setVariant(`outline`).setTag();return t.startsWith(`超时`)?i.setDot(!0).setColor(`var(--color-red)`):n&&i.setDot(!0).setColor(Zu(t)),i}function xp(e){let t=String(e.customFields.zentaoSourceType??``),n=t===`story`?`需求`:t===`task`?`任务`:e.type===`milestone`?`里程碑`:`事项`,r=String(e.customFields.zentaoId??``);return{displayTitle:e.title.replace(/^需求\s*-?\s*#?\d+\s*[·｜|:-]\s*/u,``).replace(/^迭代\s*-?\s*#?\d+\s*[·｜|:-]\s*/u,``).trim()||e.title,typeLabel:n,zentaoId:r}}var Sp=class{el;constructor(e,t){let{task:n}=t,r=xp(n);this.el=e.createEl(`td`,{cls:`pm-table-cell-title`}),this.el.setCssStyles({paddingLeft:`${t.depth*20+8}px`});let i=this.el.createSpan({text:r.displayTitle,cls:`pm-task-title-text`});if(i.addEventListener(`click`,()=>t.onTitleClick()),i.addEventListener(`dblclick`,e=>{t.readonly||(e.stopPropagation(),vf({container:this.el,display:i,inputType:`text`,value:n.title,onSave:t.onTitleSave}))}),t.readonly||new Ud(this.el).setIcon(`plus`).setTooltip(`添加子任务`).setRevealOnHover(!0).onClick(e=>{e.stopPropagation(),t.onAddSubtask()}),n.type===`milestone`&&new Z(this.el).setLabel(`里程碑`).setVariant(`solid`).setSize(`sm`).setColor(`var(--color-purple)`).setTooltip(`里程碑`),n.recurrence&&new Z(this.el).setLabel(`重复`).setVariant(`solid`).setSize(`sm`).setColor(`var(--color-blue)`).setTooltip(`重复任务`),n.archived&&new Z(this.el).setLabel(`已归档`).setVariant(`solid`).setSize(`sm`).setColor(`var(--text-muted)`).setTooltip(`已归档`),n.tags.length){let e=this.el.createDiv(`pm-table-tags`);for(let r of n.tags)bp(e,r,t.showTagColors)}}};function Cp(t,n,r,i,u=`a`){let a=!!n.completed,o=sd(i.statuses,n.status),s=!!n.customFields.zentaoSourceType,{el:c}=new rp(t,{taskId:n.id,depth:r,isDone:a,isArchived:!!n.archived,isSelected:i.state.selectedTaskId===n.id,onRowClick:()=>{i.state.selectedTaskId=n.id,kp(i.state)}});c.addClass(`pm-zentao-type-${Dp(String(n.customFields.zentaoSourceType??`local`))}`),c.addClass(`pm-requirement-group-${u}`),c.addClass(`pm-zentao-stage-${Dp(n.stage||`unset`)}`),c.addClass(`pm-zentao-status-${Dp(n.status||`unset`)}`),new hp(c,{checked:i.state.selectedTaskIds.has(n.id),onClick:e=>{let t=e.target.checked;if(e.shiftKey&&i.state.lastCheckedTaskId){let e=Up(i.state),r=e.indexOf(n.id),a=e.indexOf(i.state.lastCheckedTaskId);if(r!==-1&&a!==-1){let[n,o]=r<a?[r,a]:[a,r];for(let r=n;r<=o;r++)t?i.state.selectedTaskIds.add(e[r]):i.state.selectedTaskIds.delete(e[r]);Vp(i.state)}}else t?i.state.selectedTaskIds.add(n.id):i.state.selectedTaskIds.delete(n.id);i.state.lastCheckedTaskId=n.id,i.onSelectionChange()}}),new dp(c,{hasSubtasks:n.subtasks.length>0,collapsed:n.collapsed,onToggle:Y(async()=>{await i.plugin.toggleTaskCollapsed(i.project,n.id),await i.onRefresh()})}),Tp(c,n),new Sp(c,{task:n,depth:r,showTagColors:i.plugin.settings.showTagColors,onTitleClick:()=>{Q(i.plugin,i.project,{task:n,onSave:async()=>{await i.onRefresh()}})},onTitleSave:async e=>{await i.plugin.store.updateTask(i.project,n.id,{title:e}),await i.onRefresh()},onAddSubtask:()=>{Q(i.plugin,i.project,{parentId:n.id,onSave:async()=>{await i.onRefresh()}})},readonly:s}),new sp(c,id(n.customFields.zentaoModule)),new _p(c,{task:n,stages:i.stages,readonly:s,onChange:Y(async e=>{await i.plugin.store.updateTask(i.project,n.id,{stage:e}),await i.onRefresh()})}),new gp(c,{task:n,statuses:i.statuses,readonly:s,onChange:Y(async e=>{await i.plugin.store.updateTask(i.project,n.id,{status:e}),await i.onRefresh()})}),new fp(c,{task:n,priorities:i.priorities,onChange:Y(async e=>{await i.plugin.store.updateTask(i.project,n.id,{priority:e}),await i.onRefresh()})}),new op(c,n.assignees),new op(c,id(n.customFields.completedBy)?[id(n.customFields.completedBy)]:[]),new lp(c,{task:n,urgency:rd(n,i.statuses),onSave:async e=>{await i.plugin.store.updateTask(i.project,n.id,{due:e}),await i.plugin.store.scheduleAfterChange(i.project,n.id),await i.onRefresh()}}),new mp(c,{value:n.progress,color:o?.color??`var(--interactive-accent)`,onSave:async e=>{await i.plugin.store.updateTask(i.project,n.id,{progress:e}),await i.onRefresh()}}),new yp(c,{logged:gu(n),estimate:projectEstimateHours(n)});for(let e of i.project.customFields.filter(e=>!wp.has(e.id))){let t=n.customFields[e.id];new sp(c,e.id===`storyId`?Ep(i,t):id(t))}new ip(c,{onClick:t=>{let r=new e.Menu;np(r,n,{plugin:i.plugin,project:i.project,onRefresh:i.onRefresh}),r.showAtMouseEvent(t)}})}const wp=new Set([`zentaoType`,`zentaoSourceType`,`zentaoTaskType`,`zentaoId`,`zentaoUrl`,`zentaoStatus`,`zentaoStage`,`zentaoModule`,`executionId`,`storyId`,`sourceUpdatedAt`,`completedBy`]);function Tp(e,t){let n=e.createEl(`td`,{cls:`pm-table-cell pm-table-cell-zentao-id`}),r=xp(t);if(!r.zentaoId)return;let i=id(t.customFields.zentaoUrl),a=i?n.createEl(`a`,{cls:`external-link`,attr:{href:i,target:`_blank`,rel:`noopener noreferrer`}}):n;i&&a.addEventListener(`click`,e=>e.stopPropagation()),new Z(a).setLabel(`${r.typeLabel} #${r.zentaoId}`).setVariant(`plain`).setSize(`sm`).setColor(`var(--text-muted)`)}function Ep(e,t){let n=id(t);if(!n)return``;let r=q(e.project.tasks).find(({task:e})=>String(e.customFields.zentaoSourceType??``)===`story`&&String(e.customFields.zentaoId??``)===n)?.task;return r?`需求 #${n} · ${xp(r).displayTitle}`:`需求 #${n}`}function Dp(e){return e.toLowerCase().replace(/[^a-z0-9_-]+/g,`-`)}function Op(e){if(!e.tableBody)return;let t=e.tableBody.closest(`.pm-table-wrapper`);if(!t)return;let n=t.querySelector(`.pm-select-all-checkbox`);if(!n)return;let r=Up(e);r.length===0?(n.checked=!1,n.indeterminate=!1):r.every(t=>e.selectedTaskIds.has(t))?(n.checked=!0,n.indeterminate=!1):r.some(t=>e.selectedTaskIds.has(t))?(n.checked=!1,n.indeterminate=!0):(n.checked=!1,n.indeterminate=!1)}function kp(e){if(!e.tableBody||(e.tableBody.querySelectorAll(`.pm-table-row--selected`).forEach(e=>e.removeClass(`pm-table-row--selected`)),!e.selectedTaskId))return;let t=e.tableBody.querySelector(`tr[data-task-id="${e.selectedTaskId}"]`);if(!t&&e.wrapper&&e.renderWindow){let n=e.visibleRows.findIndex(t=>t.task.id===e.selectedTaskId);if(n===-1)return;let r=e.wrapper.querySelector(`thead`),i=r instanceof HTMLElement?r.offsetHeight:0;e.wrapper.scrollTop=Math.max(0,n*e.rowHeight+i-e.wrapper.clientHeight/2),e.renderWindow(),t=e.tableBody.querySelector(`tr[data-task-id="${e.selectedTaskId}"]`)}t&&(t.addClass(`pm-table-row--selected`),t.scrollIntoView({block:`nearest`}))}function Ap(e){let t=e.container.createDiv(`pm-table-wrapper`);e.state.wrapper=t;let n=!1;t.addEventListener(`scroll`,()=>{n||(n=!0,window.requestAnimationFrame(()=>{n=!1;let{start:t,end:r}=Np(e.state);(t!==e.state.windowStart||r!==e.state.windowEnd)&&e.state.renderWindow?.()}))});let r=t.createEl(`table`,{cls:`pm-table`}),i=r.createEl(`thead`).createEl(`tr`),a=i.createEl(`th`,{cls:`pm-table-cell-select`}).createEl(`input`,{type:`checkbox`,cls:`pm-select-all-checkbox`});a.addEventListener(`change`,()=>{let t=Up(e.state);if(a.checked)for(let n of t)e.state.selectedTaskIds.add(n);else e.state.selectedTaskIds.clear();Vp(e.state),e.onSelectionChange()});let o=[{id:`expand`,key:null,label:``,width:32},{id:`zentaoId`,key:null,label:`事项 ID`,width:96},{id:`title`,key:`title`,label:`事项`,width:397},{id:`module`,key:null,label:`模块`,width:120},{id:`stage`,key:`stage`,label:`阶段`,width:130},{id:`status`,key:`status`,label:`状态`,width:120},{id:`priority`,key:`priority`,label:`优先级`,width:100},{id:`assignees`,key:`assignees`,label:`负责人`,width:94},{id:`completedBy`,key:null,label:`完成者`,width:102},{id:`due`,key:`due`,label:`截止日期`,width:110},{id:`progress`,key:`progress`,label:`进度`,width:120},{id:`time`,key:null,label:`工时`,width:90}],s=[],c=()=>{for(let{key:t,th:n}of s)n.querySelector(`.pm-sort-indicator`)?.remove(),e.state.sortKey===t&&n.createSpan({text:e.state.sortDir===`asc`?` ↑`:` ↓`,cls:`pm-sort-indicator`})};for(let t of o){let n=i.createEl(`th`);Rp(e,n,t.id,t.width),t.key?(n.addClass(`pm-table-th-sortable`),n.setAttribute(`role`,`button`),n.setAttribute(`aria-label`,`按${t.label}排序`),n.createSpan({text:t.label}),s.push({key:t.key,th:n}),n.addEventListener(`click`,()=>{e.state.sortKey===t.key?e.state.sortDir=e.state.sortDir===`asc`?`desc`:`asc`:(e.state.sortKey=t.key,e.state.sortDir=`asc`),c(),jp(e)})):n.setText(t.label),zp(e,n,t.id)}e.state.updateSortIndicators=c,c();for(let t of Ip(e.project)){let n=i.createEl(`th`,{text:t.name}),r=`custom-${t.id}`;Rp(e,n,r,120),zp(e,n,r)}i.createEl(`th`).setCssStyles({width:`40px`}),e.state.tableBody=r.createEl(`tbody`),Mp(e)}function jp(e){e.state.tableBody&&Mp(e)}function Mp(e){if(!e.state.tableBody)return;let t=q(e.project.tasks),n=Ed(e.state.filter);t=Lp(t,Ad(t,e.state.filter,e.statuses),n);let r=new Set(t.map(e=>e.task.id)),i=new Map;for(let e of t){let t;t=e.parentId===null||n&&!r.has(e.parentId)?null:e.parentId;let a=i.get(t);a||(a=[],i.set(t,a)),a.push(e)}for(let t of i.values())t.sort((t,n)=>ep(t.task,n.task,e.state,e.stages,e.statuses,e.priorities));let a=[],o=e=>{let t=i.get(e);if(t)for(let e of t)a.push(e),o(e.task.id)};o(null);let s=`a`,c=0;for(let e of a){if(e.depth===0&&String(e.task.customFields.zentaoSourceType??``)===`story`)s=c++%2===0?`a`:`b`;e.groupTone=s}e.state.visibleRows=n?a:a.filter(e=>e.visible),e.state.renderWindow=()=>Pp(e),e.state.windowStart=-1,e.state.windowEnd=-1,Pp(e)}function Np(e){if(e.visibleRows.length<=120)return{start:0,end:e.visibleRows.length};let t=e.wrapper;if(!t)return{start:0,end:e.visibleRows.length};let n=t.querySelector(`thead`),r=n instanceof HTMLElement?n.offsetHeight:0,i=Math.max(0,t.scrollTop-r),a=t.clientHeight||600,o=Math.floor(i/e.rowHeight)-8;o<0&&(o=0);let s=Math.ceil((i+a)/e.rowHeight)+8;return s>e.visibleRows.length&&(s=e.visibleRows.length),{start:o,end:s}}function Pp(e){let{state:t}=e,n=t.tableBody;if(!n)return;let r=t.visibleRows,i=14+Ip(e.project).length,{start:a,end:o}=Np(t);t.windowStart=a,t.windowEnd=o,n.empty(),a>0&&Bp(n,i,a*t.rowHeight);for(let t=a;t<o;t++)Cp(n,r[t].task,r[t].depth,e,r[t].groupTone??`a`);if(o<r.length&&Bp(n,i,(r.length-o)*t.rowHeight),Sf(n.createEl(`tr`,{cls:`pm-table-add-row`}).createEl(`td`,{attr:{colspan:String(i)}}),`添加任务`,()=>{Q(e.plugin,e.project,{onSave:()=>e.onRefresh()})}),!t.heightCalibrated){let r=n.querySelector(`tr[data-task-id]`);r instanceof HTMLElement&&r.offsetHeight>0&&(t.heightCalibrated=!0,Math.abs(r.offsetHeight-t.rowHeight)>.5&&(t.rowHeight=r.offsetHeight,Pp(e)))}}const Fp=new Set([`zentaoType`,`zentaoSourceType`,`zentaoTaskType`,`zentaoId`,`zentaoUrl`,`zentaoStatus`,`zentaoStage`,`zentaoModule`,`executionId`,`storyId`,`sourceUpdatedAt`,`completedBy`]);function Ip(e){return e.customFields.filter(e=>!Fp.has(e.id))}function Lp(e,t,n){if(!n)return t;let r=new Map(e.map(e=>[e.task.id,e.parentId])),i=new Set(t.map(e=>e.task.id));for(let e of t){let t=e.parentId;for(;t;)i.add(t),t=r.get(t)??null}return e.filter(e=>i.has(e.task.id))}function Rp(e,t,n,r){let i=e.plugin.settings.tableColumnWidths[n]??r;t.setCssStyles({width:`${i}px`,minWidth:`${i}px`})}function zp(e,t,n){let r=t.createSpan({cls:`pm-table-column-resizer`});r.addEventListener(`pointerdown`,i=>{i.preventDefault(),i.stopPropagation();let a=i.clientX,o=t.getBoundingClientRect().width;r.setPointerCapture(i.pointerId);let s=r=>{let i=Math.max(56,Math.round(o+r.clientX-a));t.setCssStyles({width:`${i}px`,minWidth:`${i}px`}),e.plugin.settings.tableColumnWidths[n]=i},c=()=>{r.removeEventListener(`pointermove`,s),r.removeEventListener(`pointerup`,c),e.plugin.saveSettings()};r.addEventListener(`pointermove`,s),r.addEventListener(`pointerup`,c)})}function Bp(e,t,n){e.createEl(`tr`,{cls:`pm-table-spacer`}).createEl(`td`,{attr:{colspan:String(t)}}).setCssStyles({height:`${n}px`})}function Vp(e){if(!e.tableBody)return;let t=e.tableBody.querySelectorAll(`tr[data-task-id]`);for(let n of Array.from(t)){let t=n.dataset.taskId;if(t===void 0)continue;let r=n.querySelector(`.pm-select-checkbox`);r&&(r.checked=e.selectedTaskIds.has(t))}Op(e)}function Hp(e,t){let n=activeDocument.activeElement,r=n instanceof HTMLInputElement||n instanceof HTMLTextAreaElement||n instanceof HTMLElement&&n.contentEditable===`true`;if(e.key===`Escape`){if(r){n.blur();return}if(t.state.selectedTaskIds.size>0){t.state.selectedTaskIds.clear(),Vp(t.state),t.onSelectionChange();return}t.state.selectedTaskId=null,kp(t.state);return}if(r)return;let i=Up(t.state);if(i.length)switch(e.key){case`ArrowDown`:case`j`:{e.preventDefault();let n=t.state.selectedTaskId?i.indexOf(t.state.selectedTaskId):-1,r=Math.min(n+1,i.length-1);t.state.selectedTaskId=i[r],kp(t.state);break}case`ArrowUp`:case`k`:{e.preventDefault();let n=t.state.selectedTaskId?i.indexOf(t.state.selectedTaskId):i.length,r=Math.max(n-1,0);t.state.selectedTaskId=i[r],kp(t.state);break}case`Enter`:case`e`:{if(!t.state.selectedTaskId)return;e.preventDefault();let n=J(t.project,t.state.selectedTaskId);n&&Q(t.plugin,t.project,{task:n,onSave:async()=>{await t.onRefresh()}});break}case`Delete`:case`Backspace`:{if(e.preventDefault(),t.state.selectedTaskIds.size>0){t.onBulkDelete();break}if(!t.state.selectedTaskId)return;let n=t.state.selectedTaskId,r=i.indexOf(n),a=r<i.length-1?r+1:r-1;t.state.selectedTaskId=a>=0?i[a]:null,Wp(n,t);break}}}function Up(e){return e.visibleRows.map(e=>e.task.id)}async function Wp(e,t){await t.plugin.store.deleteTask(t.project,e),await t.onRefresh()}function Gp(e){let{ctx:t,onAction:n}=e,r=t.container.querySelector(`.pm-bulk-bar`);if(t.state.selectedTaskIds.size===0){r?.remove();return}qp(r??Kp(t.container),t,n)}function Kp(e){let t=createDiv({cls:`pm-bulk-bar`});return e.prepend(t),t}function qp(t,n,r){t.empty();let i=n.state.selectedTaskIds.size,a=t.createDiv(`pm-bulk-bar-left`);a.createSpan({text:`已选择 ${i} 项`,cls:`pm-bulk-bar-count`}),new e.ButtonComponent(a).setButtonText(`设置阶段`).onClick(t=>{let i=new e.Menu;for(let e of n.stages)i.addItem(t=>t.setTitle(pd(e.icon,e.label)).onClick(()=>r({type:`set-stage`,stage:e.id})));i.showAtMouseEvent(t)}),new e.ButtonComponent(a).setButtonText(`设置状态`).onClick(t=>{let i=new e.Menu;for(let e of n.statuses)i.addItem(t=>t.setTitle(pd(e.icon,e.label)).onClick(()=>r({type:`set-status`,status:e.id})));i.showAtMouseEvent(t)}),new e.ButtonComponent(a).setButtonText(`设置优先级`).onClick(t=>{let i=new e.Menu;for(let e of n.priorities)i.addItem(t=>t.setTitle(pd(e.icon,e.label)).onClick(()=>r({type:`set-priority`,priority:e.id})));i.showAtMouseEvent(t)}),new e.ButtonComponent(a).setButtonText(`设置负责人`).onClick(t=>{let i=new e.Menu,a=mu(n.project.tasks,[...n.project.teamMembers,...n.plugin.settings.globalTeamMembers]);for(let e of a)i.addItem(t=>t.setTitle(e).onClick(()=>r({type:`set-assignee`,assignee:e})));i.addSeparator(),i.addItem(e=>e.setTitle(`+ 新负责人…`).onClick(async()=>{let e=await Kf(n.plugin.app,`请输入负责人姓名：`,`姓名`);e&&r({type:`set-assignee`,assignee:e})})),i.addSeparator(),i.addItem(e=>e.setTitle(`清空负责人`).onClick(()=>r({type:`set-assignee`,assignee:``}))),i.showAtMouseEvent(t)}),new e.ButtonComponent(a).setButtonText(`设置标签`).onClick(t=>{let i=new e.Menu,a=hu(n.project.tasks);for(let e of a)i.addItem(t=>t.setTitle(e).onClick(()=>r({type:`set-tag`,tag:e})));i.addSeparator(),i.addItem(e=>e.setTitle(`+ 新标签…`).onClick(async()=>{let e=await Kf(n.plugin.app,`请输入标签：`,`标签`);e&&r({type:`set-tag`,tag:e})})),i.addSeparator(),i.addItem(e=>e.setTitle(`清空标签`).onClick(()=>r({type:`set-tag`,tag:``}))),i.showAtMouseEvent(t)}),new e.ButtonComponent(a).setButtonText(`设置截止日期`).onClick(t=>{let n=new e.Menu,i=Zl(),a=e=>i.add({days:e}).toString();n.addItem(e=>e.setTitle(`今天（${a(0)}）`).onClick(()=>r({type:`set-due-date`,due:a(0)}))),n.addItem(e=>e.setTitle(`明天（${a(1)}）`).onClick(()=>r({type:`set-due-date`,due:a(1)}))),n.addItem(e=>e.setTitle(`一周后（${a(7)}）`).onClick(()=>r({type:`set-due-date`,due:a(7)}))),n.addItem(e=>e.setTitle(`两周后（${a(14)}）`).onClick(()=>r({type:`set-due-date`,due:a(14)}))),n.addSeparator(),n.addItem(e=>e.setTitle(`选择日期…`).onClick(()=>{let e=activeDocument.createEl(`input`);e.type=`date`,e.addClass(`pm-offscreen`),activeDocument.body.appendChild(e),e.addEventListener(`change`,()=>{e.value&&r({type:`set-due-date`,due:e.value}),e.remove()}),e.addEventListener(`blur`,()=>window.setTimeout(()=>e.remove(),200)),e.showPicker()})),n.addSeparator(),n.addItem(e=>e.setTitle(`清空截止日期`).onClick(()=>r({type:`set-due-date`,due:``}))),n.showAtMouseEvent(t)}),new e.ButtonComponent(a).setButtonText(`设置进度`).onClick(t=>{let n=new e.Menu;for(let e of[0,25,50,75,100])n.addItem(t=>t.setTitle(`${e}%`).onClick(()=>r({type:`set-progress`,progress:e})));n.showAtMouseEvent(t)}),new e.ButtonComponent(a).setButtonText(`设置父事项`).onClick(()=>{let e=new Set(n.state.selectedTaskIds),t=new Set(e);for(let r of e){let e=J(n.project,r);if(e)for(let n of q(e.subtasks))t.add(n.task.id)}let i=q(n.project.tasks).filter(e=>!t.has(e.task.id)).map(e=>e.task);new Lf(n.plugin.app,i,e=>{r({type:`set-parent`,parentId:e.id})}).open()}),new e.ButtonComponent(a).setButtonText(`移除父事项`).onClick(()=>r({type:`remove-parent`}));let o=[...n.state.selectedTaskIds].map(e=>J(n.project,e)).filter(Boolean),s=o.some(e=>e.archived);o.some(e=>!e.archived)&&new e.ButtonComponent(a).setButtonText(`归档`).onClick(()=>r({type:`archive`})),s&&new e.ButtonComponent(a).setButtonText(`取消归档`).onClick(()=>r({type:`unarchive`})),new e.ButtonComponent(a).setButtonText(`删除`).setDestructive().onClick(()=>r({type:`delete`}));let c=t.createDiv(`pm-bulk-bar-right`);new e.ExtraButtonComponent(c).setIcon(`x`).setTooltip(`清空选择`).onClick(()=>{n.state.selectedTaskIds.clear(),n.state.tableBody&&n.state.tableBody.querySelectorAll(`.pm-select-checkbox`).forEach(e=>{e.checked=!1}),Op(n.state),Gp({ctx:n,onAction:r})})}const Jp=e=>`${e} 个事项`;var Yp=class{container;project;plugin;onRefresh;state;pendingScrollTop=null;constructor(e,t,n,r,i,a){this.container=e,this.project=t,this.plugin=n,this.onRefresh=r,this.state={sortKey:a?.sortKey??`stage`,sortDir:a?.sortDir??`asc`,filter:i,selectedTaskId:null,selectedTaskIds:new Set,lastCheckedTaskId:null,tableBody:null,wrapper:null,visibleRows:[],rowHeight:36,heightCalibrated:!1,windowStart:-1,windowEnd:-1,renderWindow:null,updateSortIndicators:null}}getScrollTop(){return this.container.querySelector(`.pm-table-wrapper`)?.scrollTop??0}setPendingScrollTop(e){this.pendingScrollTop=e}getViewState(){return{sortKey:this.state.sortKey,sortDir:this.state.sortDir}}updateFilter(e,t){this.state.filter=e,t&&(this.state.sortKey=t.sortKey??this.state.sortKey,this.state.sortDir=t.sortDir??this.state.sortDir),this.state.selectedTaskId=null,this.state.selectedTaskIds.clear(),this.state.lastCheckedTaskId=null,this.state.updateSortIndicators?.();let n=this.getScrollTop();this.doRefreshTable();let r=this.state.wrapper;r&&(r.scrollTop=Math.min(n,Math.max(0,r.scrollHeight-r.clientHeight)),this.state.renderWindow?.()),this.updateBulkBar()}render(){this.state.tableBody=null,this.container.empty(),this.container.addClass(`pm-table-view`);let e=this.makeTableContext();if(Ap(e),Gp({ctx:e,onAction:Y(e=>this.handleBulkAction(e))}),this.pendingScrollTop!==null){let e=this.container.querySelector(`.pm-table-wrapper`);e&&(e.scrollTop=this.pendingScrollTop,this.state.renderWindow?.()),this.pendingScrollTop=null}}handleKeyDown(e){Hp(e,this.makeTableContext())}refresh(){this.doRefreshTable(),this.updateBulkBar()}doRefreshTable(){this.state.tableBody?jp(this.makeTableContext()):this.render()}async handleBulkAction(t){let n=[...this.state.selectedTaskIds];if(n.length)try{switch(t.type){case`set-stage`:await this.plugin.store.updateTasks(this.project,this.localEditableIds(n),{stage:t.stage});break;case`set-status`:await this.plugin.store.updateTasks(this.project,this.localEditableIds(n),{status:t.status});break;case`set-priority`:await this.plugin.store.updateTasks(this.project,n,{priority:t.priority});break;case`set-assignee`:t.assignee===``?await this.plugin.store.updateTasks(this.project,n,{assignees:[]}):await this.bulkAddToArray(n,`assignees`,t.assignee);break;case`set-tag`:t.tag===``?await this.plugin.store.updateTasks(this.project,n,{tags:[]}):await this.bulkAddToArray(n,`tags`,t.tag);break;case`set-due-date`:if(await this.plugin.store.updateTasks(this.project,n,{due:t.due}),this.plugin.store.configFor(this.project).autoSchedule)for(let e of n)await this.plugin.store.scheduleAfterChange(this.project,e);break;case`set-progress`:await this.plugin.store.updateTasks(this.project,n,{progress:t.progress});break;case`set-parent`:await this.plugin.store.moveTasks(this.project,n,t.parentId),new e.Notice(`已将 ${Jp(n.length)}移动到新的父事项下`);break;case`remove-parent`:await this.plugin.store.moveTasks(this.project,n,null),new e.Notice(`已将 ${Jp(n.length)}移动到顶层`);break;case`archive`:for(let e of n)await this.plugin.store.archiveTask(this.project,e);new e.Notice(`已归档 ${Jp(n.length)}`);break;case`unarchive`:for(let e of n)await this.plugin.store.unarchiveTask(this.project,e);new e.Notice(`已取消归档 ${Jp(n.length)}`);break;case`delete`:if(!await Wf(this.plugin.app,`确定删除 ${Jp(n.length)}吗？此操作无法撤销。`))return;await this.plugin.store.deleteTasks(this.project,n)}this.state.selectedTaskIds.clear(),await this.onRefresh()}catch(t){console.error(`批量操作失败`,t),new e.Notice(`批量操作失败，请重试。`),await this.onRefresh()}}async bulkAddToArray(e,t,n){await this.plugin.store.updateTasks(this.project,e,e=>e[t].includes(n)?null:{[t]:[...e[t],n]})}localEditableIds(e){return e.filter(e=>{let t=J(this.project,e);return t&&!t.customFields.zentaoSourceType})}updateBulkBar(){Gp({ctx:this.makeTableContext(),onAction:Y(e=>this.handleBulkAction(e))})}makeTableContext(){let e=this.plugin.store.configFor(this.project);return{container:this.container,project:this.project,plugin:this.plugin,stages:e.stages,statuses:e.statuses,priorities:e.priorities,state:this.state,onRefresh:this.onRefresh,onSelectionChange:()=>{Op(this.state),this.updateBulkBar()},onBulkDelete:Y(()=>this.handleBulkAction({type:`delete`}))}}},Xp=class{el;constructor(t,n){this.el=t.createDiv(`pm-segmented`);let r=new Map;for(let t of n.options){let i=new e.ButtonComponent(this.el).setButtonText(t.label).onClick(()=>{for(let[e,n]of r)e===t.id?n.setCta():n.removeCta();n.onChange(t.id)});t.id===n.active&&i.setCta(),r.set(t.id,i)}}};const Zp={day:44,week:22,month:9,quarter:5},Qp={day:30,week:90,month:365,quarter:365};function $p(e,t){let n=q(e).map(e=>e.task),r=[];for(let e of n){let t=K(e.start),n=K(e.due);t&&r.push(t),n&&r.push(n)}let i=Zl();r.push(i);let a=r.reduce((e,t)=>G.PlainDate.compare(t,e)<0?t:e,r[0]),o=r.reduce((e,t)=>G.PlainDate.compare(t,e)>0?t:e,r[0]);a=a.subtract({days:7}),o=o.add({days:14});let s=o.since(a,{largestUnit:`days`}).days;if(s<Qp[t]){let e=Math.ceil((Qp[t]-s)/2);a=a.subtract({days:e}),o=o.add({days:e})}(t===`week`||t===`month`||t===`quarter`)&&(a=a.with({day:1}));let c=Zp[t],l=o.since(a,{largestUnit:`days`}).days;return{startDate:a,endDate:o,dayWidth:c,granularity:t,totalDays:l,totalWidth:l*c}}function $(e,t){return t.since(e.startDate,{largestUnit:`days`}).days*e.dayWidth}function em(e,t){return e.startDate.add({days:Math.round(t/e.dayWidth)})}function tm(e){let t=[],{startDate:n,totalDays:r,dayWidth:i,granularity:a}=e;for(let e=0;e<=r;e++){let r=n.add({days:e}),o=e*i;a===`day`?t.push(o):a===`week`?(r.dayOfWeek===1||r.dayOfWeek===4)&&t.push(o):a===`month`?(r.day===1||r.day===8||r.day===15||r.day===22)&&t.push(o):a===`quarter`&&r.day===1&&t.push(o)}return t}function nm(e,t,n){let r=e,i=1/0;for(let a of t){let t=Math.abs(e-a);if(t<i&&(i=t,r=a),a>e+n)break}return i<=n?r:e}function rm(e){return e.weekOfYear??0}function im(){return{isDragging:!1,dragSide:null,dragTask:null,dragStartX:0,dragBarEl:null,dragInitialX:0,dragInitialW:0,dragMoved:!1}}function am(t,n,r,i,a,o,s,c,l,u,d,f){let p=null;return t.addEventListener(`mousedown`,t=>{t.stopPropagation(),t.preventDefault(),l.isDragging=!0,l.dragMoved=!1,l.dragSide=n,l.dragTask=r,l.dragStartX=t.clientX,l.dragBarEl=i,l.dragInitialX=o,l.dragInitialW=s;let m=tm(c),h=c.dayWidth*.4,g=e=>{if(!l.isDragging||!l.dragBarEl)return;let t=e.clientX-l.dragStartX;Math.abs(t)>3&&(l.dragMoved=!0);let n=l.dragInitialX,r;l.dragSide===`left`?(n=Math.max(0,l.dragInitialX+t),n=nm(n,m,h),r=l.dragInitialX+l.dragInitialW-n):(r=l.dragInitialW+t,r=nm(n+r,m,h)-n),r=Math.max(c.dayWidth,r),l.dragBarEl.setAttribute(`x`,String(n)),l.dragBarEl.setAttribute(`width`,String(r)),sm(a,n,r)},_=Y(async()=>{if(activeDocument.removeEventListener(`mousemove`,g),activeDocument.removeEventListener(`mouseup`,_),p=null,!l.isDragging||!l.dragTask||!l.dragBarEl||(l.isDragging=!1,!l.dragMoved))return;let t=parseFloat(l.dragBarEl.getAttribute(`x`)??`0`),n=parseFloat(l.dragBarEl.getAttribute(`width`)??`0`),r=nm(t,m,h),i=nm(t+n,m,h),o=l.dragTask.id,s=l.dragTask.start,v=l.dragTask.due,y={};l.dragSide===`left`?y.start=em(c,r).toString():y.due=em(c,i).subtract({days:1}).toString();try{await u.store.updateTask(d,o,y)}catch(t){l.dragBarEl.setAttribute(`x`,String(l.dragInitialX)),l.dragBarEl.setAttribute(`width`,String(l.dragInitialW)),sm(a,l.dragInitialX,l.dragInitialW),new e.Notice(`保存日期变更失败，请重试。`),console.error(`GanttDragHandler: save failed`,t);return}let b={...y};u.pushUndo({undo:async()=>{await u.store.updateTask(d,o,{start:s,due:v}),u.store.configFor(d).autoSchedule&&new e.Notice(`日期已恢复，相关依赖事项的日期可能需要重新调整。`),await f()},redo:async()=>{await u.store.updateTask(d,o,b),await u.store.scheduleAfterChange(d,o),await f()}}),await u.store.scheduleAfterChange(d,l.dragTask.id),await f()});activeDocument.addEventListener(`mousemove`,g),activeDocument.addEventListener(`mouseup`,_),p=()=>{activeDocument.removeEventListener(`mousemove`,g),activeDocument.removeEventListener(`mouseup`,_)}}),()=>{p&&(p(),p=null,l.isDragging=!1,l.dragBarEl=null)}}function om(t,n,r,i,a,o,s,c,l,u){let d=null;return t.addEventListener(`mousedown`,f=>{if(f.button!==0)return;f.preventDefault(),s.isDragging=!0,s.dragMoved=!1,s.dragSide=`move`,s.dragTask=r,s.dragStartX=f.clientX,s.dragBarEl=t,s.dragInitialX=i,s.dragInitialW=a;let p=tm(o),m=o.dayWidth*.4,h=i,g=e=>{if(!s.isDragging||!s.dragBarEl)return;let t=e.clientX-s.dragStartX;Math.abs(t)>3&&(s.dragMoved=!0),h=Math.max(0,s.dragInitialX+t),h=nm(h,p,m);let r=h-s.dragInitialX;n.setAttribute(`transform`,`translate(${r}, 0)`)},_=Y(async()=>{if(activeDocument.removeEventListener(`mousemove`,g),activeDocument.removeEventListener(`mouseup`,_),t.classList.remove(`pm-gantt-bar-grabbing`),d=null,!s.isDragging||!s.dragTask||!s.dragBarEl)return;if(s.isDragging=!1,!s.dragMoved){n.removeAttribute(`transform`);return}let r=s.dragTask.id,i=s.dragTask.start,a=s.dragTask.due,f=nm(h,p,m),v=nm(f+s.dragInitialW,p,m),y=em(o,f),b=em(o,v).subtract({days:1}),x={start:y.toString(),due:b.toString()};try{await c.store.updateTask(l,r,x)}catch(t){n.removeAttribute(`transform`),new e.Notice(`保存日期变更失败，请重试。`),console.error(`GanttDragHandler: move save failed`,t);return}let ee={...x};c.pushUndo({undo:async()=>{await c.store.updateTask(l,r,{start:i,due:a}),c.store.configFor(l).autoSchedule&&new e.Notice(`日期已恢复，相关依赖事项的日期可能需要重新调整。`),await u()},redo:async()=>{await c.store.updateTask(l,r,ee),await c.store.scheduleAfterChange(l,r),await u()}}),await c.store.scheduleAfterChange(l,s.dragTask.id),await u()});t.classList.add(`pm-gantt-bar-grabbing`),activeDocument.addEventListener(`mousemove`,g),activeDocument.addEventListener(`mouseup`,_),d=()=>{activeDocument.removeEventListener(`mousemove`,g),activeDocument.removeEventListener(`mouseup`,_)}}),()=>{d&&(d(),d=null,s.isDragging=!1,s.dragBarEl=null)}}function sm(e,t,n){let r=e.querySelector(`.pm-gantt-bar-label`);r&&(r.setAttribute(`x`,String(t+8)),n<=55?r.setAttribute(`visibility`,`hidden`):r.removeAttribute(`visibility`));let i=e.querySelectorAll(`.pm-gantt-drag-handle`);i.length===2&&(i[0].setAttribute(`x`,String(t)),i[1].setAttribute(`x`,String(t+n-8)));let a=e.querySelector(`.pm-gantt-bar-progress`);a&&a.setAttribute(`x`,String(t));let o=e.querySelector(`.pm-gantt-bar-icon`);o&&o.setAttribute(`x`,String(t+n+4))}function cm(){return{active:!1,taskId:null,side:null,dotEl:null}}function lm(e){e.dotEl&&e.dotEl.classList.remove(`pm-gantt-link-dot--active`),e.active=!1,e.taskId=null,e.side=null,e.dotEl=null}function um(t,n,r,i,a,o,s){if(!i.active){i.active=!0,i.taskId=n,i.side=r,i.dotEl=t,t.classList.add(`pm-gantt-link-dot--active`);return}if(i.taskId===n){lm(i);return}let c=i.taskId;if(c===null){lm(i);return}if(i.side===r){new e.Notice(`请从右侧连接点（输出）连接到左侧连接点（输入）。`);return}let l=r===`right`?n:c,u=r===`left`?n:c;lm(i);let d=dm(o.tasks),f=d.find(e=>e.id===u);if(f?.dependencies?.includes(l)){new e.Notice(`该依赖关系已存在。`);return}if(d.find(e=>e.id===l)?.dependencies?.includes(u)){new e.Notice(`反向依赖已存在，继续连接会形成循环依赖。`);return}let p=[...f?.dependencies??[],l];Y(async()=>{try{await a.store.updateTask(o,u,{dependencies:p})}catch(t){new e.Notice(`保存依赖关系失败。`),console.error(`GanttLinkHandler: save failed`,t);return}await a.store.scheduleAfterChange(o,u),await s()})()}function dm(e){let t=[],n=e=>{for(let r of e)t.push(r),r.subtasks.length&&n(r.subtasks)};return n(e),t}function fm(e,t){let n=e.add({days:t-1}),r=e.toLocaleString(void 0,{month:`short`});if(e.month===n.month)return`${r} ${e.day}–${n.day}`;let i=n.toLocaleString(void 0,{month:`short`});return`${r} ${e.day} – ${i} ${n.day}`}function pm(e,t,n,r){if(r===`weekNumber`)return`W${n}`;let i=fm(e,t);return r===`dateRange`?i:`W${n}: ${i}`}function mm(e){let t=X(`g`,{class:`pm-gantt-header`});t.appendChild(X(`rect`,{x:0,y:0,width:e.cfg.totalWidth,height:56,class:`pm-gantt-header-bg`}));let{granularity:n}=e.cfg;n===`day`?hm(t,e):n===`week`?gm(t,e):n===`month`?_m(t,e):vm(t,e),e.headerSvgEl.appendChild(t)}function hm(e,t){let{startDate:n,totalDays:r,dayWidth:i}=t.cfg;ym(e,0,24,t);for(let t=0;t<r;t++){let r=n.add({days:t}),a=t*i;if((r.dayOfWeek===6||r.dayOfWeek===7)&&e.appendChild(X(`rect`,{x:a,y:24,width:i,height:32,class:`pm-gantt-weekend-header`})),i>=20){let t=X(`text`,{x:a+i/2,y:42,class:`pm-gantt-header-day`});t.textContent=String(r.day),e.appendChild(t)}}}function gm(e,t){let{startDate:n,totalDays:r,dayWidth:i}=t.cfg;ym(e,0,24,t);let a=n.dayOfWeek===1?0:8-n.dayOfWeek,o=t.plugin.settings.ganttWeekLabel;if(a>0){let t=rm(n),r=X(`text`,{x:a*i/2,y:44,class:`pm-gantt-header-week`});r.textContent=pm(n,a,t,o),e.appendChild(r)}let s=a;for(;s<r;){let t=n.add({days:s}),a=rm(t),c=s*i,l=Math.min(7,r-s),u=X(`text`,{x:c+l*i/2,y:44,class:`pm-gantt-header-week`});u.textContent=pm(t,l,a,o),e.appendChild(u),e.appendChild(X(`line`,{x1:c,y1:24,x2:c,y2:56,class:`pm-gantt-header-tick`})),s+=7}}function _m(e,t){bm(e,0,24,t);let n=t.cfg.startDate.with({day:1});for(;G.PlainDate.compare(n,t.cfg.endDate)<0;){let r=n.add({months:1}),i=Math.max(0,$(t.cfg,n)),a=X(`text`,{x:i+(Math.min(t.cfg.totalWidth,$(t.cfg,r))-i)/2,y:44,class:`pm-gantt-header-month`});a.textContent=n.toLocaleString(void 0,{month:`short`}),e.appendChild(a),e.appendChild(X(`line`,{x1:i,y1:24,x2:i,y2:56,class:`pm-gantt-header-tick`})),n=r}}function vm(e,t){bm(e,0,24,t);let{startDate:n}=t.cfg,r=G.PlainDate.from({year:n.year,month:Math.floor((n.month-1)/3)*3+1,day:1});for(;G.PlainDate.compare(r,t.cfg.endDate)<0;){let n=Math.floor((r.month-1)/3)+1,i=r.add({months:3}),a=Math.max(0,$(t.cfg,r)),o=X(`text`,{x:a+(Math.min(t.cfg.totalWidth,$(t.cfg,i))-a)/2,y:44,class:`pm-gantt-header-quarter`});o.textContent=`${r.year}年第${n}季度`,e.appendChild(o),r=i}}function ym(e,t,n,r){let i=r.cfg.startDate.with({day:1});for(;G.PlainDate.compare(i,r.cfg.endDate)<0;){let a=i.add({months:1}),o=Math.max(0,$(r.cfg,i)),s=Math.min(r.cfg.totalWidth,$(r.cfg,a))-o;e.appendChild(X(`rect`,{x:o,y:t,width:s,height:n,class:(i.month-1)%2==0?`pm-gantt-band-even`:`pm-gantt-band-odd`}));let c=X(`text`,{x:o+6,y:t+n-6,class:`pm-gantt-header-month-top`});c.textContent=i.toLocaleString(void 0,{month:`short`,year:`2-digit`}),e.appendChild(c),i=a}}function bm(e,t,n,r){let i=G.PlainDate.from({year:r.cfg.startDate.year,month:1,day:1});for(;G.PlainDate.compare(i,r.cfg.endDate)<0;){let a=i.add({years:1}),o=Math.max(0,$(r.cfg,i)),s=Math.min(r.cfg.totalWidth,$(r.cfg,a));e.appendChild(X(`rect`,{x:o,y:t,width:s-o,height:n,class:i.year%2==0?`pm-gantt-band-even`:`pm-gantt-band-odd`}));let c=X(`text`,{x:o+6,y:t+n-6,class:`pm-gantt-header-year`});c.textContent=String(i.year),e.appendChild(c),i=a}}function xm(e,t,n,r,i){let a=K(t.start),o=K(t.due);if(!a&&!o){Sm(e,t,n,i);return}let s=sd(i.statuses,t.status),c=s?.color??getComputedStyle(i.svgEl).getPropertyValue(`--interactive-accent`).trim(),l=56+n*44,u=l+8;if(e.appendChild(X(`rect`,{x:0,y:l,width:i.cfg.totalWidth,height:44,class:`pm-gantt-row-hover`})),t.type===`milestone`){Cm(e,t,n,c,i);return}let d=a??o;if(!d)return;let f=(o??d).add({days:1}),p=Math.max(0,$(i.cfg,d)),m=Math.min(i.cfg.totalWidth,$(i.cfg,f)),h=Math.max(8,m-p),g=X(`g`,{class:`pm-gantt-bar-group`});e.appendChild(g);let _=X(`rect`,{x:p,y:u,width:h,height:28,rx:7,ry:7,fill:c,opacity:.4,class:`pm-gantt-bar`});if(g.appendChild(_),t.progress>0){let e=t.progress/100*h;g.appendChild(X(`rect`,{x:p,y:u,width:e,height:28,rx:7,ry:7,fill:c,opacity:.9,class:`pm-gantt-bar-progress`}))}if(t.recurrence){let e=X(`text`,{x:p+h+4,y:u+14+5,class:`pm-gantt-bar-icon`});e.textContent=`↻`,g.appendChild(e)}if(h>55){let e=X(`text`,{x:p+8,y:u+14+5,class:`pm-gantt-bar-label`}),n=Math.max(4,Math.floor((h-16)/7.5));e.textContent=t.title.length>n?t.title.slice(0,n-1)+`…`:t.title,g.appendChild(e)}let v=X(`title`,{}),y=t.assignees.length?`\nAssignees: ${t.assignees.join(`, `)}`:``;v.textContent=`${t.title}\n${s?.label??t.status} \u00b7 ${t.priority}\nStart: ${t.start||`—`}  Due: ${t.due||`—`}\nProgress: ${t.progress}%${y}`,_.appendChild(v);for(let e of[`left`,`right`]){let n=X(`rect`,{x:e===`left`?p:p+h-8,y:u,width:8,height:28,rx:3,ry:3,class:`pm-gantt-drag-handle`,cursor:`ew-resize`}),r=am(n,e,t,_,g,p,h,i.cfg,i.drag,i.plugin,i.project,i.onRefresh);i.cleanupFns.push(r),g.appendChild(n)}for(let e of[`left`,`right`]){let n=X(`circle`,{cx:e===`left`?p-4-4:p+h+4+4,cy:u+14,r:4,class:`pm-gantt-link-dot`,cursor:`crosshair`});n.addEventListener(`mousedown`,e=>{e.stopPropagation()}),n.addEventListener(`click`,r=>{r.stopPropagation(),um(n,t.id,e,i.link,i.plugin,i.project,i.onRefresh)}),g.appendChild(n)}if(t.start&&t.due){let e=om(_,g,t,p,h,i.cfg,i.drag,i.plugin,i.project,i.onRefresh);i.cleanupFns.push(e),_.setAttribute(`cursor`,`grab`)}else _.setAttribute(`cursor`,`pointer`);_.addEventListener(`click`,()=>{if(i.drag.dragMoved){i.drag.dragMoved=!1;return}Q(i.plugin,i.project,{task:t,onSave:()=>i.onRefresh()})})}function Sm(t,n,r,i){let a=56+r*44,o=X(`rect`,{x:0,y:a,width:i.cfg.totalWidth,height:44,fill:`transparent`,cursor:`cell`,class:`pm-gantt-empty-row-hit`}),s=X(`rect`,{x:0,y:a+8,width:Math.max(i.cfg.dayWidth,8),height:28,rx:7,ry:7,class:`pm-gantt-empty-row-preview`,"pointer-events":`none`});s.classList.add(`pm-hidden`),t.appendChild(o),t.appendChild(s);let c=tm(i.cfg),l=i.cfg.dayWidth*.4;o.addEventListener(`mousemove`,e=>{let t=i.svgEl.getBoundingClientRect(),n=nm(e.clientX-t.left,c,l);s.setAttribute(`x`,String(n)),s.classList.remove(`pm-hidden`)}),o.addEventListener(`mouseleave`,()=>{s.classList.add(`pm-hidden`)}),o.addEventListener(`click`,Y(async t=>{let r=i.svgEl.getBoundingClientRect(),a=nm(t.clientX-r.left,c,l),o=em(i.cfg,a).toString();try{await i.plugin.store.updateTask(i.project,n.id,{start:o,due:o})}catch(t){new e.Notice(`设置事项日期失败，请重试。`),console.error(`GanttTaskBarRenderer: click-to-set-dates failed`,t);return}await i.plugin.store.scheduleAfterChange(i.project,n.id),await i.onRefresh()}));let u=X(`title`,{});u.textContent=`点击设置日期`,o.appendChild(u)}function Cm(e,t,n,r,i){let a=K(t.due)??K(t.start);if(!a)return;let o=$(i.cfg,a)+i.cfg.dayWidth/2,s=56+n*44+22,c=X(`polygon`,{points:`${o},${s-12} ${o+12},${s} ${o},${s+12} ${o-12},${s}`,fill:r,opacity:.8,class:`pm-gantt-milestone`,cursor:`pointer`});e.appendChild(c);let l=X(`title`,{});l.textContent=`${t.title} (milestone)\nDate: ${t.due||t.start||`—`}`,c.appendChild(l),c.addEventListener(`click`,()=>{Q(i.plugin,i.project,{task:t,onSave:()=>i.onRefresh()})})}function wm(e){let t=e.flatTasks.filter(e=>e.task.type===`milestone`&&(e.task.due||e.task.start));if(!t.length)return;let n=X(`g`,{class:`pm-gantt-milestone-labels`});for(let{task:r}of t){let t=K(r.due)??K(r.start);if(!t)continue;let i=$(e.cfg,t)+e.cfg.dayWidth/2,a=sd(e.statuses,r.status)?.color??getComputedStyle(e.svgEl).getPropertyValue(`--interactive-accent`).trim(),o=56+e.flatTasks.filter(e=>e.visible||e.depth===0).length*44;n.appendChild(X(`line`,{x1:i,y1:56,x2:i,y2:o,stroke:a,"stroke-width":1,"stroke-dasharray":`4 4`,opacity:.4}));let s=X(`text`,{x:i,y:14,"text-anchor":`middle`,class:`pm-gantt-milestone-label`,fill:a});s.textContent=r.title.length>16?r.title.slice(0,14)+`…`:r.title,e.headerSvgEl.appendChild(s)}e.svgEl.appendChild(n)}function Tm(e){let t=new Map;e.flatTasks.forEach((e,n)=>t.set(e.task.id,n));let n=X(`g`,{class:`pm-gantt-arrows`});for(let{task:r}of e.flatTasks){if(!r.dependencies?.length)continue;let i=t.get(r.id);if(i===void 0)continue;let a=56+i*44+22,o=K(r.start);if(!o)continue;let s=$(e.cfg,o);for(let i of r.dependencies){let r=t.get(i);if(r===void 0)continue;let o=e.flatTasks.find(e=>e.task.id===i)?.task,c=o?K(o.due):null;if(!c)continue;let l=$(e.cfg,c.add({days:1})),u=56+r*44+22,d=(l+s)/2;n.appendChild(X(`path`,{d:`M ${l} ${u} C ${d} ${u}, ${d} ${a}, ${s} ${a}`,class:`pm-gantt-arrow`,"marker-end":`url(#pm-arrowhead)`}))}}let r=Em(e.svgEl),i=X(`marker`,{id:`pm-arrowhead`,markerWidth:8,markerHeight:8,refX:6,refY:3,orient:`auto`});i.appendChild(X(`path`,{d:`M0,0 L0,6 L8,3 z`,class:`pm-gantt-arrowhead`})),r.appendChild(i),e.svgEl.appendChild(n)}function Em(e){return e.querySelector(`defs`)??(()=>{let t=X(`defs`,{});return e.insertBefore(t,e.firstChild),t})()}function Dm(e,t){let n=X(`g`,{class:`pm-gantt-grid`}),r=56+t*44,{startDate:i,totalDays:a,dayWidth:o,granularity:s}=e.cfg;for(let e=0;e<a;e++){let t=i.add({days:e}),a=e*o,c=t.dayOfWeek===6||t.dayOfWeek===7,l=t.dayOfWeek===1,u=t.day===1;c&&s===`day`&&n.appendChild(X(`rect`,{x:a,y:56,width:o,height:r-56,class:`pm-gantt-weekend`})),(s===`day`&&l||s===`week`&&l||s===`month`&&u||s===`quarter`&&u&&(t.month-1)%3==0)&&n.appendChild(X(`line`,{x1:a,y1:56,x2:a,y2:r,class:`pm-gantt-gridline-v`}))}for(let r=0;r<=t;r++){let t=56+r*44;n.appendChild(X(`line`,{x1:0,y1:t,x2:e.cfg.totalWidth,y2:t,class:`pm-gantt-gridline-h`}))}e.svgEl.appendChild(n)}function Om(e,t){let n=$(e.cfg,Zl());n<0||n>e.cfg.totalWidth||(e.svgEl.appendChild(X(`line`,{x1:n,y1:48,x2:n,y2:t,class:`pm-gantt-today-line`})),e.headerSvgEl.appendChild(X(`polygon`,{points:`${n},40 ${n+6},48 ${n},56 ${n-6},48`,class:`pm-gantt-today-diamond`})))}function km(e,t,n,r,i){let a=e.createDiv(`pm-gantt-label-row`);a.style.height=`44px`,a.dataset.taskId=t.id,a.draggable=!0,a.addEventListener(`dragstart`,e=>{e.dataTransfer?.setData(`text/plain`,t.id),a.addClass(`pm-gantt-label-row--dragging`)}),a.addEventListener(`dragend`,()=>{a.removeClass(`pm-gantt-label-row--dragging`)});let o=`before`;a.addEventListener(`dragover`,e=>{e.preventDefault();let t=a.getBoundingClientRect(),n=t.top+t.height/2;o=e.clientY<n?`before`:`after`,a.removeClass(`pm-gantt-label-row--drop-before`,`pm-gantt-label-row--drop-after`),a.addClass(o===`before`?`pm-gantt-label-row--drop-before`:`pm-gantt-label-row--drop-after`)}),a.addEventListener(`dragleave`,()=>{a.removeClass(`pm-gantt-label-row--drop-before`,`pm-gantt-label-row--drop-after`)}),a.addEventListener(`drop`,Y(async e=>{e.preventDefault(),a.removeClass(`pm-gantt-label-row--drop-before`,`pm-gantt-label-row--drop-after`);let n=e.dataTransfer?.getData(`text/plain`);!n||n===t.id||(await i.plugin.store.reorderTask(i.project,n,t.id,o),await i.onRefresh())}));let s=xp(t),c=a.createDiv(`pm-gantt-label-id`);c.setText(s.zentaoId?`${s.typeLabel} #${s.zentaoId}`:`—`);let l=a.createDiv(`pm-gantt-label-item`);l.style.paddingLeft=`${n*18+8}px`,t.subtasks.length>0?new up(l,{collapsed:t.collapsed,onToggle:Y(async()=>{await i.plugin.toggleTaskCollapsed(i.project,t.id),await i.onRefresh()})}):l.createSpan({cls:`pm-gantt-label-spacer`});let w=l.createSpan({text:t.title,cls:`pm-gantt-label-title`});w.setAttr(`title`,t.title),w.addEventListener(`click`,()=>{Q(i.plugin,i.project,{task:t,onSave:()=>i.onRefresh()})}),t.progress>0&&l.createSpan({text:`${t.progress}%`,cls:`pm-gantt-label-progress`}),new Ud(l).setIcon(`plus`).setTooltip(`添加子任务`).setRevealOnHover(!0).onClick(e=>{e.stopPropagation(),Q(i.plugin,i.project,{parentId:t.id,onSave:()=>i.onRefresh()})});let u=a.createDiv(`pm-gantt-label-stage`),d=cd(i.stages,t.stage);af(u,t.stage,d);let f=a.createDiv(`pm-gantt-label-status`),p=sd(i.statuses,t.status);af(f,t.status,p);let m=a.createDiv(`pm-gantt-label-priority`),h=ud(i.priorities,t.priority),g=new Z(m).setLabel(pd(h?.icon,h?.label??(t.priority||`未设置`))).setColor(h?.color??`var(--text-muted)`).setVariant(`plain`),_=tf(h);_?g.setLeadingIcon(_):h?.icon||g.setLeadingIcon(of[t.priority]??`equal`);let v=a.createDiv(`pm-gantt-label-assignees`);t.assignees.length?new ap(v).setNames(t.assignees).setMax(2):v.createSpan({text:`—`,cls:`pm-gantt-label-assignees-empty`});let y=a.createDiv(`pm-gantt-label-completed-by`),b=t.customFields.completedBy;b?new ap(y).setNames([b]).setMax(1):y.createSpan({text:`—`,cls:`pm-gantt-label-assignees-empty`})}var Am=class{container;project;plugin;onRefresh;filter;granularity;scrollEl;svgEl;headerSvgEl;flatTasks=[];cfg;drag=im();link=cm();labelWidth=900;ganttSortKey=null;ganttSortDir=`asc`;getLabelWidth(){return this.labelWidth}setLabelWidth(e){this.labelWidth=Math.max(760,e)}cleanupFns=[];pendingScroll=null;constructor(e,t,n,r,i){this.container=e,this.project=t,this.plugin=n,this.onRefresh=r,this.filter=i,this.granularity=n.settings.ganttGranularity}destroy(){for(let e of this.cleanupFns)e();this.cleanupFns=[]}getScrollPosition(){return{top:this.scrollEl?.scrollTop??0,anchorDate:this.scrollEl?em(this.cfg,this.scrollEl.scrollLeft):Zl()}}setPendingScroll(e){this.pendingScroll=e}refresh(){this.pendingScroll=this.getScrollPosition(),this.render()}render(){this.cleanupFns.forEach(e=>e()),this.cleanupFns=[],lm(this.link),this.container.empty(),this.container.addClass(`pm-gantt-view`);let e=this.getVisibleTasks();this.flatTasks=q(e).filter(e=>e.visible||e.depth===0),this.cfg=$p(e,this.granularity),this.renderGranularityControls(),this.renderGantt()}renderGranularityControls(){let t=this.container.createDiv(`pm-gantt-controls`),n=[`day`,`week`,`month`,`quarter`],r={day:`Day`,week:`Week`,month:`Month`,quarter:`Quarter`};new Xp(t,{options:n.map(e=>({id:e,label:r[e]})),active:this.granularity,onChange:e=>{this.granularity=e,this.plugin.settings.ganttGranularity=e,this.plugin.saveSettings(),this.render()}}),t.createSpan({cls:`pm-gantt-sep`}),new e.ButtonComponent(t).setButtonText(`今天`).onClick(()=>this.scrollToToday()),new e.ButtonComponent(t).setButtonText(`全部展开`).onClick(()=>this.setAllCollapsed(!1)),new e.ButtonComponent(t).setButtonText(`全部折叠`).onClick(()=>this.setAllCollapsed(!0))}renderGantt(){let e=this.container.createDiv(`pm-gantt-wrapper`),t=e.createDiv(`pm-gantt-left`),n=this.plugin.settings.ganttLabelWidth;typeof n===`number`&&(this.labelWidth=Math.max(760,n)),t.style.width=`${this.labelWidth}px`,t.style.minWidth=`${this.labelWidth}px`;for(let[e,n]of Object.entries(this.plugin.settings.ganttColumnWidths??{}))t.style.setProperty(e,`${n}px`);let r=t.createDiv(`pm-gantt-left-header`);r.style.height=`56px`;{let e=[{key:`zentaoId`,label:`事项 ID`,width:`--pm-gantt-id-col`,min:80},{key:`title`,label:`事项`,width:`--pm-gantt-item-min-col`,min:180},{key:`stage`,label:`阶段`,width:`--pm-gantt-stage-col`,min:64},{key:`status`,label:`状态`,width:`--pm-gantt-status-col`,min:64},{key:`priority`,label:`优先级`,width:`--pm-gantt-priority-col`,min:60},{key:`assignees`,label:`负责人`,width:`--pm-gantt-person-col`,min:72},{key:`completedBy`,label:`完成者`,width:`--pm-gantt-person-col`,min:72}],o=[];for(let i of e){let e=r.createSpan({text:i.label,cls:`pm-gantt-left-header-label pm-gantt-left-header-label--sortable`});this.ganttSortKey===i.key&&e.createSpan({text:this.ganttSortDir===`asc`?` ↑`:` ↓`,cls:`pm-sort-indicator`}),e.setAttr(`aria-label`,`按${i.label}排序`),e.addEventListener(`click`,()=>{this.ganttSortKey===i.key?this.ganttSortDir=this.ganttSortDir===`asc`?`desc`:`asc`:(this.ganttSortKey=i.key,this.ganttSortDir=`asc`),this.render()}),o.push(e)}for(let[i,a]of o.entries()){if(i===o.length-1)continue;let r=a.createSpan({cls:`pm-gantt-column-resizer`});r.addEventListener(`click`,e=>e.stopPropagation()),r.addEventListener(`pointerdown`,n=>{n.preventDefault(),n.stopPropagation(),r.setPointerCapture(n.pointerId);let o=a.getBoundingClientRect().width,s=this.labelWidth,c=e[i].width,l=e[i].min,u=n.clientX,d=e=>{let r=Math.max(l,Math.round(o+e.clientX-u));t.style.setProperty(c,`${r}px`),this.plugin.settings.ganttColumnWidths??={},this.plugin.settings.ganttColumnWidths[c]=r;let i=Math.max(760,Math.min(1400,s+r-o));this.labelWidth=i,this.plugin.settings.ganttLabelWidth=i,t.style.width=`${i}px`,t.style.minWidth=`${i}px`};r.addEventListener(`pointermove`,d),r.addEventListener(`pointerup`,()=>{r.removeEventListener(`pointermove`,d),this.plugin.saveSettings()},{once:!0})})}}let q=t.createDiv(`pm-gantt-left-body`),i=e.createDiv(`pm-gantt-resize-handle`),a=!1,o=0,s=0;i.addEventListener(`mousedown`,e=>{e.preventDefault(),a=!0,o=e.clientX,s=this.labelWidth,activeDocument.body.addClass(`pm-resize-active`)});let c=e=>{if(!a)return;let n=Math.max(760,Math.min(1400,s+(e.clientX-o)));this.labelWidth=n,t.style.width=`${n}px`,t.style.minWidth=`${n}px`},l=()=>{a&&(a=!1,this.plugin.settings.ganttLabelWidth=this.labelWidth,this.plugin.saveSettings(),activeDocument.body.removeClass(`pm-resize-active`))};activeDocument.addEventListener(`mousemove`,c),activeDocument.addEventListener(`mouseup`,l),this.cleanupFns.push(()=>{activeDocument.removeEventListener(`mousemove`,c),activeDocument.removeEventListener(`mouseup`,l)});let u=e.createDiv(`pm-gantt-right`);this.scrollEl=u;let d=u.createDiv(`pm-gantt-header-sticky`);d.style.width=`${this.cfg.totalWidth}px`,d.style.height=`56px`,this.headerSvgEl=X(`svg`,{width:this.cfg.totalWidth,height:56,class:`pm-gantt-header-svg`}),d.appendChild(this.headerSvgEl);let f=u.createDiv(`pm-gantt-svg-container`);f.style.width=`${this.cfg.totalWidth}px`,f.style.marginTop=`-56px`;let p=this.flatTasks.filter(e=>e.visible||e.depth===0).length,m=56+(p+1)*44;this.svgEl=X(`svg`,{width:this.cfg.totalWidth,height:m,class:`pm-gantt-svg`}),f.appendChild(this.svgEl);let h=()=>this.container.closest(`.workspace-leaf`)?.classList.contains(`mod-active`)??!1,g=e=>{if(!h()||(e.key===`Escape`&&this.link.active&&lm(this.link),this.drag.isDragging)||!(e.ctrlKey||e.metaKey))return;let t=e.key.toLowerCase();t===`z`&&!e.shiftKey?(e.preventDefault(),this.plugin.undoLastAction()):(t===`z`&&e.shiftKey||t===`y`)&&(e.preventDefault(),this.plugin.redoLastAction())};activeDocument.addEventListener(`keydown`,g),this.cleanupFns.push(()=>activeDocument.removeEventListener(`keydown`,g));let _=this.makeRendererContext();mm(_),Dm(_,p),Om(_,m),this.renderTaskRows(q,_),Tm(_),wm(_);let v=e=>{u.scrollTop+=e.deltaY,u.scrollLeft+=e.deltaX,e.preventDefault()};t.addEventListener(`wheel`,v,{passive:!1}),this.cleanupFns.push(()=>t.removeEventListener(`wheel`,v));let y=q.createDiv(`pm-gantt-label-row pm-gantt-add-row`);y.style.height=`44px`,Sf(y,`Add task`,()=>{Q(this.plugin,this.project,{onSave:()=>this.onRefresh()})});let b=r.createDiv();b.addClass(`pm-no-shrink`);let x=()=>{let e=u.offsetHeight-u.clientHeight;b.style.height=`${e}px`};u.addEventListener(`scroll`,()=>{x(),q.scrollTop=u.scrollTop}),window.requestAnimationFrame(()=>{x(),this.pendingScroll?(this.scrollEl.scrollTop=this.pendingScroll.top,this.scrollEl.scrollLeft=Math.max(0,$(this.cfg,this.pendingScroll.anchorDate)),this.pendingScroll=null):this.scrollToToday()})}renderTaskRows(e,t){let n=X(`g`,{class:`pm-gantt-bars`});this.svgEl.appendChild(n);let r=this.plugin.store.configFor(this.project),i={plugin:this.plugin,project:this.project,stages:r.stages,statuses:r.statuses,priorities:r.priorities,onRefresh:this.onRefresh},a=0,o=(r,s)=>{for(let c of r)km(e,c,s,a,i),xm(n,c,a,s,t),a++,!c.collapsed&&c.subtasks.length&&o(c.subtasks,s+1)};o(this.getVisibleTasks(),0)}makeRendererContext(){return{svgEl:this.svgEl,headerSvgEl:this.headerSvgEl,cfg:this.cfg,plugin:this.plugin,project:this.project,statuses:this.plugin.store.configFor(this.project).statuses,flatTasks:this.flatTasks,drag:this.drag,link:this.link,onRefresh:this.onRefresh,cleanupFns:this.cleanupFns}}ganttSortValue(e){switch(this.ganttSortKey){case`zentaoId`:return String(e.customFields.zentaoId??e.id);case`title`:return e.title;case`assignees`:return e.assignees.join(`、`);case`completedBy`:return String(e.customFields.completedBy??``);default:return String(e[this.ganttSortKey]??``)}}sortGanttTasks(e){let t=e=>[...e].sort((e,t)=>this.ganttSortValue(e).localeCompare(this.ganttSortValue(t),`zh-CN`,{numeric:!0,sensitivity:`base`})*(this.ganttSortDir===`asc`?1:-1)).map(e=>({...e,subtasks:t(e.subtasks)}));return t(e)}getVisibleTasks(){let e=kd(this.project.tasks,this.filter,this.plugin.store.configFor(this.project).statuses);return this.ganttSortKey?this.sortGanttTasks(e):e}scrollToToday(){if(!this.scrollEl)return;let e=$(this.cfg,Zl())-this.scrollEl.clientWidth/2;this.scrollEl.scrollLeft=Math.max(0,e)}setAllCollapsed(e){for(let{task:t}of q(this.project.tasks))t.subtasks.length>0&&(t.collapsed=e);this.plugin.persistCollapsedState(this.project),this.render()}},jm=class{el;constructor(e,t){let{task:n}=t,r=e.createDiv(`pm-kanban-card`);r.draggable=t.draggable!==!1,r.dataset.taskId=n.id,this.el=r,t.priorityColor&&r.createDiv(`pm-kanban-card-priority-bar`).setCssStyles({background:t.priorityColor});let i=r.createDiv(`pm-kanban-card-body`);t.parentTitle&&i.createSpan({text:t.parentTitle,cls:`pm-kanban-card-parent`});let a=i.createDiv(`pm-kanban-card-title-row`);if(a.createSpan({text:n.title,cls:`pm-kanban-card-title`}),n.tags.includes(`zentao-requirement`)&&new Z(a).setLabel(`需求`).setVariant(`solid`).setSize(`sm`).setColor(`var(--color-orange)`).setTooltip(`禅道需求`),n.type===`milestone`&&new Z(a).setLabel(`里程碑`).setVariant(`solid`).setSize(`sm`).setColor(`var(--color-purple)`).setTooltip(`里程碑`),n.recurrence&&new Z(a).setLabel(`重复`).setVariant(`solid`).setSize(`sm`).setColor(`var(--color-blue)`).setTooltip(`重复任务`),t.descriptionPreview&&i.createDiv({cls:`pm-kanban-card-description`,text:t.descriptionPreview}),vp(i,t.loggedHours,projectEstimateHours(n),`sm`),n.tags.length){let e=i.createDiv(`pm-kanban-card-tags`);for(let r of n.tags.slice(0,3))bp(e,r,t.showTagColors)}n.progress>0&&new pp(i).setSize(`sm`).setValue(n.progress);let o=i.createDiv(`pm-kanban-card-footer`);let s=new Z(o).setLabel(t.statusLabel||`未设置`).setColor(t.statusColor??`var(--text-muted)`).setVariant(`solid`).setDot().setSize(`sm`).setTooltip(`当前状态：${t.statusLabel||`未设置`}`);s.el.addClass(`pm-kanban-card-status`);let c=o.createDiv(`pm-kanban-card-people`);n.assignees.length&&new Z(c).setLabel(`负责人 · ${n.assignees.slice(0,2).join(`、`)}`).setLeadingIcon(`user`).setColor(`var(--interactive-accent)`).setVariant(`solid`).setSize(`sm`).setTooltip(`负责人：${n.assignees.join(`、`)}`),n.customFields.completedBy&&new Z(c).setLabel(`完成者 · ${n.customFields.completedBy}`).setLeadingIcon(`circle-check`).setColor(`var(--color-green)`).setVariant(`solid`).setSize(`sm`).setTooltip(`完成者：${n.customFields.completedBy}`),n.due&&cp(o,Qu(n.due),t.overdue?`overdue`:`normal`,`sm`),r.addEventListener(`dragstart`,e=>{if(t.draggable===!1){e.preventDefault();return}e.dataTransfer?.setData(`text/plain`,n.id),r.addClass(`pm-kanban-card--dragging`),window.setTimeout(()=>r.addClass(`pm-dragging`),0),t.onDragStart()}),r.addEventListener(`dragend`,()=>{r.removeClass(`pm-kanban-card--dragging`),r.removeClass(`pm-dragging`),t.onDragEnd()}),r.addEventListener(`click`,()=>t.onClick()),r.addEventListener(`contextmenu`,e=>{e.preventDefault(),t.onContextMenu(e)})}},Mm=class{el;cardsEl;props;cards;devHeight=128;overscan=4;heightCache=new Map;start=-1;end=-1;frame=null;measureFrame=null;dragging=!1;destroyed=!1;viewportObserver=null;constructor(t,n){this.props=n,this.cards=n.cards,this.heightCache=n.heightCache??this.heightCache;let r=t.createDiv(`pm-kanban-col`);r.dataset.status=n.status.id,this.el=r;let i=r.createDiv(`pm-kanban-col-header`);i.style.setProperty(`--col-color`,n.status.color),i.createDiv(`pm-kanban-col-topbar`).setCssStyles({background:n.status.color});let a=i.createDiv(`pm-kanban-col-title-row`),o=a.createSpan({cls:`pm-kanban-col-badge`});n.status.icon&&fd(n.status.icon)?((0,e.setIcon)(o.createSpan({cls:`pm-kanban-col-badge-icon`}),n.status.icon),o.appendText(n.status.label)):o.setText(pd(n.status.icon,n.status.label)),o.style.color=n.status.color,a.createDiv(`pm-kanban-col-header-right`).createSpan({text:String(n.cards.length),cls:`pm-kanban-col-count`});let s=r.createDiv(`pm-kanban-cards pm-kanban-cards--virtual`);this.cardsEl=s,s.dataset.status=n.status.id,s.style.display=`block`,s.addEventListener(`scroll`,()=>this.scheduleRender()),s.addEventListener(`dragover`,e=>{e.preventDefault(),s.addClass(`pm-kanban-drop-target`);let t=Nm(s,e.clientY),n=s.querySelector(`.pm-kanban-card--dragging`);if(n){let e=n.closest(`.pm-kanban-virtual-item`),r=t?.closest(`.pm-kanban-virtual-item`);e&&e.parentElement===s&&(r?s.insertBefore(e,r):s.appendChild(e))}}),s.addEventListener(`dragleave`,()=>{s.removeClass(`pm-kanban-drop-target`)}),s.addEventListener(`drop`,Y(async e=>{e.preventDefault(),s.removeClass(`pm-kanban-drop-target`);let t=e.dataTransfer?.getData(`text/plain`)??``;t&&await n.onDrop(t,n.status.id)})),typeof ResizeObserver!=`undefined`&&(this.viewportObserver=new ResizeObserver(()=>this.scheduleRender(!0)),this.viewportObserver.observe(s)),this.renderWindow(!0),n.scrollTop&&(s.scrollTop=n.scrollTop,this.renderWindow(!0))}offsets(){let e=[0];for(let t=0;t<this.cards.length;t+=1){let n=this.cards[t],r=this.heightCache.get(n.task.id)??this.devHeight;e.push(e[t]+r)}return e}range(e){if(this.cards.length===0)return[0,0];let t=this.cardsEl.scrollTop,n=this.cardsEl.clientHeight||640,r=Math.max(0,t-this.devHeight*this.overscan),i=t+n+this.devHeight*this.overscan,a=0;for(;a<this.cards.length&&e[a+1]<r;)a+=1;let o=a;for(;o<this.cards.length&&e[o]<i;)o+=1;return[a,Math.min(this.cards.length,Math.max(a+1,o))]}scheduleRender(e=!1){if(this.destroyed||this.dragging&&!e)return;this.frame!==null&&cancelAnimationFrame(this.frame),this.frame=requestAnimationFrame(()=>{this.frame=null,this.renderWindow(e)})}renderWindow(e=!1){if(this.destroyed)return;let t=this.offsets(),[n,r]=this.range(t);if(!e&&n===this.start&&r===this.end)return;this.start=n,this.end=r;let i=this.cardsEl.scrollTop;this.cardsEl.empty();let a=this.cardsEl.createDiv(`pm-kanban-virtual-spacer`);a.style.height=`${t[n]}px`;for(let e=n;e<r;e+=1)this.renderCard(this.cards[e],e);let o=this.cardsEl.createDiv(`pm-kanban-virtual-spacer`);o.style.height=`${Math.max(0,t[this.cards.length]-t[r])}px`,this.cardsEl.scrollTop=i,this.measureFrame!==null&&cancelAnimationFrame(this.measureFrame),this.measureFrame=requestAnimationFrame(()=>{this.measureFrame=null,this.measureVisible()})}renderCard(e,t){let n=this.cardsEl.createDiv(`pm-kanban-virtual-item`);n.dataset.virtualIndex=String(t),n.style.marginBottom=`8px`,n.style.contain=`layout style`,new jm(n,{task:e.task,draggable:e.draggable,statusLabel:e.statusLabel,statusColor:e.statusColor,priorityColor:e.priorityColor,descriptionPreview:e.descriptionPreview,parentTitle:e.parentTitle,loggedHours:e.loggedHours,overdue:e.overdue,showTagColors:e.showTagColors,onClick:()=>this.props.onCardClick(e.task),onContextMenu:t=>this.props.onCardContextMenu(e.task,t),onDragStart:()=>this.props.onCardDragStart(e.task),onDragEnd:()=>this.props.onCardDragEnd()})}measureVisible(){if(this.destroyed)return;let e=!1;for(let t of this.cardsEl.querySelectorAll(`.pm-kanban-virtual-item`)){let n=Number(t.dataset.virtualIndex),r=t.querySelector(`.pm-kanban-card`);if(!r||!Number.isInteger(n)||!this.cards[n])continue;let i=Math.ceil(r.getBoundingClientRect().height)+8,a=this.cards[n].task.id,o=this.heightCache.get(a);(!o||Math.abs(o-i)>1)&&(this.heightCache.set(a,i),e=!0)}e&&this.renderWindow(!0)}setDragging(e){this.dragging=e;if(e){this.frame!==null&&cancelAnimationFrame(this.frame),this.frame=null,this.measureFrame!==null&&cancelAnimationFrame(this.measureFrame),this.measureFrame=null;return}this.scheduleRender(!0)}getScrollTop(){return this.cardsEl.scrollTop}destroy(){this.destroyed=!0,this.frame!==null&&cancelAnimationFrame(this.frame),this.measureFrame!==null&&cancelAnimationFrame(this.measureFrame),this.viewportObserver?.disconnect()}};function Nm(e,t){let n=Array.from(e.querySelectorAll(`.pm-kanban-card:not(.pm-kanban-card--dragging)`)),r=null,i=-1/0;for(let e of n){let n=e.getBoundingClientRect(),a=t-n.top-n.height/2;a<0&&a>i&&(i=a,r=e)}return r}let Pm=class{container;project;plugin;onRefresh;filter;groupBy;dragTask=null;config;columns=[];parentTitles=new Map;allTasks=[];includeSubtasks=!1;scrollPositions=new Map;heightCaches=new Map;boardScrollLeft=0;constructor(e,t,n,r,i,a=`stage`){this.container=e,this.project=t,this.plugin=n,this.onRefresh=r,this.filter=i,this.groupBy=a}render(){this.renderBoard(),this.config.kanbanShowDescriptionPreview&&this.hydrateDescriptions()}updateFilter(e,t){this.filter=e,this.renderBoard(t),this.config.kanbanShowDescriptionPreview&&this.hydrateDescriptions()}destroyColumns(){let e=this.container.querySelector(`.pm-kanban-board`);e&&(this.boardScrollLeft=e.scrollLeft);for(let e of this.columns){this.scrollPositions.set(`${this.groupBy}:${e.props.status.id}`,e.getScrollTop()),e.destroy()}this.columns=[]}destroy(){this.destroyColumns()}renderBoard(e=this.groupBy){this.config=this.plugin.store.configFor(this.project),this.destroyColumns(),this.groupBy=e,this.container.empty(),this.container.addClass(`pm-kanban-view`);let t=this.container.createDiv(`pm-kanban-board`),n=this.groupBy===`status`,r=q(this.project.tasks);this.parentTitles=new Map;for(let{task:e}of r)for(let t of e.subtasks)this.parentTitles.set(t.id,e.title);this.includeSubtasks=this.config.kanbanShowSubtasks||this.filter.quickSource!==`requirement`,this.allTasks=this.includeSubtasks?r.map(e=>e.task):this.project.tasks;let i=new Set(this.allTasks.map(e=>n?e.status:e.stage)),a=this.allTasks.filter(e=>Od(e,this.filter,this.config.statuses)),o=new Map;for(let e of a){let t=n?e.status:e.stage,r=o.get(t);r?r.push(e):o.set(t,[e])}let s=(n?this.config.statuses:this.config.stages).filter(e=>i.has(e.id));for(let e of s){let n=(o.get(e.id)??[]).map(e=>this.buildCardData(e)),r=`${this.groupBy}:${e.id}`,i=this.heightCaches.get(r)??new Map;this.heightCaches.set(r,i);let a=new Mm(t,{status:e,cards:n,heightCache:i,scrollTop:this.scrollPositions.get(r)??0,onCardClick:e=>this.openTask(e),onCardContextMenu:(e,t)=>this.openContextMenu(e,t),onCardDragStart:e=>{this.dragTask=e;for(let e of this.columns)e.setDragging(!0)},onCardDragEnd:()=>{this.dragTask=null;for(let e of this.columns)e.setDragging(!1)},onDrop:(e,t)=>this.handleDrop(e,t)});this.columns.push(a)}t.scrollLeft=this.boardScrollLeft}async hydrateDescriptions(){let e=this.allTasks.filter(e=>e.filePath&&!e.description&&Od(e,this.filter,this.config.statuses));e.length&&(await Promise.all(e.map(e=>this.plugin.store.loadTaskBody(e))),e.some(e=>e.description)&&this.renderBoard())}buildCardData(e){let t=ud(this.config.priorities,e.priority),n=sd(this.config.statuses,e.status),r=t&&e.priority!==`medium`&&e.priority!==`low`?t.color:void 0,i;if(this.config.kanbanShowDescriptionPreview&&e.description.trim()){let t=e.description.replace(/```[\s\S]*?```/g,` `).replace(/`([^`]*)`/g,`$1`).replace(/!?\[([^\]]*)\]\([^)]*\)/g,`$1`).replace(/^[ \t]*[#>\-*+]+[ \t]+/gm,``).replace(/[*~]/g,``).replace(/\s+/g,` `).trim();i=t?t.slice(0,240):void 0}let a=this.includeSubtasks&&e.type===`subtask`?this.parentTitles.get(e.id):void 0;return{task:e,draggable:!e.customFields.zentaoSourceType,statusLabel:n?.label??e.status,statusColor:n?.color??`var(--text-muted)`,priorityColor:r,descriptionPreview:i,parentTitle:a,loggedHours:gu(e),overdue:rd(e,this.config.statuses)===`overdue`,showTagColors:this.plugin.settings.showTagColors}}openTask(e){Q(this.plugin,this.project,{task:e,onSave:async()=>{await this.onRefresh()}})}openContextMenu(t,n){let r=new e.Menu;np(r,t,{plugin:this.plugin,project:this.project,onRefresh:this.onRefresh}),r.showAtMouseEvent(n)}async handleDrop(e,t){!this.dragTask||this.dragTask.id!==e||this.dragTask.customFields.zentaoSourceType||t!==this.dragTask.stage&&(await this.plugin.store.updateTask(this.project,this.dragTask.id,{stage:t}),await this.onRefresh())}},Fm=class{el;constructor(t,n){this.el=t.createDiv(`pm-view-switcher`);for(let t of n.options){let r=new e.ExtraButtonComponent(this.el).setIcon(t.icon).setTooltip(t.label);r.extraSettingsEl.addClass(`pm-view-btn`),t.id===n.active&&r.extraSettingsEl.addClass(`pm-view-btn--active`),r.onClick(()=>{this.el.querySelectorAll(`.pm-view-btn`).forEach(e=>e.removeClass(`pm-view-btn--active`)),r.extraSettingsEl.addClass(`pm-view-btn--active`),n.onChange(t.id)})}}},Im=class{el;button;constructor(t){this.button=new e.ButtonComponent(t),this.el=this.button.buttonEl,this.el.addClass(`pm-chip-btn`)}setLabel(e){return this.button.setButtonText(e),this}setActive(e){return this.el.toggleClass(`pm-chip-btn--active`,e),this}setShape(e){return this.el.toggleClass(`pm-chip-btn--pill`,e===`pill`),this}setAriaLabel(e){return this.el.setAttribute(`aria-label`,e),this}onClick(e){return this.el.addEventListener(`click`,t=>{t.preventDefault(),t.stopPropagation(),e(t)}),this}onContextMenu(e){return this.el.addEventListener(`contextmenu`,e),this}},QuickFilterBar=class{props;el;expanded=!1;constructor(e,t){this.props=t,this.el=e.createDiv(`pm-project-header-quick`),this.render()}refresh(){this.render()}change(e){Object.assign(this.props.filter,e,{quickPreset:``}),this.props.onChange(e)}group(e,t,n,r,i=!1){let a=this.el.createDiv(`pm-quick-filter-row`);a.createSpan({text:e,cls:`pm-quick-filter-label`});for(let e of t){let t=i?Array.isArray(n)&&n.includes(e.id):n===e.id;new Im(a).setLabel(e.label).setShape(`pill`).setActive(t).onClick(()=>r(e.id))}}summary(e,t){let n=[];t===`requirement`?n.push(`需求`):t===`task`&&n.push(`任务`);let r=e.quickWorkType??`all`;if(r!==`all`){let e=quickStageOptions(this.props.project,this.props.stages,t).find(e=>e.id===r);n.push(e?.label??r)}let i=e.quickCompletion??`all`;i===`unfinished`?n.push(`未完成`):i===`completed`&&n.push(`已完成`);let a=e.quickOwnership??`all`;a===`mine`?n.push(`我负责`):a===`participated`?n.push(`我参与`):a===`unassigned`&&n.push(`未指派`);let o={high:`高优先级`,overdue:`逾期`,blocked:`阻塞`};for(let t of Array.isArray(e.quickAttention)?e.quickAttention:[])o[t]&&n.push(o[t]);return n}render(){this.el.empty();let e=this.props.filter,t=e.quickSource??`all`,s=this.summary(e,t),c=this.el.createDiv(`pm-quick-filter-toggle-row`);new Im(c).setLabel(this.expanded?`快速组合 ▾`:`快速组合 ▸`).setShape(`pill`).setActive(this.expanded).onClick(()=>{this.expanded=!this.expanded,this.render()}),s.length&&c.createSpan({text:`当前组合：${s.join(` / `)}`,cls:`pm-quick-filter-summary`});if(!this.expanded)return;this.group(`对象`,[{id:`all`,label:`全部`},{id:`requirement`,label:`需求`},{id:`task`,label:`任务`}],t,t=>this.change({quickSource:t,quickWorkType:`all`}));if(t===`requirement`||t===`task`){let n=quickStageOptions(this.props.project,this.props.stages,t),r=[{id:`all`,label:`全部`},...n];this.group(t===`task`?`类型`:`阶段`,r,e.quickWorkType??`all`,e=>this.change({quickWorkType:e}))}this.group(`进度`,[{id:`all`,label:`全部`},{id:`unfinished`,label:`未完成`},{id:`completed`,label:`已完成`}],e.quickCompletion??`all`,e=>this.change({quickCompletion:e}));let n=quickCurrentUser(this.props.project),r=[{id:`all`,label:`全部`}];n&&(r.push({id:`mine`,label:`我负责`}),r.push({id:`participated`,label:`我参与`})),r.push({id:`unassigned`,label:`未指派`});this.group(`归属`,r,e.quickOwnership??`all`,t=>this.change({quickOwnership:t,quickOwner:t===`mine`||t===`participated`?n:e.quickOwner??``}));let i=Array.isArray(e.quickAttention)?e.quickAttention:[],a=[{id:`high`,label:`高优先级`},{id:`overdue`,label:`逾期`},{id:`blocked`,label:`阻塞`}],o=[{id:`all`,label:`全部`},...a];this.group(`关注`,o,i,t=>{if(t===`all`){this.change({quickAttention:[]});return}let n=i.includes(t)?i.filter(e=>e!==t):[...i,t];this.change({quickAttention:n})},!0)}};let Lm=class{props;el;volatileEl=null;constructor(e,t){this.props=t,this.el=e.createDiv(`pm-project-header-primary`),this.volatileEl=this.el.createDiv(`pm-project-header-actions`),this.renderVolatile()}setActiveSavedViewId(e){this.props.activeSavedViewId=e,this.renderVolatile()}refresh(){this.renderVolatile()}refreshVolatile(){this.renderVolatile()}renderVolatile(){this.volatileEl&&(this.volatileEl.empty(),this.renderSavedViewPills(this.volatileEl),this.renderSaveViewAction(this.volatileEl))}renderSavedViewPills(t){let n=t.createDiv(`pm-project-header-saved-views`);n.createSpan({text:`常用`,cls:`pm-quick-filter-label`});new Im(n).setLabel(`全部`).setShape(`pill`).setActive(!this.props.activeSavedViewId&&!Ed(this.props.filter)&&!this.props.filter.showArchived).onClick(()=>this.props.onSavedViewSelect(null));let r=[{id:`unfinished-requirements`,label:`未完成需求`},{id:`unfinished-development`,label:`未完成开发`},{id:`my-unfinished-requirements`,label:`我的未完成需求`},{id:`my-unfinished-tasks`,label:`我的未完成任务`},{id:`overdue`,label:`逾期事项`}];for(let e of r)new Im(n).setLabel(e.label).setShape(`pill`).setActive(this.props.filter.quickPreset===e.id).onClick(()=>this.props.onQuickPresetSelect(e.id));let i=this.props.project.savedViews.find(e=>e.id===this.props.activeSavedViewId),a=new Im(n).setLabel(i?`更多 · ${i.name}`:`更多视图`).setShape(`pill`).setActive(Boolean(i)).onClick(t=>{let n=new e.Menu;if(this.props.project.savedViews.length===0)n.addItem(e=>e.setTitle(`暂无其他视图`).setDisabled(!0));else for(let e of this.props.project.savedViews)n.addItem(t=>t.setTitle(e.name).setChecked(this.props.activeSavedViewId===e.id).onClick(()=>this.props.onSavedViewSelect(e.id)));n.showAtMouseEvent(t)});i&&a.onContextMenu(t=>this.showViewContext(t,i))}showViewContext(t,n){t.preventDefault();let r=new e.Menu;r.addItem(e=>e.setTitle(`使用当前筛选更新`).setIcon(`refresh-cw`).onClick(Y(()=>this.props.onSavedViewUpdate(n.id)))),r.addItem(e=>e.setTitle(`删除视图`).setIcon(`trash`).onClick(Y(()=>this.props.onSavedViewDelete(n.id)))),r.showAtMouseEvent(t)}renderSaveViewAction(t){if(!Ed(this.props.filter)&&!this.props.filter.showArchived)return;let n=new e.ButtonComponent(t).setButtonText(`+ 保存视图`);n.onClick(()=>this.beginInlineSave(t,n))}beginInlineSave(e,t){t.buttonEl.addClass(`pm-hidden`);let n=e.createDiv(`pm-project-header-save-input`),r=n.createEl(`input`,{type:`text`,placeholder:`视图名称…`,cls:`pm-project-header-save-input-field`});r.focus();let i=!1,a=()=>{n.remove(),t.buttonEl.removeClass(`pm-hidden`)},o=Y(async()=>{if(i)return;i=!0;let e=r.value.trim();if(!e){a();return}await this.props.onSavedViewSave(e)});r.addEventListener(`keydown`,e=>{e.key===`Enter`?(e.preventDefault(),o()):e.key===`Escape`&&a()}),r.addEventListener(`blur`,()=>{r.value.trim()?o():a()})}};function projectFilterIcon(e){return{阶段:`layers-3`,状态:`workflow`,优先级:`signal-high`,负责人:`users`,标签:`tags`,截止日期:`calendar-clock`}[e]??`list-filter`}function projectFilterMenuBehavior(e,t,n){e.addEventListener(`toggle`,()=>{if(!e.open)return;for(let n of t.querySelectorAll(`.pm-insight-project-filter-menu[open]`))n!==e&&(n.open=!1)}),e.addEventListener(`keydown`,t=>{t.key===`Escape`&&e.open&&(e.open=!1,n.focus(),t.preventDefault(),t.stopPropagation())})}function Rm(t,n,r,i,a){let o=t.createEl(`details`,{cls:`pmi-task-filter-menu pm-insight-project-filter-menu`}),s=o.createEl(`summary`,{attr:{"aria-label":`按${n}筛选`}});(0,e.setIcon)(s.createSpan(`pmi-task-filter-icon`),projectFilterIcon(n));let c=s.createSpan(`pmi-task-filter-copy`);c.createSpan({cls:`pmi-task-filter-label`,text:n});let l=c.createSpan(`pmi-task-filter-value`),u=s.createSpan(`pmi-task-filter-chevron`);(0,e.setIcon)(u,`chevron-down`);let d=o.createDiv(`pmi-task-filter-panel`),f=d.createDiv(`pmi-task-filter-panel-head`);f.createEl(`strong`,{text:n}),f.createSpan({text:`${i.length} 项`});let p=d.createDiv(`pmi-task-filter-actions`),m=p.createEl(`button`,{text:`全部`,attr:{type:`button`}}),h=d.createDiv(`pmi-task-filter-options`),g=[...r],_=()=>{if(g.length===0)return`全部${n}`;if(g.length===1)return i.find(e=>e.id===g[0])?.label??`已选 1 项`;return`已选 ${g.length} 项`},v=t=>{g=[...t],l.setText(_());for(let e of h.querySelectorAll(`input[type="checkbox"]`))e.checked=g.includes(e.dataset.filterValue??``);a([...g])};for(let t of i){let n=h.createEl(`label`,{cls:`pmi-task-filter-option`}),r=n.createEl(`input`,{type:`checkbox`});r.dataset.filterValue=t.id,r.checked=g.includes(t.id);let i=n.createSpan(`pmi-task-filter-option-name`);i.createSpan({cls:`pmi-task-filter-option-label`,text:t.label}),r.addEventListener(`change`,()=>{let e=new Set(g);r.checked?e.add(t.id):e.delete(t.id),v([...e])})}return l.setText(_()),m.addEventListener(`click`,()=>v([])),projectFilterMenuBehavior(o,t,s),o}function projectSingleFilter(t,n,r,i,a,o){let s=t.createEl(`details`,{cls:`pmi-task-filter-menu pm-insight-project-filter-menu`}),c=s.createEl(`summary`,{attr:{"aria-label":r}});(0,e.setIcon)(c.createSpan(`pmi-task-filter-icon`),n);let l=c.createSpan(`pmi-task-filter-copy`);l.createSpan({cls:`pmi-task-filter-label`,text:r});let u=l.createSpan(`pmi-task-filter-value`),d=c.createSpan(`pmi-task-filter-chevron`);(0,e.setIcon)(d,`chevron-down`);let f=s.createDiv(`pmi-task-filter-panel`),p=f.createDiv(`pmi-task-filter-panel-head`);p.createEl(`strong`,{text:r}),p.createSpan({text:`${a.length} 项`});let m=f.createDiv(`pmi-task-filter-options`),h=()=>u.setText(a.find(e=>e.id===i)?.label??r);for(let t of a){let n=m.createEl(`label`,{cls:`pmi-task-filter-option`}),r=n.createEl(`input`,{type:`radio`,attr:{name:`pm-filter-${i}`}});r.checked=t.id===i,n.createSpan({cls:`pmi-task-filter-option-label`,text:t.label}),r.addEventListener(`change`,()=>{if(!r.checked)return;i=t.id,h(),o(i),s.open=!1})}return h(),projectFilterMenuBehavior(s,t,c),s}const zm={any:`截止日期`,overdue:`已逾期`,"this-week":`本周`,"this-month":`本月`,"no-date":`无日期`};var Bm=class{props;el;clearBtn=null;constructor(e,t){this.props=t,this.el=e.createDiv(`pm-project-header-filter`),this.render()}refresh(){this.render()}render(){this.el.empty();let{filter:t,stages:n,statuses:r,priorities:i,project:a}=this.props,o=()=>{this.props.onFilterChange(),this.updateClearButton()},s=this.el.createDiv(`pm-insight-filter-search`);(0,e.setIcon)(s.createSpan(),`search`);let c=s.createEl(`input`,{type:`search`,placeholder:`搜索事项…`,cls:`pm-insight-filter-search-input`});c.value=t.text,c.addEventListener(`input`,()=>{t.text=c.value,o()}),Rm(this.el,`阶段`,t.stages??[],n.map(e=>({id:e.id,label:pd(e.icon,e.label)})),e=>{t.stages=e,o()}),Rm(this.el,`状态`,t.statuses,r.map(e=>({id:e.id,label:pd(e.icon,e.label)})),e=>{t.statuses=e,o()}),Rm(this.el,`优先级`,t.priorities,i.map(e=>({id:e.id,label:pd(e.icon,e.label)})),e=>{t.priorities=e,o()});let l=mu(a.tasks);l.length&&Rm(this.el,`负责人`,t.assignees,l.map(e=>({id:e,label:e})),e=>{t.assignees=e,o()});let u=hu(a.tasks);u.length&&Rm(this.el,`标签`,t.tags,u.map(e=>({id:e,label:e})),e=>{t.tags=e,o()}),this.renderDueDateButton(o),this.renderArchivedButton(o),this.renderClearButton()}renderDueDateButton(t){let{filter:n}=this.props,r=[`any`,`overdue`,`this-week`,`this-month`,`no-date`].map(e=>({id:e,label:zm[e]}));projectSingleFilter(this.el,`calendar-clock`,`截止日期`,n.dueDateFilter,r,e=>{n.dueDateFilter=e,t()})}renderArchivedButton(e){let{filter:t}=this.props,n=new Im(this.el).setLabel(`已归档`).setActive(t.showArchived);n.el.addClass(`pm-insight-filter-archive`),n.onClick(()=>{t.showArchived=!t.showArchived,n.setActive(t.showArchived),e()})}renderClearButton(){let e=Dd(this.props.filter)+(this.props.filter.text?1:0);this.clearBtn=new Im(this.el).setLabel(`重置筛选`),this.clearBtn.el.addClass(`pm-insight-filter-reset`),this.clearBtn.el.disabled=e===0,this.clearBtn.onClick(()=>{if(e===0)return;this.props.onClear(),this.render()})}refreshClearButton(){this.updateClearButton()}updateClearButton(){this.clearBtn&&=(this.clearBtn.el.remove(),null),this.renderClearButton()}},Vm=class{props;el;primaryRow=null;quickRow=null;filterPanel=null;filterRow=null;constructor(e,t){this.props=t,this.el=e.createDiv(`pm-project-header`),this.render()}refresh(){this.render()}notifyMutation(){this.primaryRow?.refreshVolatile(),this.quickRow?.refresh(),this.filterRow?.refreshClearButton()}setActiveSavedViewId(e){this.props.activeSavedViewId=e,this.primaryRow?.setActiveSavedViewId(e),this.quickRow?.refresh(),this.filterRow?.refresh()}render(){this.el.empty(),this.primaryRow=new Lm(this.el,{project:this.props.project,filter:this.props.filter,activeSavedViewId:this.props.activeSavedViewId,onSavedViewSelect:this.props.onSavedViewSelect,onQuickPresetSelect:this.props.onQuickPresetSelect,onSavedViewSave:this.props.onSavedViewSave,onSavedViewUpdate:this.props.onSavedViewUpdate,onSavedViewDelete:this.props.onSavedViewDelete}),this.quickRow=new QuickFilterBar(this.el,{project:this.props.project,stages:this.props.stages,filter:this.props.filter,onChange:this.props.onQuickFilterChange}),this.mountFilterPanel()}mountFilterPanel(){this.filterPanel=this.el.createDiv(`pm-project-header-filter-panel`),this.filterPanel.addClass(`pm-insight-filter-bar`),this.filterRow=new Bm(this.filterPanel,{project:this.props.project,stages:this.props.stages,statuses:this.props.statuses,priorities:this.props.priorities,filter:this.props.filter,onFilterChange:this.props.onFilterChange,onClear:this.props.onClearFilter})}};const Hm=`pm-project`;var Um=class extends e.ItemView{plugin;project=null;filePath=``;currentView;filter=au();activeSavedViewId=null;kanbanGroupBy=`stage`;subview=null;savedTableViewState=null;toolbarEl;headerEl;bodyEl;header=null;titleEl2;keydownHandler=null;pendingRefresh=null;filterRenderTimer=null;initialized=!1;defaultViewAppliedFor=null;constructor(e,t){super(e),this.plugin=t,this.currentView=t.settings.defaultView,this.navigation=!1}getViewType(){return Hm}getDisplayText(){return ad(this.project?.title??`项目`,10)}getIcon(){return`chart-gantt`}async setState(e,t){e.filePath&&e.filePath!==this.filePath&&(this.filePath=e.filePath,await this.loadProject()),await super.setState(e,t)}getState(){return{filePath:this.filePath}}onOpen(){return this.ensureInitialized(),Promise.resolve()}onClose(){return this.keydownHandler&&=(this.containerEl.removeEventListener(`keydown`,this.keydownHandler),null),this.filterRenderTimer!==null&&(window.clearTimeout(this.filterRenderTimer),this.filterRenderTimer=null),this.subview?.destroy?.(),this.subview=null,Promise.resolve()}ensureInitialized(){if(this.initialized)return;this.initialized=!0,this.containerEl.addClass(`pm-view`);let e=this.contentEl;e.empty(),e.addClass(`pm-root`),this.toolbarEl=e.createDiv(`pm-toolbar`),this.headerEl=e.createDiv(`pm-project-header-mount`),this.bodyEl=e.createDiv(`pm-content`),this.keydownHandler=e=>{this.subview?.handleKeyDown?.(e)},this.containerEl.addEventListener(`keydown`,this.keydownHandler),this.containerEl.hasAttribute(`tabindex`)||this.containerEl.setAttribute(`tabindex`,`-1`),this.register(this.plugin.store.onProjectChanged(e=>{e===this.filePath&&this.handleProjectChanged()}))}handleProjectChanged(){if(!this.project)return;if(!(this.app.vault.getAbstractFileByPath(this.filePath)instanceof e.TFile)){this.renderMissingProject();return}let t=activeDocument.activeElement;!this.toolbarEl.contains(t)&&!this.headerEl.contains(t)&&(this.renderProjectToolbar(),this.renderProjectHeader()),this.refreshProject()}async loadProject(){this.ensureInitialized();let t=this.app.vault.getAbstractFileByPath(this.filePath);if(!(t instanceof e.TFile)){this.renderMissingProject();return}if(this.project=await this.plugin.store.loadProject(t),!this.project){this.renderMissingProject();return}this.plugin.applyCollapsedState(this.project),this.defaultViewAppliedFor!==this.filePath&&(this.defaultViewAppliedFor=this.filePath,this.currentView=this.plugin.store.configFor(this.project).defaultView),this.loadFilterFromSettings(),this.leaf.updateHeader?.(),this.renderProjectToolbar(),this.renderProjectHeader(),this.renderCurrentView()}loadFilterFromSettings(){let e=this.plugin.settings.projectFilters[this.filePath];if(e)this.filter=e.filter,this.activeSavedViewId=e.activeSavedViewId;else this.filter=au(),this.activeSavedViewId=null;let t=this.activeSavedViewId&&this.project?.savedViews.find(e=>e.id===this.activeSavedViewId);t&&(this.filter={...t.filter},this.kanbanGroupBy=t.groupBy===`status`?`status`:`stage`)}async persistFilter(){this.filePath&&(this.plugin.settings.projectFilters[this.filePath]={filter:this.filter,activeSavedViewId:this.activeSavedViewId},await this.plugin.saveSettings())}renderMissingProject(){this.toolbarEl.empty(),this.headerEl.empty(),this.header=null,this.bodyEl.empty();let e=this.bodyEl.createDiv(`pm-empty-state`);e.createEl(`h3`,{text:`未找到项目`}),e.createEl(`p`,{text:`路径 ${this.filePath} 下没有项目，文件可能已删除或重命名。`})}renderProjectHeader(){if(!this.project)return;this.headerEl.empty();let e=this.plugin.store.configFor(this.project);this.header=new Vm(this.headerEl,{project:this.project,stages:e.stages,statuses:e.statuses,priorities:e.priorities,filter:this.filter,activeSavedViewId:this.activeSavedViewId,onFilterChange:()=>this.handleFilterMutation(),onClearFilter:()=>this.handleClearDetailedFilter(),onSavedViewSelect:e=>this.handleSavedViewSelect(e),onSavedViewSave:e=>this.handleSavedViewSave(e),onSavedViewUpdate:e=>this.handleSavedViewUpdate(e),onSavedViewDelete:e=>this.handleSavedViewDelete(e),onQuickFilterChange:e=>this.handleQuickFilterMutation(e),onQuickPresetSelect:e=>this.handleQuickPresetSelect(e)})}handleQuickFilterMutation(e){this.activeSavedViewId=null,this.kanbanGroupBy=e.quickSource===`task`?`status`:`stage`,this.header?.setActiveSavedViewId(null),this.persistFilter(),this.scheduleFilterRender()}handleQuickPresetSelect(t){if(!this.project)return;let n=au(),r=quickCurrentUser(this.project);if(t.startsWith(`my-`)&&!r){new e.Notice(`当前项目尚未识别“我的”用户，请先配置包含当前用户的个人视图。`);return}n.quickPreset=t,t===`unfinished-requirements`?(n.quickSource=`requirement`,n.quickCompletion=`unfinished`):t===`unfinished-development`?(n.quickSource=`task`,n.quickWorkType=quickPreferredStage(this.project,this.plugin.store.configFor(this.project).stages,`开发`,[`devel`,`develop`,`development`]),n.quickCompletion=`unfinished`):t===`my-unfinished-requirements`?(n.quickSource=`requirement`,n.quickCompletion=`unfinished`,n.quickOwnership=`mine`,n.quickOwner=r):t===`my-unfinished-tasks`?(n.quickSource=`task`,n.quickCompletion=`unfinished`,n.quickOwnership=`mine`,n.quickOwner=r):t===`overdue`&&(n.quickCompletion=`unfinished`,n.quickAttention=[`overdue`]),Object.assign(this.filter,n),this.activeSavedViewId=null,this.kanbanGroupBy=n.quickSource===`task`?`status`:`stage`,this.persistFilter(),this.header?.setActiveSavedViewId(null),this.scheduleFilterRender()}handleFilterMutation(){this.filter.quickPreset=``,this.activeSavedViewId===null?this.header?.notifyMutation():(this.activeSavedViewId=null,this.header?.setActiveSavedViewId(null)),this.persistFilter(),this.scheduleFilterRender()}handleClearDetailedFilter(){Object.assign(this.filter,{text:``,stages:[],statuses:[],priorities:[],assignees:[],participants:[],tags:[],dueDateFilter:`any`,showArchived:!1}),this.filter.quickPreset=``,this.activeSavedViewId=null,this.persistFilter(),this.header?.setActiveSavedViewId(null),this.scheduleFilterRender()}handleClearFilter(){Object.assign(this.filter,au()),this.activeSavedViewId=null,this.kanbanGroupBy=`stage`,this.persistFilter(),this.header?.setActiveSavedViewId(this.activeSavedViewId),this.scheduleFilterRender()}handleSavedViewSelect(e){if(this.project){if(e===null)Object.assign(this.filter,au()),this.activeSavedViewId=null,this.kanbanGroupBy=`stage`;else{let t=this.project.savedViews.find(t=>t.id===e);if(!t)return;Object.assign(this.filter,t.filter),this.activeSavedViewId=t.id,this.kanbanGroupBy=t.groupBy===`status`?`status`:`stage`,this.subview instanceof Yp&&(this.savedTableViewState={sortKey:t.sortKey,sortDir:t.sortDir})}this.persistFilter(),this.header?.setActiveSavedViewId(this.activeSavedViewId),this.scheduleFilterRender()}}async handleSavedViewSave(e){if(!this.project)return;let t=this.subview instanceof Yp?this.subview.getViewState():{sortKey:`stage`,sortDir:`asc`},n={id:nu(),name:e,filter:{...this.filter},sortKey:t.sortKey,sortDir:t.sortDir,viewMode:this.currentView};this.project.savedViews.push(n),this.activeSavedViewId=n.id,await this.plugin.store.saveProject(this.project),this.persistFilter(),this.header?.setActiveSavedViewId(this.activeSavedViewId)}async handleSavedViewUpdate(e){if(!this.project)return;let t=this.project.savedViews.find(t=>t.id===e);if(t){if(t.filter={...this.filter},t.viewMode=this.currentView,this.subview instanceof Yp){let e=this.subview.getViewState();t.sortKey=e.sortKey,t.sortDir=e.sortDir}await this.plugin.store.saveProject(this.project),this.header?.refresh()}}async handleSavedViewDelete(e){this.project&&(this.project.savedViews=this.project.savedViews.filter(t=>t.id!==e),this.activeSavedViewId===e&&(this.activeSavedViewId=null),await this.plugin.store.saveProject(this.project),this.persistFilter(),this.header?.setActiveSavedViewId(this.activeSavedViewId))}scheduleFilterRender(){this.filterRenderTimer!==null&&window.clearTimeout(this.filterRenderTimer),this.bodyEl.addClass(`pm-filter-switching`),this.filterRenderTimer=window.setTimeout(()=>{this.filterRenderTimer=null,this.subview instanceof Pm?this.subview.updateFilter(this.filter,this.kanbanGroupBy):this.subview instanceof Yp?this.subview.updateFilter(this.filter,this.savedTableViewState):this.renderCurrentView(),this.bodyEl.removeClass(`pm-filter-switching`)},0)}refreshSubview(){this.subview?.render()}renderProjectToolbar(){if(!this.project)return;this.toolbarEl.empty();let t=this.toolbarEl.createDiv(`pm-toolbar-left`);t.createSpan({text:this.project.icon,cls:`pm-toolbar-icon`,attr:{"aria-label":`编辑项目`,role:`button`,tabindex:`0`}}).addEventListener(`click`,()=>{Xf(this.plugin,{project:this.project})}),this.titleEl2=t.createEl(`h2`,{text:this.project.title,cls:`pm-toolbar-title`}),this.titleEl2.contentEditable=`true`,this.titleEl2.addEventListener(`blur`,Y(async()=>{if(!this.project)return;let e=this.titleEl2.textContent?.trim();!e||e===this.project.title||await this.plugin.store.updateProject(this.project,{title:e})})),new Fm(this.toolbarEl,{options:[{id:`table`,icon:`table`,label:`表格`},{id:`gantt`,icon:`git-fork`,label:`甘特图`},{id:`kanban`,icon:`layout-dashboard`,label:`看板`}],active:this.currentView,onChange:e=>{this.currentView=e,this.renderCurrentView()}});let n=this.toolbarEl.createDiv(`pm-toolbar-right`);new e.ButtonComponent(n).setButtonText(`+ 添加任务`).setCta().onClick(()=>{this.project&&Q(this.plugin,this.project,{onSave:async()=>{await this.refreshProject()}})}),this.currentView===`gantt`&&new e.ButtonComponent(n).setButtonText(`+ 里程碑`).onClick(()=>{this.project&&Q(this.plugin,this.project,{defaults:{type:`milestone`},onSave:async()=>{await this.refreshProject()}})}),new e.ExtraButtonComponent(n).setIcon(`settings`).setTooltip(`项目设置`).onClick(()=>{Xf(this.plugin,{project:this.project})})}renderCurrentView(){if(!this.project)return;let e=null,t=null;this.currentView===`gantt`&&this.subview instanceof Am&&(e=this.subview.getScrollPosition(),t=this.subview.getLabelWidth());let n=null;switch(this.subview instanceof Yp?(this.savedTableViewState=this.subview.getViewState(),this.currentView===`table`&&(n=this.subview.getScrollTop())):this.currentView!==`table`&&(this.savedTableViewState=null),this.subview?.destroy?.(),this.bodyEl.empty(),this.subview=null,this.currentView){case`table`:{let e=new Yp(this.bodyEl,this.project,this.plugin,()=>this.refreshProject(),this.filter,this.savedTableViewState??void 0);n!==null&&e.setPendingScrollTop(n),this.subview=e;break}case`gantt`:{let n=new Am(this.bodyEl,this.project,this.plugin,()=>this.refreshProject(),this.filter);e&&n.setPendingScroll(e),t!==null&&n.setLabelWidth(t),this.subview=n;break}case`kanban`:this.subview=new Pm(this.bodyEl,this.project,this.plugin,()=>this.refreshProject(),this.filter,this.kanbanGroupBy)}this.bodyEl.toggleClass(`pm-content--kanban`,this.currentView===`kanban`),this.subview?.render()}refreshProject(){return this.pendingRefresh||=new Promise(e=>{window.setTimeout(()=>{this.pendingRefresh=null,this.project&&(this.subview?.refresh?this.subview.refresh():this.subview?this.subview.render():this.renderCurrentView()),e()},0)}),this.pendingRefresh}},Wm=class{el;iconEl;titleEl;bodyEl;actionEl;constructor(e){this.el=e.createDiv(`pm-empty-state`)}setIcon(e){return this.iconEl??=this.el.createDiv(`pm-empty-icon`),this.iconEl.setText(e),this}setTitle(e){return this.titleEl??=this.el.createEl(`h3`),this.titleEl.setText(e),this}setBody(e){return this.bodyEl??=this.el.createEl(`p`),this.bodyEl.setText(e),this}setAction(t,n){return this.actionEl||=this.el.createDiv(`pm-empty-action`),this.actionEl.empty(),new e.ButtonComponent(this.actionEl).setButtonText(t).setCta().onClick(n),this}},Gm=class{el;constructor(e,t){let n=e.createDiv(`pm-project-card`);this.el=n,n.createDiv(`pm-project-card-bar`).setCssStyles({background:t.color});let r=n.createDiv(`pm-project-card-body`);r.createDiv({text:t.icon,cls:`pm-project-card-icon`}),r.createEl(`h3`,{text:t.title,cls:`pm-project-card-title`}),r.createDiv(`pm-project-card-meta`).createSpan({text:`${t.tasksDone}/${t.tasksTotal} 个事项`,cls:`pm-project-card-tasks`});let i=t.tasksTotal?t.tasksDone/t.tasksTotal*100:0;new pp(r).setSize(`sm`).setValue(i).setColor(t.color),n.addEventListener(`click`,()=>t.onClick()),n.addEventListener(`contextmenu`,e=>t.onContextMenu(e))}};function Km(t){t.toolbarEl.empty(),t.toolbarEl.createEl(`h2`,{text:`项目管理`,cls:`pm-toolbar-title`}),new e.ButtonComponent(t.toolbarEl).setButtonText(`+ 新建项目`).setCta().onClick(()=>Jm(t))}async function qm(t){let n=await t.plugin.store.loadAllProjects(t.plugin.settings.projectsFolder);if(t.isStale())return;if(t.contentEl.empty(),n.length===0){new Wm(t.contentEl).setIcon(`📋`).setTitle(`暂无项目`).setBody(`创建第一个项目即可开始使用。`).setAction(`+ 新建项目`,()=>Jm(t));return}let r=[{id:`active`,label:`进行中`,projects:[]},{id:`pending`,label:`待开始`,projects:[]},{id:`backlog`,label:`待规划`,projects:[]},{id:`completed`,label:`已完成`,projects:[]}];for(let e of n){let t=Xm(e.tasks,!1),n=Xm(e.tasks,!0),i=String(e.status??``).toLowerCase(),a=e.id.endsWith(`-backlog`)?`backlog`:[`done`,`closed`].includes(i)||t>0&&n===t?`completed`:[`wait`,`waiting`,`draft`,`planned`].includes(i)||n===0?`pending`:`active`;r.find(e=>e.id===a)?.projects.push({project:e,tasksTotal:t,tasksDone:n})}for(let n of r){if(!n.projects.length)continue;let r=t.contentEl.createDiv(`pm-project-section`);r.setCssStyles({marginBottom:`28px`});let i=r.createEl(`h3`,{text:`${n.label}（${n.projects.length}）`,cls:`pm-project-section-title`});i.setCssStyles({margin:`0 0 12px`,fontSize:`16px`,color:`var(--text-normal)`});let a=r.createDiv(`pm-project-grid`);for(let r of n.projects){let n=r.project,i=r.tasksTotal,o=r.tasksDone;new Gm(a,{title:n.title,icon:n.icon,color:n.color,tasksDone:o,tasksTotal:i,onClick:Y(async()=>{let r=t.plugin.app.vault.getAbstractFileByPath(n.filePath);r instanceof e.TFile&&await t.openProjectFile(r)}),onContextMenu:e=>Ym(t,n,e)})}}}function Jm(t){Xf(t.plugin,{onSave:async n=>{let r=t.plugin.app.vault.getAbstractFileByPath(n.filePath);r instanceof e.TFile&&await t.openProjectFile(r)}})}function Ym(t,n,r){let i=new e.Menu;i.addItem(e=>e.setTitle(`编辑项目`).setIcon(`settings`).onClick(()=>{Xf(t.plugin,{project:n,onSave:async()=>{await qm(t)}})})),i.addItem(e=>e.setTitle(`删除项目`).setIcon(`trash`).onClick(Y(async()=>{await t.plugin.store.deleteProject(n),await qm(t)}))),i.showAtMouseEvent(r)}function Xm(e,t){let n=0;for(let r of e)(!t||r.completed)&&n++,n+=Xm(r.subtasks,t);return n}const Zm=`pm-dashboard`;var Qm=class extends e.ItemView{plugin;toolbarEl;bodyEl;renderToken=0;reloadDebounceTimer=null;constructor(e,t){super(e),this.plugin=t,this.navigation=!1}getViewType(){return Zm}getDisplayText(){return`项目`}getIcon(){return`chart-gantt`}onOpen(){this.containerEl.addClass(`pm-view`);let e=this.contentEl;return e.empty(),e.addClass(`pm-root`),this.toolbarEl=e.createDiv(`pm-toolbar`),this.bodyEl=e.createDiv(`pm-content`),this.render(),this.registerVaultListeners(),Promise.resolve()}onClose(){return this.reloadDebounceTimer!==null&&(window.clearTimeout(this.reloadDebounceTimer),this.reloadDebounceTimer=null),Promise.resolve()}registerVaultListeners(){let e=e=>{let t=this.plugin.settings.projectsFolder;return e===t||e.startsWith(`${t}/`)},t=t=>{e(t)&&(this.reloadDebounceTimer!==null&&window.clearTimeout(this.reloadDebounceTimer),this.reloadDebounceTimer=window.setTimeout(()=>{this.reloadDebounceTimer=null,this.render()},300))};this.register(this.plugin.store.onProjectChanged(t)),this.registerEvent(this.app.vault.on(`create`,e=>t(e.path))),this.registerEvent(this.app.vault.on(`delete`,e=>t(e.path))),this.registerEvent(this.app.vault.on(`rename`,(e,n)=>{t(e.path),t(n)}))}render(){let e=this.makeCtx();Km(e),this.bodyEl.empty(),this.bodyEl.addClass(`pm-project-list-container`),qm(e)}makeCtx(){let e=++this.renderToken;return{plugin:this.plugin,toolbarEl:this.toolbarEl,contentEl:this.bodyEl,isStale:()=>e!==this.renderToken,openProjectFile:e=>this.plugin.router.openProject(e)}}},$m=class{plugin;constructor(e){this.plugin=e}async openDashboard(){let e=this.plugin.app.workspace,t=e.getLeaf(`tab`);await t.setViewState({type:Zm,state:{}}),await e.revealLeaf(t)}async openProject(e){let t=this.plugin.app.workspace,n=t.getLeaf(`tab`);await n.setViewState({type:Hm,state:{filePath:e.path}}),await t.revealLeaf(n)}async openProjectByPath(t){let n=this.plugin.app.vault.getAbstractFileByPath(t);n instanceof e.TFile&&await this.openProject(n)}},eh=class{plugin;intervalId=null;notifiedIds=new Set;constructor(e){this.plugin=e}start(){this.check(),this.intervalId=window.setInterval(()=>{this.check()},36e5),this.plugin.registerInterval(this.intervalId)}stop(){this.intervalId!==null&&(window.clearInterval(this.intervalId),this.intervalId=null)}async check(){if(!this.plugin.settings.notificationsEnabled)return;let t=this.plugin.settings.notificationLeadDays,n=Zl(),r=n.add({days:t}),i;try{i=await this.plugin.store.loadAllProjects(this.plugin.settings.projectsFolder)}catch{return}for(let t of i){let i=q(t.tasks);for(let{task:a}of i){let i=K(a.due);if(!i||a.completed)continue;let o=G.PlainDate.compare(i,n),s=o<0,c=o>=0&&G.PlainDate.compare(i,r)<=0,l=`${a.id}-${a.due}`;if(s&&!this.notifiedIds.has(l+`-overdue`)){this.notifiedIds.add(l+`-overdue`);let r=n.since(i,{largestUnit:`days`}).days;new e.Notice(`⚠️ 已逾期：${t.title}中的“${a.title}”已逾期 ${r} 天`,8e3)}else if(c&&!this.notifiedIds.has(l+`-soon`)){this.notifiedIds.add(l+`-soon`);let r=i.since(n,{largestUnit:`days`}).days,o=r===0?`📅 今天到期：${t.title}中的“${a.title}”`:`📅 ${r} 天后到期：${t.title}中的“${a.title}”`;new e.Notice(o,6e3)}}}}};async function th(t){let n=t.settings.projectsFolder,r=t.app.vault.getMarkdownFiles().filter(e=>e.path.startsWith(n+`/`)),i=0;for(let n of r)try{let{frontmatter:r}=Ru(await t.app.vault.read(n));if(!r||r[`pm-project`]!==!0||!Vu(r))continue;let a=await t.store.loadProject(n);if(!a||a.tasks.length===0)continue;new e.Notice(`正在迁移项目：${a.title}……`),await t.store.saveProject(a),i++}catch(t){console.error(`[PM] Migration failed for ${n.path}:`,t),new e.Notice(`项目管理：迁移“${n.basename}”失败，请查看控制台了解详情。`)}i>0&&new e.Notice(`项目管理：已将 ${i} 个项目迁移为新格式。`)}var nh=class extends e.Plugin{settings={...tu};store;notifier;router;undoStack=[];redoStack=[];pushUndo(e){this.undoStack.push(e),this.undoStack.length>20&&this.undoStack.shift(),this.redoStack=[]}async undoLastAction(){let e=this.undoStack.pop();e&&(await e.undo(),this.redoStack.push(e))}async redoLastAction(){let e=this.redoStack.pop();e&&(await e.redo(),this.undoStack.push(e))}async onload(){await this.loadSettings(),this.store=new Td(this.app,()=>this.settings),this.store.registerVaultSync(this),this.notifier=new eh(this),this.router=new $m(this),this.registerObsidianProtocolHandler(`open-projects`,async()=>{await this.router.openDashboard()}),this.registerView(Hm,e=>new Um(e,this)),this.registerView(Zm,e=>new Qm(e,this)),this.app.workspace.onLayoutReady(Y(async()=>{await th(this),await this.cleanupStaleProjectFilters()})),this.addRibbonIcon(`chart-gantt`,`项目管理`,async()=>{await this.router.openDashboard()}),this.addCommand({id:`open-projects`,name:`打开项目管理面板`,callback:()=>{this.router.openDashboard()}}),this.addCommand({id:`new-project`,name:`新建项目`,callback:()=>{Xf(this,{onSave:async e=>{await this.router.openProjectByPath(e.filePath)}})}}),this.addCommand({id:`new-task`,name:`新建任务`,callback:()=>{this.pickProjectThenCreateTask(null)}}),this.addCommand({id:`new-subtask`,name:`新建子任务`,callback:()=>{this.pickProjectThenCreateTask(`pick-parent`)}}),this.addCommand({id:`undo-last-action`,name:`撤销上一步操作`,callback:()=>{this.undoLastAction()}}),this.addCommand({id:`redo-last-action`,name:`重做上一步操作`,callback:()=>{this.redoLastAction()}}),this.addCommand({id:`import-notes-as-tasks`,name:`将笔记导入为任务`,callback:()=>{this.importNotes()}}),this.addCommand({id:`create-task-from-selection`,name:`根据选中文本创建任务`,editorCheckCallback:(e,t)=>{let n=t.getSelection().trim();return n?(e||this.createTaskFromText(n),!0):!1}}),this.registerEvent(this.app.workspace.on(`editor-menu`,(e,t)=>{let n=t.getSelection().trim();n&&e.addItem(e=>e.setTitle(`根据选中文本创建任务`).setIcon(`list-plus`).onClick(()=>void this.createTaskFromText(n)))})),this.addCommand({id:`open-current-as-project`,name:`将当前文件作为项目打开`,checkCallback:t=>{let n=this.app.workspace.getActiveViewOfType(e.MarkdownView),r=n?.file;return!r||this.app.metadataCache.getFileCache(r)?.frontmatter?.[`pm-project`]!==!0?!1:(t||n.leaf.setViewState({type:Hm,state:{filePath:r.path}}),!0)}}),this.addSettingTab(new Qd(this.app,this)),this.notifier.start()}onunload(){this.notifier.stop()}async loadSettings(){let e=await this.loadData();this.settings=Object.assign({},tu,e??{}),e?.stages?.length||(this.settings.stages=tu.stages),e?.statuses?.length||(this.settings.statuses=tu.statuses),e?.priorities?.length||(this.settings.priorities=tu.priorities),this.settings.projectFilters||(this.settings.projectFilters={}),this.settings.collapsedTasks||(this.settings.collapsedTasks={}),this.settings.tableColumnWidths||(this.settings.tableColumnWidths={});for(let e of Object.values(this.settings.projectFilters))Array.isArray(e.filter.stages)||(e.filter.stages=[]),Array.isArray(e.filter.participants)||(e.filter.participants=[]);let t=!1;for(let e of this.settings.statuses)e.complete===void 0&&(e.complete=e.id===`done`||e.id===`cancelled`,t=!0);if((e??{}).ganttHideDone===!0){let e=this.settings.statuses.filter(e=>!e.complete).map(e=>e.id);for(let t of Object.values(this.settings.projectFilters))t.filter.statuses.length===0&&(t.filter.statuses=e);t=!0}t&&await this.saveSettings()}async cleanupStaleProjectFilters(){let e=this.settings.projectFilters,t={},n=!1;for(let[r,i]of Object.entries(e))this.app.vault.getAbstractFileByPath(r)?t[r]=i:n=!0;let r={};for(let[e,t]of Object.entries(this.settings.collapsedTasks))this.app.vault.getAbstractFileByPath(e)?r[e]=t:n=!0;n&&(this.settings.projectFilters=t,this.settings.collapsedTasks=r,await this.saveSettings())}applyCollapsedState(e){let t=this.settings.collapsedTasks[e.filePath];if(!t)return;let n=new Set(t);for(let{task:t}of q(e.tasks))t.collapsed=n.has(t.id)}async persistCollapsedState(e){this.settings.collapsedTasks[e.filePath]=q(e.tasks).filter(e=>e.task.collapsed).map(e=>e.task.id),await this.saveSettings()}async toggleTaskCollapsed(e,t){let n=ou(e.tasks,t);n&&(n.collapsed=!n.collapsed,await this.persistCollapsedState(e))}async saveSettings(){await this.saveData(this.settings)}showNotice(t,n=3e3){new e.Notice(t,n)}refreshProjectViews(){for(let e of this.app.workspace.getLeavesOfType(Hm))e.view instanceof Um&&e.view.refreshProject()}async pickProjectThenCreateTask(e){let t=await this.store.loadAllProjects(this.settings.projectsFolder);if(!t.length){this.showNotice(`暂无项目，请先创建项目。`);return}Zf(this,t,t=>{if(e===`pick-parent`){let e=q(t.tasks);if(!e.length){this.showNotice(`当前项目暂无任务，请先创建任务。`);return}Qf(this,e.map(e=>e.task),e=>{this.openTaskModalForProject(t,e.id)})}else this.openTaskModalForProject(t,null)})}openTaskModalForProject(e,t,n){Q(this,e,{parentId:t,defaults:n,onSave:async()=>{await this.store.saveProject(e),await this.router.openProjectByPath(e.filePath)}})}async createTaskFromText(e){let t=e.trim();if(!t)return;let n=t.indexOf(`
 `),r=n===-1?{title:t}:{title:t.slice(0,n).trim(),description:t.slice(n+1).trim()},i=await this.store.loadAllProjects(this.settings.projectsFolder);if(!i.length){this.showNotice(`暂无项目，请先创建项目。`);return}if(i.length===1){this.openTaskModalForProject(i[0],null,r);return}Zf(this,i,e=>{this.openTaskModalForProject(e,null,r)})}async importNotes(){let e=this.app.workspace.getLeavesOfType(Hm),t=null;for(let n of e)if(n.view instanceof Um&&n.view.project){t=n.view.project;break}if(t){let e=t;$f(this,t,async()=>{await this.router.openProjectByPath(e.filePath)});return}let n=await this.store.loadAllProjects(this.settings.projectsFolder);if(!n.length){this.showNotice(`暂无项目，请先创建项目。`);return}Zf(this,n,e=>{$f(this,e,async()=>{await this.router.openProjectByPath(e.filePath)})})}};module.exports=nh;
+'use strict'
+
+// 项目首页扩展运行在 Project Manager Enhanced 主模块闭包内，可复用项目存储和事项弹窗能力。
+const pmDashboardState = {
+  selectedSystem: 'all',
+  projectSearch: '',
+  projectStatus: 'all',
+  archiveStatus: 'unarchived',
+  riskOnly: false,
+  collapsedSystems: new Set(),
+  expandedProjectId: null,
+  requirementFilters: new Map(),
+};
+const PM_DASHBOARD_DATES_SETTING = 'dashboardIterationDates';
+const PM_ARCHIVED_PROJECTS_SETTING = 'dashboardArchivedProjects';
+const PM_MEMBER_ROLES_SETTING = 'dashboardMemberRoles';
+const PM_TESTING_DATE_FIELD = 'testingDate';
+const PM_PLANNED_RELEASE_DATE_FIELD = 'plannedReleaseDate';
+const PM_MEMBER_ROLE_DEFINITIONS = [
+  { id: 'project-management', label: '项目管理' },
+  { id: 'product-manager', label: '产品经理' },
+  { id: 'frontend-development', label: '前端开发' },
+  { id: 'backend-development', label: '后端开发' },
+  { id: 'testing', label: '测试' },
+];
+const PM_REQUIREMENT_METRIC_LABELS = {
+  all: '全部需求',
+  completed: '已完成',
+  unfinished: '未完成',
+  'high-priority': '高优先级',
+  overdue: '已延期',
+  'due-soon': '本周到期',
+};
+
+/**
+ * 项目面板按项目所在的一级目录归属系统分组，并保留目录编号用于稳定排序。
+ */
+function pmSystemGroupLabel(project, projectsFolder) {
+  const projectPath = String(project.filePath ?? '').replace(/\\/g, '/');
+  const root = String(projectsFolder ?? '').replace(/^[/\\]+|[/\\]+$/g, '').replace(/\\/g, '/');
+  const relativePath = root && projectPath.startsWith(`${root}/`)
+    ? projectPath.slice(root.length + 1)
+    : projectPath;
+  return relativePath.split('/').filter(Boolean)[0] ?? '未分类';
+}
+
+/**
+ * 首页只统计禅道需求，避免把需求下的开发、测试任务重复计入进度。
+ */
+function pmProjectRequirements(project) {
+  return q(project.tasks)
+    .map((entry) => entry.task)
+    .filter((task) => {
+      const sourceType = String(task.customFields?.zentaoSourceType ?? '');
+      return sourceType === 'story' || (task.tags ?? []).includes('zentao-requirement');
+    });
+}
+
+function pmProjectIterationId(project) {
+  const projectIdMatch = String(project.id ?? '').match(/(?:zentao-)?execution-(\d+)$/u);
+  const titleIdMatch = String(project.title ?? '').match(/#(\d+)/u);
+  const matchedId = projectIdMatch?.[1] ?? titleIdMatch?.[1];
+  return matchedId ? Number.parseInt(matchedId, 10) : Number.NEGATIVE_INFINITY;
+}
+
+function pmRequirementCompleted(task) {
+  const status = String(task.status ?? '').toLocaleLowerCase('en-US');
+  return Boolean(task.completed)
+    || Number(task.progress ?? 0) >= 100
+    || ['done', 'closed', 'cancel', 'cancelled', 'canceled'].includes(status);
+}
+
+function pmValidDate(value) {
+  const date = String(value ?? '').trim();
+  return /^\d{4}-\d{2}-\d{2}$/u.test(date) ? date : '';
+}
+
+function pmDaysFromToday(value) {
+  const date = pmValidDate(value);
+  if (!date) return null;
+
+  const today = new Date(`${Zl().toString()}T00:00:00`);
+  const target = new Date(`${date}T00:00:00`);
+  return Math.round((target.getTime() - today.getTime()) / 86400000);
+}
+
+function pmRequirementOverdue(task) {
+  const days = pmDaysFromToday(task.due);
+  return !pmRequirementCompleted(task) && days !== null && days < 0;
+}
+
+function pmRequirementDueSoon(task) {
+  const days = pmDaysFromToday(task.due);
+  return !pmRequirementCompleted(task) && days !== null && days >= 0 && days <= 7;
+}
+
+function pmProjectStatusInfo(project, requirementTotal, requirementDone) {
+  const status = String(project.status ?? '').trim().toLocaleLowerCase('en-US');
+  if (['done', 'closed'].includes(status) || (requirementTotal > 0 && requirementDone === requirementTotal)) {
+    return { key: 'completed', label: '已完成', rank: 2 };
+  }
+  if (['wait', 'waiting', 'draft', 'planned'].includes(status)) {
+    return { key: 'pending', label: '未开始', rank: 1 };
+  }
+  if (['pause', 'paused', 'suspended'].includes(status)) {
+    return { key: 'paused', label: '已暂停', rank: 1 };
+  }
+  return { key: 'active', label: '进行中', rank: 0 };
+}
+
+function pmFormatDate(value) {
+  const date = pmValidDate(value);
+  return date ? date.replace(/-/g, '/') : '--';
+}
+
+function pmFormatUpdatedAt(value) {
+  const date = new Date(String(value ?? ''));
+  if (Number.isNaN(date.getTime())) return '--';
+
+  const difference = Date.now() - date.getTime();
+  if (difference >= 0 && difference < 60 * 60 * 1000) return `${Math.max(1, Math.floor(difference / 60000))}分钟前`;
+  if (difference >= 0 && difference < 24 * 60 * 60 * 1000) return `${Math.floor(difference / 3600000)}小时前`;
+  return `${date.getFullYear()}/${String(date.getMonth() + 1).padStart(2, '0')}/${String(date.getDate()).padStart(2, '0')}`;
+}
+
+function pmValidMemberRoles(roles) {
+  const validRoleIds = new Set(PM_MEMBER_ROLE_DEFINITIONS.map((role) => role.id));
+  return [...new Set(Array.isArray(roles) ? roles : [])]
+    .filter((role) => validRoleIds.has(role));
+}
+
+function pmMemberRoleStore(context) {
+  const storedRoles = context.plugin.settings[PM_MEMBER_ROLES_SETTING];
+  if (!storedRoles || typeof storedRoles !== 'object' || Array.isArray(storedRoles)) {
+    return { global: {}, projects: {} };
+  }
+
+  return {
+    global: storedRoles.global && typeof storedRoles.global === 'object' && !Array.isArray(storedRoles.global)
+      ? storedRoles.global
+      : {},
+    projects: storedRoles.projects && typeof storedRoles.projects === 'object' && !Array.isArray(storedRoles.projects)
+      ? storedRoles.projects
+      : {},
+  };
+}
+
+async function pmSaveMemberRoleStore(context, store) {
+  context.plugin.settings[PM_MEMBER_ROLES_SETTING] = store;
+  await context.plugin.saveSettings();
+}
+
+function pmAddMemberValue(members, value) {
+  if (Array.isArray(value)) {
+    for (const item of value) pmAddMemberValue(members, item);
+    return;
+  }
+  if (value && typeof value === 'object') {
+    pmAddMemberValue(members, value.realname ?? value.name ?? value.account ?? '');
+    return;
+  }
+
+  const member = String(value ?? '').trim();
+  if (member) members.add(member);
+}
+
+/**
+ * 迭代参与人员同时取团队成员、事项负责人和事项完成者，并统一去重。
+ */
+function pmProjectMembers(project) {
+  const members = new Set();
+  pmAddMemberValue(members, project.teamMembers ?? []);
+  for (const { task } of q(project.tasks)) {
+    pmAddMemberValue(members, task.assignees ?? []);
+    pmAddMemberValue(members, task.completedBy);
+    pmAddMemberValue(members, task.customFields?.completedBy);
+  }
+  return [...members].sort((left, right) => left.localeCompare(right, 'zh-CN'));
+}
+
+function pmEffectiveMemberRoles(context, project, member) {
+  const store = pmMemberRoleStore(context);
+  const projectRoles = store.projects[project.id];
+  if (projectRoles && Object.prototype.hasOwnProperty.call(projectRoles, member)) {
+    return pmValidMemberRoles(projectRoles[member]);
+  }
+  return pmValidMemberRoles(store.global[member]);
+}
+
+function pmProjectMembersByRole(context, project) {
+  const result = {
+    'project-management': [],
+    'product-manager': [],
+    'frontend-development': [],
+    'backend-development': [],
+    testing: [],
+    unmarked: [],
+  };
+  for (const member of pmProjectMembers(project)) {
+    const roles = pmEffectiveMemberRoles(context, project, member);
+    if (roles.length === 0) result.unmarked.push(member);
+    for (const role of roles) result[role].push(member);
+  }
+  return result;
+}
+
+/**
+ * 汇总卡片和顶部概览所需的数据，所有风险指标均以未完成需求为口径。
+ */
+function pmProjectSummary(context, project, system) {
+  const requirements = pmProjectRequirements(project);
+  const completed = requirements.filter(pmRequirementCompleted);
+  const unfinished = requirements.filter((task) => !pmRequirementCompleted(task));
+  const overdue = unfinished.filter(pmRequirementOverdue);
+  const dueSoon = unfinished.filter(pmRequirementDueSoon);
+  const highPriority = unfinished.filter((task) => ['critical', 'high'].includes(String(task.priority ?? '').toLocaleLowerCase('en-US')));
+  const startDates = requirements.map((task) => pmValidDate(task.start)).filter(Boolean).sort();
+  const dueDates = requirements.map((task) => pmValidDate(task.due)).filter(Boolean).sort();
+  const status = pmProjectStatusInfo(project, requirements.length, completed.length);
+
+  return {
+    project,
+    system,
+    archived: pmProjectArchived(context, project),
+    iterationId: pmProjectIterationId(project),
+    requirements,
+    total: requirements.length,
+    completed: completed.length,
+    unfinished: unfinished.length,
+    overdue: overdue.length,
+    dueSoon: dueSoon.length,
+    highPriority: highPriority.length,
+    start: startDates[0] ?? '',
+    due: dueDates[dueDates.length - 1] ?? '',
+    status,
+    progress: requirements.length ? Math.round(completed.length / requirements.length * 100) : 0,
+  };
+}
+
+function pmArchivedProjectStore(context) {
+  const storedProjects = context.plugin.settings[PM_ARCHIVED_PROJECTS_SETTING];
+  return storedProjects && typeof storedProjects === 'object' && !Array.isArray(storedProjects)
+    ? storedProjects
+    : {};
+}
+
+function pmProjectArchived(context, project) {
+  return pmArchivedProjectStore(context)[project.id] === true;
+}
+
+async function pmSetProjectArchived(context, project, archived) {
+  const archivedProjects = pmArchivedProjectStore(context);
+  if (archived) archivedProjects[project.id] = true;
+  else delete archivedProjects[project.id];
+  context.plugin.settings[PM_ARCHIVED_PROJECTS_SETTING] = archivedProjects;
+  await context.plugin.saveSettings();
+}
+
+/**
+ * 手工维护的迭代日期独立保存在插件配置中，禅道同步项目文件时不会覆盖这些值。
+ */
+function pmProjectManualDates(context, project) {
+  const settings = context.plugin.settings;
+  const storedDates = settings[PM_DASHBOARD_DATES_SETTING];
+  if (!storedDates || typeof storedDates !== 'object' || Array.isArray(storedDates)) return {};
+  const projectDates = storedDates[project.id];
+  return projectDates && typeof projectDates === 'object' && !Array.isArray(projectDates) ? projectDates : {};
+}
+
+async function pmSaveProjectManualDate(context, project, field, value) {
+  const settings = context.plugin.settings;
+  const storedDates = settings[PM_DASHBOARD_DATES_SETTING];
+  const dateStore = storedDates && typeof storedDates === 'object' && !Array.isArray(storedDates)
+    ? storedDates
+    : {};
+  const current = dateStore[project.id] && typeof dateStore[project.id] === 'object'
+    ? dateStore[project.id]
+    : {};
+
+  dateStore[project.id] = { ...current, [field]: pmValidDate(value) };
+  settings[PM_DASHBOARD_DATES_SETTING] = dateStore;
+  await context.plugin.saveSettings();
+}
+
+function pmRenderProjectManualDate(context, container, project, label, field) {
+  const dateField = container.createDiv('pm-project-manual-date');
+  dateField.createSpan({ text: label, cls: 'pm-project-manual-date-label' });
+  const input = dateField.createEl('input', {
+    type: 'date',
+    cls: 'pm-project-manual-date-input',
+    attr: { 'aria-label': label },
+  });
+  input.value = pmValidDate(pmProjectManualDates(context, project)[field]);
+
+  // 日期控件位于可点击卡片内，需要阻止交互事件触发需求展开。
+  for (const eventName of ['click', 'mousedown', 'keydown']) {
+    dateField.addEventListener(eventName, (event) => event.stopPropagation());
+  }
+  input.addEventListener('change', () => {
+    void pmSaveProjectManualDate(context, project, field, input.value).catch((error) => {
+      console.error(`[PM] 保存${label}失败：`, error);
+      context.plugin.showNotice(`${label}保存失败，请稍后重试。`);
+    });
+  });
+}
+
+function pmDefinitionLabel(context, project, type, id) {
+  const value = String(id ?? '').trim();
+  if (!value) return '--';
+
+  const definitions = context.plugin.store.configFor(project)?.[type] ?? [];
+  return definitions.find((definition) => definition.id === value)?.label ?? value;
+}
+
+function pmDefaultRequirementFilter() {
+  return {
+    search: '',
+    module: 'all',
+    stage: 'all',
+    status: 'all',
+    assignee: 'all',
+    unfinishedOnly: false,
+    overdueOnly: false,
+    quickMetric: 'all',
+  };
+}
+
+function pmRequirementFilter(projectId) {
+  const existing = pmDashboardState.requirementFilters.get(projectId);
+  if (existing) {
+    existing.quickMetric ??= 'all';
+    return existing;
+  }
+
+  const created = pmDefaultRequirementFilter();
+  pmDashboardState.requirementFilters.set(projectId, created);
+  return created;
+}
+
+function pmApplyRequirementMetric(context, summary, summaries, metric) {
+  const filter = pmRequirementFilter(summary.project.id);
+  Object.assign(filter, pmDefaultRequirementFilter(), { quickMetric: metric });
+  pmDashboardState.expandedProjectId = summary.project.id;
+  pmRenderDashboard(context, summaries);
+}
+
+function pmCreateFilterSelect(container, label, value, options, onChange) {
+  const field = container.createDiv('pm-dashboard-filter-field');
+  field.createSpan({ text: label, cls: 'pm-dashboard-filter-label' });
+  const select = field.createEl('select', { cls: 'pm-dashboard-select' });
+  for (const option of options) {
+    const optionElement = select.createEl('option', { text: option.label });
+    optionElement.value = option.value;
+  }
+  select.value = value;
+  select.addEventListener('change', () => onChange(select.value));
+  return select;
+}
+
+function pmCreateToggle(container, label, checked, onChange) {
+  const toggle = container.createEl('label', { cls: 'pm-dashboard-check' });
+  const input = toggle.createEl('input', { type: 'checkbox' });
+  input.checked = checked;
+  toggle.createSpan({ text: label });
+  input.addEventListener('change', () => onChange(input.checked));
+}
+
+function pmRenderMemberRoleChoices(container, getRoles, onChange, disabled = false) {
+  for (const role of PM_MEMBER_ROLE_DEFINITIONS) {
+    const choice = container.createEl('label', {
+      cls: `pm-member-role-choice pm-member-role-choice--${role.id}`,
+    });
+    const input = choice.createEl('input', { type: 'checkbox' });
+    input.checked = getRoles().includes(role.id);
+    input.disabled = disabled;
+    choice.createSpan({ text: role.label });
+    input.addEventListener('change', () => {
+      const nextRoles = new Set(getRoles());
+      if (input.checked) nextRoles.add(role.id);
+      else nextRoles.delete(role.id);
+      onChange(pmValidMemberRoles([...nextRoles]));
+    });
+  }
+}
+
+function pmRoleLabels(roles) {
+  const roleIds = new Set(pmValidMemberRoles(roles));
+  const labels = PM_MEMBER_ROLE_DEFINITIONS
+    .filter((role) => roleIds.has(role.id))
+    .map((role) => role.label);
+  return labels.length > 0 ? labels.join('、') : '未配置';
+}
+
+/**
+ * 全局人员角色作为默认值跨迭代复用，迭代内没有覆盖时自动继承。
+ */
+async function pmOpenGlobalMemberRoles(context) {
+  const projects = await context.plugin.store.loadAllProjects(context.plugin.settings.projectsFolder);
+  const store = pmMemberRoleStore(context);
+  const draftGlobal = {};
+  for (const [member, roles] of Object.entries(store.global)) {
+    const validRoles = pmValidMemberRoles(roles);
+    if (validRoles.length > 0) draftGlobal[member] = validRoles;
+  }
+
+  const members = new Set(Object.keys(store.global));
+  for (const project of projects) {
+    for (const member of pmProjectMembers(project)) members.add(member);
+  }
+  for (const projectRoles of Object.values(store.projects)) {
+    if (!projectRoles || typeof projectRoles !== 'object' || Array.isArray(projectRoles)) continue;
+    for (const member of Object.keys(projectRoles)) members.add(member);
+  }
+  const sortedMembers = [...members].filter(Boolean)
+    .sort((left, right) => left.localeCompare(right, 'zh-CN'));
+
+  const modal = new e.Modal(context.plugin.app);
+  modal.setTitle('人员角色管理');
+  modal.modalEl.addClass('pm-member-role-modal');
+  modal.onOpen = () => {
+    const content = modal.contentEl;
+    content.empty();
+    content.createEl('p', {
+      text: '设置人员的默认角色。人员可以同时拥有多个角色，项目中的单独配置会覆盖这里的默认值。',
+      cls: 'pm-member-role-description',
+    });
+
+    const header = content.createDiv('pm-member-role-header');
+    header.createSpan({ text: '人员' });
+    header.createSpan({ text: '默认角色' });
+    header.createSpan({ text: '标记状态' });
+
+    const list = content.createDiv('pm-member-role-list');
+    if (sortedMembers.length === 0) {
+      list.createDiv({ text: '当前没有可配置的团队成员', cls: 'pm-member-role-empty' });
+    }
+    for (const member of sortedMembers) {
+      const row = list.createDiv('pm-member-role-row');
+      row.createSpan({ text: member, cls: 'pm-member-role-name' });
+      const choices = row.createDiv('pm-member-role-choices');
+      const status = row.createSpan({ cls: 'pm-member-role-state' });
+      const getRoles = () => pmValidMemberRoles(draftGlobal[member]);
+      const updateStatus = () => {
+        const marked = getRoles().length > 0;
+        status.setText(marked ? '已标记' : '未标记');
+        status.toggleClass('is-unmarked', !marked);
+      };
+      pmRenderMemberRoleChoices(choices, getRoles, (roles) => {
+        if (roles.length > 0) draftGlobal[member] = roles;
+        else delete draftGlobal[member];
+        updateStatus();
+      });
+      updateStatus();
+    }
+
+    const footer = content.createDiv('pm-member-role-footer');
+    new e.ButtonComponent(footer).setButtonText('取消').onClick(() => modal.close());
+    new e.ButtonComponent(footer).setButtonText('保存').setCta().onClick(Y(async () => {
+      await pmSaveMemberRoleStore(context, { ...store, global: draftGlobal });
+      modal.close();
+      await pmRenderProjectsBySystem(context);
+    }));
+  };
+  modal.onClose = () => modal.contentEl.empty();
+  modal.open();
+}
+
+/**
+ * 迭代角色默认继承全局配置；关闭继承后，当前迭代的角色集合完全覆盖默认值。
+ */
+function pmOpenProjectMemberRoles(context, project) {
+  const store = pmMemberRoleStore(context);
+  const storedOverrides = store.projects[project.id];
+  const draftOverrides = {};
+  if (storedOverrides && typeof storedOverrides === 'object' && !Array.isArray(storedOverrides)) {
+    for (const [member, roles] of Object.entries(storedOverrides)) {
+      draftOverrides[member] = pmValidMemberRoles(roles);
+    }
+  }
+  const members = pmProjectMembers(project);
+
+  const modal = new e.Modal(context.plugin.app);
+  modal.setTitle(`${project.title} · 成员角色`);
+  modal.modalEl.addClass('pm-member-role-modal', 'pm-project-member-role-modal');
+  modal.onOpen = () => {
+    const content = modal.contentEl;
+    content.empty();
+    content.createEl('p', {
+      text: '默认继承全局人员角色；取消继承后，可为当前迭代单独指定角色。',
+      cls: 'pm-member-role-description',
+    });
+
+    const header = content.createDiv('pm-member-role-header pm-project-member-role-header');
+    header.createSpan({ text: '人员' });
+    header.createSpan({ text: '全局默认角色' });
+    header.createSpan({ text: '本迭代角色' });
+    header.createSpan({ text: '继承默认' });
+
+    const list = content.createDiv('pm-member-role-list');
+    if (members.length === 0) {
+      list.createDiv({ text: '当前迭代没有可配置的团队成员', cls: 'pm-member-role-empty' });
+    }
+    for (const member of members) {
+      const row = list.createDiv('pm-member-role-row pm-project-member-role-row');
+      row.createSpan({ text: member, cls: 'pm-member-role-name' });
+      row.createSpan({
+        text: pmRoleLabels(store.global[member]),
+        cls: 'pm-member-role-default',
+      });
+      const choices = row.createDiv('pm-member-role-choices');
+      const inherit = row.createEl('label', { cls: 'pm-member-role-inherit' });
+      const inheritInput = inherit.createEl('input', { type: 'checkbox' });
+      inherit.createSpan({ text: '继承' });
+
+      const hasOverride = () => Object.prototype.hasOwnProperty.call(draftOverrides, member);
+      const getRoles = () => hasOverride()
+        ? pmValidMemberRoles(draftOverrides[member])
+        : pmValidMemberRoles(store.global[member]);
+      const renderChoices = () => {
+        choices.empty();
+        pmRenderMemberRoleChoices(choices, getRoles, (roles) => {
+          draftOverrides[member] = roles;
+        }, !hasOverride());
+        inheritInput.checked = !hasOverride();
+      };
+      inheritInput.addEventListener('change', () => {
+        if (inheritInput.checked) delete draftOverrides[member];
+        else draftOverrides[member] = pmValidMemberRoles(store.global[member]);
+        renderChoices();
+      });
+      renderChoices();
+    }
+
+    const footer = content.createDiv('pm-member-role-footer');
+    new e.ButtonComponent(footer).setButtonText('取消').onClick(() => modal.close());
+    new e.ButtonComponent(footer).setButtonText('保存').setCta().onClick(Y(async () => {
+      const projects = { ...store.projects };
+      if (Object.keys(draftOverrides).length > 0) projects[project.id] = draftOverrides;
+      else delete projects[project.id];
+      await pmSaveMemberRoleStore(context, { ...store, projects });
+      modal.close();
+      await pmRenderProjectsBySystem(context);
+    }));
+  };
+  modal.onClose = () => modal.contentEl.empty();
+  modal.open();
+}
+
+async function pmOpenProject(context, project) {
+  const file = context.plugin.app.vault.getAbstractFileByPath(project.filePath);
+  if (file instanceof e.TFile) await context.openProjectFile(file);
+}
+
+async function pmOpenRequirement(context, project, task) {
+  await pmOpenProject(context, project);
+  Q(context.plugin, project, {
+    task,
+    onSave: async () => {
+      context.plugin.refreshProjectViews();
+    },
+  });
+}
+
+function pmRenderDashboardSummary(container, summaries) {
+  const active = summaries.filter((summary) => summary.status.key === 'active').length;
+  const risky = summaries.filter((summary) => summary.overdue > 0).length;
+  const unfinished = summaries.reduce((total, summary) => total + summary.unfinished, 0);
+  const dueSoon = summaries.reduce((total, summary) => total + summary.dueSoon, 0);
+  const overview = container.createDiv('pm-dashboard-overview');
+  const items = [
+    ['全部迭代', summaries.length],
+    ['进行中', active],
+    ['存在延期', risky],
+    ['未完成需求', unfinished],
+    ['本周到期', dueSoon],
+  ];
+
+  for (const [label, value] of items) {
+    const item = overview.createDiv('pm-dashboard-overview-item');
+    item.createSpan({ text: String(value), cls: 'pm-dashboard-overview-value' });
+    item.createSpan({ text: label, cls: 'pm-dashboard-overview-label' });
+  }
+}
+
+function pmRenderDashboardFilters(context, container, summaries, scopedSummaries, systemLabels) {
+  const toolbar = container.createDiv('pm-dashboard-controls');
+  const systems = toolbar.createDiv('pm-dashboard-systems');
+  const systemOptions = [
+    { id: 'all', label: '全部', count: scopedSummaries.length },
+    ...systemLabels.map((label) => ({
+      id: label,
+      label,
+      count: scopedSummaries.filter((summary) => summary.system === label).length,
+    })),
+  ];
+
+  for (const option of systemOptions) {
+    const button = systems.createEl('button', {
+      text: `${option.label} ${option.count}`,
+      cls: `pm-dashboard-system${pmDashboardState.selectedSystem === option.id ? ' is-active' : ''}`,
+      attr: { type: 'button' },
+    });
+    button.addEventListener('click', () => {
+      pmDashboardState.selectedSystem = option.id;
+      pmRenderDashboard(context, summaries);
+    });
+  }
+
+  const filters = toolbar.createDiv('pm-dashboard-global-filters');
+  const search = filters.createEl('input', {
+    type: 'search',
+    value: pmDashboardState.projectSearch,
+    placeholder: '搜索迭代，按 Enter 筛选',
+    cls: 'pm-dashboard-search',
+  });
+  const applySearch = () => {
+    const nextValue = search.value.trim();
+    if (nextValue === pmDashboardState.projectSearch) return;
+    pmDashboardState.projectSearch = nextValue;
+    pmRenderDashboard(context, summaries);
+  };
+  search.addEventListener('keydown', (event) => {
+    if (event.key === 'Enter') applySearch();
+  });
+  search.addEventListener('search', applySearch);
+
+  pmCreateFilterSelect(filters, '状态', pmDashboardState.projectStatus, [
+    { value: 'all', label: '全部状态' },
+    { value: 'active', label: '进行中' },
+    { value: 'pending', label: '未开始' },
+    { value: 'paused', label: '已暂停' },
+    { value: 'completed', label: '已完成' },
+  ], (value) => {
+    pmDashboardState.projectStatus = value;
+    pmRenderDashboard(context, summaries);
+  });
+
+  pmCreateToggle(filters, '只看风险', pmDashboardState.riskOnly, (checked) => {
+    pmDashboardState.riskOnly = checked;
+    pmRenderDashboard(context, summaries);
+  });
+
+  pmCreateFilterSelect(filters, '归档', pmDashboardState.archiveStatus, [
+    { value: 'all', label: '全部项目' },
+    { value: 'unarchived', label: '未归档项目' },
+    { value: 'archived', label: '已归档项目' },
+  ], (value) => {
+    pmDashboardState.archiveStatus = value;
+    pmRenderDashboard(context, summaries);
+  });
+}
+
+function pmRenderProjectMetric(container, label, value, metricId, active, onClick, warning = false) {
+  const metric = container.createEl('button', {
+    cls: `pm-project-list-metric${warning ? ' is-warning' : ''}${active ? ' is-active' : ''}`,
+    attr: {
+      type: 'button',
+      'aria-pressed': String(active),
+      'aria-label': `筛选${label}需求，共${value}个`,
+    },
+  });
+  metric.createSpan({ text: String(value), cls: 'pm-project-list-metric-value' });
+  metric.createSpan({ text: label, cls: 'pm-project-list-metric-label' });
+  metric.addEventListener('click', (event) => {
+    event.stopPropagation();
+    onClick(metricId);
+  });
+}
+
+function pmRenderProjectCard(context, container, summary, summaries) {
+  const expanded = pmDashboardState.expandedProjectId === summary.project.id;
+  const card = container.createDiv(`pm-project-list-card${expanded ? ' is-expanded' : ''}${summary.archived ? ' is-archived' : ''}`);
+  card.setAttribute('role', 'button');
+  card.setAttribute('tabindex', '0');
+  card.setAttribute('aria-expanded', String(expanded));
+  card.style.setProperty('--pm-project-color', summary.project.color || 'var(--interactive-accent)');
+
+  const heading = card.createDiv('pm-project-list-heading');
+  const titleArea = heading.createDiv('pm-project-list-title-area');
+  titleArea.createSpan({ text: summary.project.icon || '📋', cls: 'pm-project-list-icon' });
+  titleArea.createEl('h3', { text: summary.project.title, cls: 'pm-project-list-title' });
+  const manualDates = heading.createDiv('pm-project-manual-dates');
+  pmRenderProjectManualDate(context, manualDates, summary.project, '提测时间', PM_TESTING_DATE_FIELD);
+  pmRenderProjectManualDate(context, manualDates, summary.project, '计划上线时间', PM_PLANNED_RELEASE_DATE_FIELD);
+  const badges = heading.createDiv('pm-project-list-badges');
+  if (summary.archived) badges.createSpan({ text: '已归档', cls: 'pm-project-archived-badge' });
+  badges.createSpan({ text: summary.status.label, cls: `pm-project-status pm-project-status--${summary.status.key}` });
+  if (summary.overdue > 0) badges.createSpan({ text: '有风险', cls: 'pm-project-risk-badge' });
+
+  const meta = card.createDiv('pm-project-list-meta');
+  const period = summary.start || summary.due
+    ? `${pmFormatDate(summary.start)} ～ ${pmFormatDate(summary.due)}`
+    : '未设置';
+  const roleMembers = pmProjectMembersByRole(context, summary.project);
+  const generalMeta = meta.createDiv('pm-project-general-meta');
+  const generalMetadata = [
+    ['需求周期', period],
+    ['最近更新', pmFormatUpdatedAt(summary.project.updatedAt)],
+  ];
+  for (const [label, value] of generalMetadata) {
+    const item = generalMeta.createDiv('pm-project-list-meta-item');
+    item.createSpan({ text: label, cls: 'pm-project-list-meta-label' });
+    item.createSpan({ text: value, cls: 'pm-project-list-meta-value' });
+  }
+
+  const roleMeta = meta.createDiv('pm-project-role-meta');
+  const roleMetadata = [
+    ['项目管理', roleMembers['project-management']],
+    ['产品经理', roleMembers['product-manager']],
+    ['前端开发', roleMembers['frontend-development']],
+    ['后端开发', roleMembers['backend-development']],
+    ['测试人员', roleMembers.testing],
+  ];
+  for (const [label, members] of roleMetadata) {
+    const item = roleMeta.createDiv('pm-project-role-meta-item');
+    item.createSpan({ text: label, cls: 'pm-project-role-meta-label' });
+    item.createSpan({
+      text: members.length > 0 ? members.join('、') : '未配置',
+      cls: `pm-project-role-meta-value${members.length === 0 ? ' is-empty' : ''}`,
+    });
+  }
+  if (roleMembers.unmarked.length > 0) {
+    const warning = roleMeta.createEl('button', {
+      text: `还有${roleMembers.unmarked.length}名成员未标记角色`,
+      cls: 'pm-project-role-warning',
+      attr: { type: 'button' },
+    });
+    warning.setAttribute('title', roleMembers.unmarked.join('、'));
+    warning.addEventListener('click', (event) => {
+      event.stopPropagation();
+      pmOpenProjectMemberRoles(context, summary.project);
+    });
+  }
+
+  const metrics = card.createDiv('pm-project-list-metrics');
+  const activeMetric = expanded ? pmRequirementFilter(summary.project.id).quickMetric : '';
+  const applyMetric = (metric) => pmApplyRequirementMetric(context, summary, summaries, metric);
+  pmRenderProjectMetric(metrics, '总需求', summary.total, 'all', activeMetric === 'all', applyMetric);
+  pmRenderProjectMetric(metrics, '已完成', summary.completed, 'completed', activeMetric === 'completed', applyMetric);
+  pmRenderProjectMetric(metrics, '未完成', summary.unfinished, 'unfinished', activeMetric === 'unfinished', applyMetric);
+  pmRenderProjectMetric(metrics, '高优先级', summary.highPriority, 'high-priority', activeMetric === 'high-priority', applyMetric, summary.highPriority > 0);
+  pmRenderProjectMetric(metrics, '已延期', summary.overdue, 'overdue', activeMetric === 'overdue', applyMetric, summary.overdue > 0);
+  pmRenderProjectMetric(metrics, '本周到期', summary.dueSoon, 'due-soon', activeMetric === 'due-soon', applyMetric, summary.dueSoon > 0);
+
+  const progress = card.createDiv('pm-project-list-progress');
+  progress.createSpan({ text: '需求完成进度', cls: 'pm-project-list-progress-title' });
+  const track = progress.createDiv('pm-project-list-progress-track');
+  track.createDiv('pm-project-list-progress-fill').setCssStyles({ width: `${summary.progress}%` });
+  progress.createSpan({ text: `${summary.progress}%`, cls: 'pm-project-list-progress-value' });
+
+  const footer = card.createDiv('pm-project-list-footer');
+  const riskText = summary.overdue > 0
+    ? `${summary.overdue}个需求已超过截止日期${summary.highPriority > 0 ? `，${summary.highPriority}个高优先级需求尚未完成` : ''}`
+    : summary.dueSoon > 0
+      ? `${summary.dueSoon}个需求将在7天内到期`
+      : summary.highPriority > 0
+        ? `${summary.highPriority}个高优先级需求尚未完成`
+        : '当前暂无需求延期风险';
+  footer.createSpan({
+    text: riskText,
+    cls: `pm-project-list-risk-text${summary.overdue > 0 ? ' is-warning' : ''}`,
+  });
+
+  const actions = footer.createDiv('pm-project-list-actions');
+  const requirementButton = actions.createEl('button', {
+    text: expanded ? '收起需求 △' : '查看需求 ▽',
+    cls: 'pm-project-list-action',
+    attr: { type: 'button' },
+  });
+  requirementButton.addEventListener('click', (event) => {
+    event.stopPropagation();
+    pmDashboardState.expandedProjectId = expanded ? null : summary.project.id;
+    pmRenderDashboard(context, summaries);
+  });
+
+  const detailButton = actions.createEl('button', {
+    text: '进入迭代详情 →',
+    cls: 'pm-project-list-action pm-project-list-action--primary',
+    attr: { type: 'button' },
+  });
+  detailButton.addEventListener('click', (event) => {
+    event.stopPropagation();
+    void pmOpenProject(context, summary.project);
+  });
+
+  const toggleRequirements = () => {
+    pmDashboardState.expandedProjectId = expanded ? null : summary.project.id;
+    pmRenderDashboard(context, summaries);
+  };
+  card.addEventListener('click', toggleRequirements);
+  card.addEventListener('keydown', (event) => {
+    if (event.target !== card) return;
+    if (event.key !== 'Enter' && event.key !== ' ') return;
+    event.preventDefault();
+    toggleRequirements();
+  });
+  card.addEventListener('contextmenu', (event) => {
+    event.preventDefault();
+    Ym(context, summary.project, event);
+  });
+
+  if (expanded) pmRenderRequirements(context, container, summary, summaries);
+}
+
+function pmRequirementFilterOptions(context, summary, requirements) {
+  const uniqueOptions = (values, label) => [
+    { value: 'all', label },
+    ...[...new Set(values.filter(Boolean))]
+      .sort((left, right) => left.localeCompare(right, 'zh-CN'))
+      .map((value) => ({ value, label: value })),
+  ];
+
+  return {
+    modules: uniqueOptions(requirements.map((task) => String(task.customFields?.zentaoModule ?? '').trim()), '全部模块'),
+    stages: [
+      { value: 'all', label: '全部阶段' },
+      ...[...new Set(requirements.map((task) => String(task.stage ?? '').trim()).filter(Boolean))]
+        .map((value) => ({ value, label: pmDefinitionLabel(context, summary.project, 'stages', value) }))
+        .sort((left, right) => left.label.localeCompare(right.label, 'zh-CN')),
+    ],
+    statuses: [
+      { value: 'all', label: '全部状态' },
+      ...[...new Set(requirements.map((task) => String(task.status ?? '').trim()).filter(Boolean))]
+        .map((value) => ({ value, label: pmDefinitionLabel(context, summary.project, 'statuses', value) }))
+        .sort((left, right) => left.label.localeCompare(right.label, 'zh-CN')),
+    ],
+    assignees: uniqueOptions(requirements.flatMap((task) => task.assignees ?? []), '全部负责人'),
+  };
+}
+
+function pmFilteredRequirements(summary, filter) {
+  const keyword = filter.search.toLocaleLowerCase('zh-CN');
+  return summary.requirements
+    .filter((task) => {
+      const module = String(task.customFields?.zentaoModule ?? '').trim();
+      const zentaoId = String(task.customFields?.zentaoId ?? '').trim();
+      const searchText = [task.title, module, zentaoId, ...(task.assignees ?? [])].join(' ').toLocaleLowerCase('zh-CN');
+      const completed = pmRequirementCompleted(task);
+      const priority = String(task.priority ?? '').toLocaleLowerCase('en-US');
+      if (filter.quickMetric === 'completed' && !completed) return false;
+      if (filter.quickMetric === 'unfinished' && completed) return false;
+      if (filter.quickMetric === 'high-priority' && (completed || !['critical', 'high'].includes(priority))) return false;
+      if (filter.quickMetric === 'overdue' && !pmRequirementOverdue(task)) return false;
+      if (filter.quickMetric === 'due-soon' && !pmRequirementDueSoon(task)) return false;
+      if (keyword && !searchText.includes(keyword)) return false;
+      if (filter.module !== 'all' && module !== filter.module) return false;
+      if (filter.stage !== 'all' && task.stage !== filter.stage) return false;
+      if (filter.status !== 'all' && task.status !== filter.status) return false;
+      if (filter.assignee !== 'all' && !(task.assignees ?? []).includes(filter.assignee)) return false;
+      if (filter.unfinishedOnly && pmRequirementCompleted(task)) return false;
+      if (filter.overdueOnly && !pmRequirementOverdue(task)) return false;
+      return true;
+    })
+    .sort((left, right) => {
+      const overdueOrder = Number(pmRequirementOverdue(right)) - Number(pmRequirementOverdue(left));
+      if (overdueOrder !== 0) return overdueOrder;
+      const completedOrder = Number(pmRequirementCompleted(left)) - Number(pmRequirementCompleted(right));
+      if (completedOrder !== 0) return completedOrder;
+      return String(left.customFields?.zentaoId ?? '').localeCompare(String(right.customFields?.zentaoId ?? ''), 'zh-CN', { numeric: true });
+    });
+}
+
+function pmRenderRequirementCell(row, text, className, title = '') {
+  const cell = row.createEl('td', { text: String(text || '--'), cls: className });
+  if (title) cell.setAttribute('title', title);
+  return cell;
+}
+
+/**
+ * 需求面板只展示需求本身，使用独立滚动区承载完整列表，不继续展开子任务。
+ */
+function pmRenderRequirements(context, container, summary, summaries) {
+  const filter = pmRequirementFilter(summary.project.id);
+  const panel = container.createDiv('pm-requirement-panel');
+  const header = panel.createDiv('pm-requirement-panel-header');
+  const heading = header.createDiv('pm-requirement-panel-heading');
+  heading.createEl('h4', { text: '需求列表' });
+  heading.createSpan({ text: `共${summary.total}个 · 未完成${summary.unfinished}个 · 延期${summary.overdue}个` });
+  if (filter.quickMetric !== 'all') {
+    const quickFilter = header.createDiv('pm-requirement-quick-filter');
+    quickFilter.createSpan({ text: `快捷筛选：${PM_REQUIREMENT_METRIC_LABELS[filter.quickMetric] ?? filter.quickMetric}` });
+    const clearButton = quickFilter.createEl('button', {
+      text: '清除',
+      cls: 'pm-requirement-quick-filter-clear',
+      attr: { type: 'button' },
+    });
+    clearButton.addEventListener('click', () => {
+      filter.quickMetric = 'all';
+      pmRenderDashboard(context, summaries);
+    });
+  }
+
+  const filters = panel.createDiv('pm-requirement-filters');
+  const search = filters.createEl('input', {
+    type: 'search',
+    value: filter.search,
+    placeholder: '搜索需求，按 Enter 筛选',
+    cls: 'pm-dashboard-search pm-requirement-search',
+  });
+  const applySearch = () => {
+    const nextValue = search.value.trim();
+    if (nextValue === filter.search) return;
+    filter.search = nextValue;
+    pmRenderDashboard(context, summaries);
+  };
+  search.addEventListener('keydown', (event) => {
+    if (event.key === 'Enter') applySearch();
+  });
+  search.addEventListener('search', applySearch);
+
+  const options = pmRequirementFilterOptions(context, summary, summary.requirements);
+  pmCreateFilterSelect(filters, '模块', filter.module, options.modules, (value) => {
+    filter.module = value;
+    pmRenderDashboard(context, summaries);
+  });
+  pmCreateFilterSelect(filters, '阶段', filter.stage, options.stages, (value) => {
+    filter.stage = value;
+    pmRenderDashboard(context, summaries);
+  });
+  pmCreateFilterSelect(filters, '状态', filter.status, options.statuses, (value) => {
+    filter.status = value;
+    pmRenderDashboard(context, summaries);
+  });
+  pmCreateFilterSelect(filters, '负责人', filter.assignee, options.assignees, (value) => {
+    filter.assignee = value;
+    pmRenderDashboard(context, summaries);
+  });
+  pmCreateToggle(filters, '只看未完成', filter.unfinishedOnly, (checked) => {
+    filter.unfinishedOnly = checked;
+    pmRenderDashboard(context, summaries);
+  });
+  pmCreateToggle(filters, '只看延期', filter.overdueOnly, (checked) => {
+    filter.overdueOnly = checked;
+    pmRenderDashboard(context, summaries);
+  });
+
+  const requirements = pmFilteredRequirements(summary, filter);
+  if (requirements.length === 0) {
+    panel.createDiv({ text: '没有符合当前筛选条件的需求', cls: 'pm-requirement-empty' });
+    return;
+  }
+
+  const wrapper = panel.createDiv('pm-requirement-table-wrapper');
+  const table = wrapper.createEl('table', { cls: 'pm-requirement-table' });
+  const headerRow = table.createEl('thead').createEl('tr');
+  for (const title of ['需求 ID', '需求名称', '模块', '阶段', '状态', '优先级', '负责人', '截止日期', '进度']) {
+    headerRow.createEl('th', { text: title });
+  }
+
+  const body = table.createEl('tbody');
+  for (const task of requirements) {
+    const overdue = pmRequirementOverdue(task);
+    const completed = pmRequirementCompleted(task);
+    const row = body.createEl('tr', {
+      cls: `${overdue ? 'is-overdue' : ''}${completed ? ' is-completed' : ''}`.trim(),
+    });
+    const zentaoId = String(task.customFields?.zentaoId ?? '').trim();
+    pmRenderRequirementCell(row, zentaoId ? `需求 #${zentaoId}` : '本地需求', 'pm-requirement-id');
+
+    const titleCell = row.createEl('td', { cls: 'pm-requirement-title-cell' });
+    const titleButton = titleCell.createEl('button', {
+      text: task.title,
+      cls: 'pm-requirement-title',
+      attr: { type: 'button' },
+    });
+    titleButton.setAttribute('title', task.title);
+    titleButton.addEventListener('click', () => void pmOpenRequirement(context, summary.project, task));
+
+    const module = String(task.customFields?.zentaoModule ?? '').trim();
+    pmRenderRequirementCell(row, module, 'pm-requirement-module', module);
+    pmRenderRequirementCell(row, pmDefinitionLabel(context, summary.project, 'stages', task.stage), 'pm-requirement-stage');
+    pmRenderRequirementCell(row, pmDefinitionLabel(context, summary.project, 'statuses', task.status), 'pm-requirement-status');
+    pmRenderRequirementCell(row, pmDefinitionLabel(context, summary.project, 'priorities', task.priority), 'pm-requirement-priority');
+    pmRenderRequirementCell(row, (task.assignees ?? []).join('、') || '未分配', 'pm-requirement-assignee');
+    pmRenderRequirementCell(row, overdue ? `已延期${Math.abs(pmDaysFromToday(task.due))}天` : pmFormatDate(task.due), overdue ? 'pm-requirement-due is-overdue' : 'pm-requirement-due');
+
+    const progressCell = row.createEl('td', { cls: 'pm-requirement-progress' });
+    const progress = Math.max(0, Math.min(100, Number(task.progress ?? 0)));
+    const progressTrack = progressCell.createDiv('pm-requirement-progress-track');
+    progressTrack.createDiv('pm-requirement-progress-fill').setCssStyles({ width: `${progress}%` });
+    progressCell.createSpan({ text: `${progress}%` });
+  }
+
+  panel.createDiv({ text: `已展示 ${requirements.length} / ${summary.total} 条需求`, cls: 'pm-requirement-result-count' });
+}
+
+function pmRenderSystemSection(context, container, label, items, summaries) {
+  const section = container.createDiv('pm-project-system-section');
+  const header = section.createDiv('pm-project-system-header');
+  const active = items.filter((summary) => summary.status.key === 'active').length;
+  const risky = items.filter((summary) => summary.overdue > 0).length;
+  const unfinished = items.reduce((total, summary) => total + summary.unfinished, 0);
+  const title = header.createDiv('pm-project-system-title');
+  title.createEl('h3', { text: label });
+  title.createSpan({ text: `${items.length} 个迭代` });
+  title.createSpan({ text: `进行中 ${active}` });
+  title.createSpan({ text: `存在延期 ${risky}`, cls: risky > 0 ? 'is-warning' : '' });
+  title.createSpan({ text: `未完成需求 ${unfinished}` });
+
+  const collapsed = pmDashboardState.collapsedSystems.has(label);
+  const collapseButton = header.createEl('button', {
+    text: collapsed ? '展开 ∨' : '收起 ∧',
+    cls: 'pm-project-system-collapse',
+    attr: { type: 'button' },
+  });
+  collapseButton.addEventListener('click', () => {
+    if (collapsed) pmDashboardState.collapsedSystems.delete(label);
+    else pmDashboardState.collapsedSystems.add(label);
+    pmRenderDashboard(context, summaries);
+  });
+
+  if (collapsed) return;
+  const list = section.createDiv('pm-project-list');
+  for (const summary of items) pmRenderProjectCard(context, list, summary, summaries);
+}
+
+/**
+ * 按当前归属和筛选状态重绘首页，数据仍由外层加载逻辑统一提供。
+ */
+function pmRenderDashboard(context, summaries) {
+  context.contentEl.empty();
+  const archiveScopedSummaries = summaries.filter((summary) => {
+    if (pmDashboardState.archiveStatus === 'archived') return summary.archived;
+    if (pmDashboardState.archiveStatus === 'unarchived') return !summary.archived;
+    return true;
+  });
+  pmRenderDashboardSummary(context.contentEl, archiveScopedSummaries);
+
+  const systemLabels = [...new Set(archiveScopedSummaries.map((summary) => summary.system))]
+    .sort((left, right) => left.localeCompare(right, 'zh-CN', { numeric: true }));
+  if (pmDashboardState.selectedSystem !== 'all' && !systemLabels.includes(pmDashboardState.selectedSystem)) {
+    pmDashboardState.selectedSystem = 'all';
+  }
+  pmRenderDashboardFilters(context, context.contentEl, summaries, archiveScopedSummaries, systemLabels);
+
+  const keyword = pmDashboardState.projectSearch.toLocaleLowerCase('zh-CN');
+  const filtered = summaries.filter((summary) => {
+    if (pmDashboardState.archiveStatus === 'archived' && !summary.archived) return false;
+    if (pmDashboardState.archiveStatus === 'unarchived' && summary.archived) return false;
+    if (pmDashboardState.selectedSystem !== 'all' && summary.system !== pmDashboardState.selectedSystem) return false;
+    if (pmDashboardState.projectStatus !== 'all' && summary.status.key !== pmDashboardState.projectStatus) return false;
+    if (pmDashboardState.riskOnly && summary.overdue === 0) return false;
+    if (keyword && !summary.project.title.toLocaleLowerCase('zh-CN').includes(keyword)) return false;
+    return true;
+  });
+
+  if (filtered.length === 0) {
+    context.contentEl.createDiv({ text: '没有符合当前筛选条件的迭代', cls: 'pm-dashboard-empty-filter' });
+    return;
+  }
+
+  const groups = new Map();
+  for (const summary of filtered) {
+    const items = groups.get(summary.system) ?? [];
+    items.push(summary);
+    groups.set(summary.system, items);
+  }
+
+  for (const label of systemLabels) {
+    const items = groups.get(label);
+    if (!items?.length) continue;
+    items.sort((left, right) => Number(left.archived) - Number(right.archived)
+      || right.iterationId - left.iterationId
+      || right.project.title.localeCompare(left.project.title, 'zh-CN', { numeric: true }));
+    pmRenderSystemSection(context, context.contentEl, label, items, summaries);
+  }
+}
+
+async function pmRenderProjectsBySystem(context) {
+  const projects = await context.plugin.store.loadAllProjects(context.plugin.settings.projectsFolder);
+  if (context.isStale()) return;
+
+  if (projects.length === 0) {
+    context.contentEl.empty();
+    new Wm(context.contentEl)
+      .setIcon('📋')
+      .setTitle('暂无项目')
+      .setBody('创建第一个项目即可开始使用。')
+      .setAction('+ 新建项目', () => Jm(context));
+    return;
+  }
+
+  const summaries = projects.map((project) => pmProjectSummary(
+    context,
+    project,
+    pmSystemGroupLabel(project, context.plugin.settings.projectsFolder),
+  ));
+  pmRenderDashboard(context, summaries);
+}
+
+/**
+ * 首页项目右键菜单增加本地归档操作，归档只影响本地展示和批量同步范围。
+ */
+function pmShowProjectContextMenu(context, project, event) {
+  const menu = new e.Menu();
+  const archived = pmProjectArchived(context, project);
+  menu.addItem((item) => item
+    .setTitle('编辑项目')
+    .setIcon('settings')
+    .onClick(() => {
+      Xf(context.plugin, { project, onSave: async () => pmRenderProjectsBySystem(context) });
+    }));
+  menu.addItem((item) => item
+    .setTitle('配置项目成员角色')
+    .setIcon('users')
+    .onClick(() => pmOpenProjectMemberRoles(context, project)));
+  menu.addItem((item) => item
+    .setTitle(archived ? '取消归档' : '归档')
+    .setIcon(archived ? 'archive-restore' : 'archive')
+    .onClick(Y(async () => {
+      await pmSetProjectArchived(context, project, !archived);
+      await pmRenderProjectsBySystem(context);
+    })));
+  menu.addSeparator();
+  menu.addItem((item) => item
+    .setTitle('删除项目')
+    .setIcon('trash')
+    .onClick(Y(async () => {
+      await context.plugin.store.deleteProject(project);
+      await pmSetProjectArchived(context, project, false);
+      await pmRenderProjectsBySystem(context);
+    })));
+  menu.showAtMouseEvent(event);
+}
+
+function pmRenderDashboardToolbar(context) {
+  context.toolbarEl.empty();
+  context.toolbarEl.createEl('h2', { text: '项目管理', cls: 'pm-toolbar-title' });
+  new e.ButtonComponent(context.toolbarEl)
+    .setButtonText('+ 新建项目')
+    .setCta()
+    .onClick(() => Jm(context));
+  new e.ButtonComponent(context.toolbarEl)
+    .setButtonText('人员角色')
+    .onClick(() => void pmOpenGlobalMemberRoles(context));
+}
+
+Ym = pmShowProjectContextMenu;
+Km = pmRenderDashboardToolbar;
+qm = pmRenderProjectsBySystem;
+
 })(enhancedModule, enhancedModule.exports, require)
 
 ;(function loadInsights(module, exports, require) {
@@ -726,9 +1867,13 @@ var en = {
   optionCount: (count) => `${count} available`,
   resetFilters: "Reset filters",
   taskFilterResult: (visible, total) => `Showing ${visible} of ${total} tasks`,
-  memberWorkResult: (visibleTasks, totalTasks) => {
+  memberWorkResult: (visibleTasks, totalTasks, source = "all") => {
     const visibleRequirements = visibleTasks.filter((task2) => task2.sourceType === "requirement").length;
     const totalRequirements = totalTasks.filter((task2) => task2.sourceType === "requirement").length;
+    const visibleWorkItems = visibleTasks.length - visibleRequirements;
+    const totalWorkItems = totalTasks.length - totalRequirements;
+    if (source === "requirement") return `Showing ${visibleRequirements} / ${totalRequirements} requirements`;
+    if (source === "task") return `Showing ${visibleWorkItems} / ${totalWorkItems} tasks`;
     return `Showing ${visibleRequirements} requirements · ${visibleTasks.length - visibleRequirements} tasks / ${totalRequirements} requirements · ${totalTasks.length - totalRequirements} tasks`;
   },
   resizeColumn: (column) => `Resize ${column} column`,
@@ -774,9 +1919,11 @@ var en = {
   removeAlias: "Remove member mapping",
   hours: (value) => `${value.toLocaleString(void 0, { maximumFractionDigits: 2 })}h`,
   taskCount: (count) => `${count} task${count === 1 ? "" : "s"}`,
-  memberWorkCount: (tasks) => {
+  memberWorkCount: (tasks, source = "all") => {
     const requirements = tasks.filter((task2) => task2.sourceType === "requirement").length;
     const workItems = tasks.length - requirements;
+    if (source === "requirement") return `${requirements} requirement${requirements === 1 ? "" : "s"}`;
+    if (source === "task") return `${workItems} task${workItems === 1 ? "" : "s"}`;
     return `${requirements} requirement${requirements === 1 ? "" : "s"} · ${workItems} task${workItems === 1 ? "" : "s"}`;
   },
   archived: "Archived"
@@ -843,9 +1990,13 @@ var zh = {
   optionCount: (count) => `${count} \u4E2A\u53EF\u9009\u9879`,
   resetFilters: "\u91CD\u7F6E\u7B5B\u9009",
   taskFilterResult: (visible, total) => `\u663E\u793A ${visible} / ${total} \u4E2A\u4EFB\u52A1`,
-  memberWorkResult: (visibleTasks, totalTasks) => {
+  memberWorkResult: (visibleTasks, totalTasks, source = "all") => {
     const visibleRequirements = visibleTasks.filter((task2) => task2.sourceType === "requirement").length;
     const totalRequirements = totalTasks.filter((task2) => task2.sourceType === "requirement").length;
+    const visibleWorkItems = visibleTasks.length - visibleRequirements;
+    const totalWorkItems = totalTasks.length - totalRequirements;
+    if (source === "requirement") return `\u663E\u793A ${visibleRequirements} / ${totalRequirements} \u4E2A\u9700\u6C42`;
+    if (source === "task") return `\u663E\u793A ${visibleWorkItems} / ${totalWorkItems} \u4E2A\u4EFB\u52A1`;
     return `\u663E\u793A ${visibleRequirements} \u4E2A\u9700\u6C42 \xB7 ${visibleTasks.length - visibleRequirements} \u4E2A\u4EFB\u52A1 / ${totalRequirements} \u4E2A\u9700\u6C42 \xB7 ${totalTasks.length - totalRequirements} \u4E2A\u4EFB\u52A1`;
   },
   resizeColumn: (column) => `\u8C03\u6574\u201C${column}\u201D\u5217\u5BBD`,
@@ -891,9 +2042,11 @@ var zh = {
   removeAlias: "\u5220\u9664\u6210\u5458\u6620\u5C04",
   hours: (value) => `${value.toLocaleString(void 0, { maximumFractionDigits: 2 })}h`,
   taskCount: (count) => `${count} \u4E2A\u4EFB\u52A1`,
-  memberWorkCount: (tasks) => {
+  memberWorkCount: (tasks, source = "all") => {
     const requirements = tasks.filter((task2) => task2.sourceType === "requirement").length;
     const workItems = tasks.length - requirements;
+    if (source === "requirement") return `${requirements} \u4E2A\u9700\u6C42`;
+    if (source === "task") return `${workItems} \u4E2A\u4EFB\u52A1`;
     return `${requirements} \u4E2A\u9700\u6C42 \xB7 ${workItems} \u4E2A\u4EFB\u52A1`;
   },
   archived: "\u5DF2\u5F52\u6863"
@@ -1429,7 +2582,6 @@ var InsightsView = class extends import_obsidian5.ItemView {
     __publicField(this, "memberQuery", "");
     __publicField(this, "quickSource", "all");
     __publicField(this, "taskQuery", "");
-    __publicField(this, "taskProjectIds", null);
     __publicField(this, "taskStatuses", null);
     __publicField(this, "taskPriorities", null);
     __publicField(this, "taskPrioritySort", "none");
@@ -1548,7 +2700,6 @@ var InsightsView = class extends import_obsidian5.ItemView {
         await this.saveQuickFilter(filter);
         this.selectedMemberKey = null;
         this.taskQuery = "";
-        this.taskProjectIds = null;
         this.taskStatuses = null;
         this.taskPriorities = null;
         this.renderDashboard(snapshot, t);
@@ -1717,7 +2868,6 @@ var InsightsView = class extends import_obsidian5.ItemView {
       const nextMemberKey = (_b = (_a = visibleMembers[0]) == null ? void 0 : _a.key) != null ? _b : null;
       if (nextMemberKey !== this.selectedMemberKey) {
         this.taskQuery = "";
-        this.taskProjectIds = null;
         this.taskStatuses = null;
         this.taskPriorities = null;
       }
@@ -1775,7 +2925,7 @@ var InsightsView = class extends import_obsidian5.ItemView {
     else avatar.setText(Array.from(member.name).slice(0, 2).join(""));
     const identity = head.createDiv("pmi-member-identity");
     identity.createEl("strong", { text: member.name });
-    identity.createSpan({ text: t.memberWorkCount(member.tasks) });
+    identity.createSpan({ text: t.memberWorkCount(member.tasks, this.quickSource) });
     head.createEl("strong", {
       cls: "pmi-member-total",
       text: t.hours(member.personal.remaining + member.shared.remaining)
@@ -1785,7 +2935,6 @@ var InsightsView = class extends import_obsidian5.ItemView {
     button.addEventListener("click", () => {
       this.selectedMemberKey = member.key;
       this.taskQuery = "";
-      this.taskProjectIds = null;
       this.taskStatuses = null;
       this.taskPriorities = null;
       this.renderDashboard(snapshot, t);
@@ -1813,7 +2962,7 @@ var InsightsView = class extends import_obsidian5.ItemView {
     const header = root.createDiv("pmi-pane-header pmi-detail-header");
     const identity = header.createDiv("pmi-detail-identity");
     identity.createEl("h2", { text: (_a = member == null ? void 0 : member.name) != null ? _a : t.tasks });
-    identity.createSpan({ text: member ? t.memberWorkCount(member.tasks) : "0" });
+    identity.createSpan({ text: member ? t.memberWorkCount(member.tasks, this.quickSource) : "0" });
     if (!member) {
       root.createDiv({ cls: "pmi-list-empty", text: t.noTasks });
       return;
@@ -1823,11 +2972,6 @@ var InsightsView = class extends import_obsidian5.ItemView {
       root.empty();
       this.renderTaskDetail(root, member, projects, priorities, stages, statuses, t);
     });
-    const projectOptions = [...new Map(member.tasks.map((task2) => [task2.projectId, task2.projectTitle]))].map(([value, label]) => ({
-      value,
-      label,
-      count: member.tasks.filter((task2) => task2.projectId === value).length
-    })).sort((left, right) => left.label.localeCompare(right.label));
     const statusDefinitions = new Map(statuses.map((status) => [status.id, status]));
     const statusOptions = [...new Set(member.tasks.map((task2) => task2.status))].map((value) => ({
       value,
@@ -1861,7 +3005,6 @@ var InsightsView = class extends import_obsidian5.ItemView {
         count: member.tasks.filter((task2) => task2.priority === null).length
       }] : []
     ];
-    this.taskProjectIds = this.normalizeTaskFilter(this.taskProjectIds, projectOptions);
     this.taskStatuses = this.normalizeTaskFilter(this.taskStatuses, statusOptions);
     this.taskPriorities = this.normalizeTaskFilter(this.taskPriorities, priorityOptions);
     const filters = root.createDiv("pmi-task-filter-bar");
@@ -1885,10 +3028,9 @@ var InsightsView = class extends import_obsidian5.ItemView {
       const tasks = member.tasks.filter((task2) => {
         var _a2;
         const matchesText = !this.taskQuery || task2.title.normalize("NFKC").toLocaleLowerCase().includes(this.taskQuery) || task2.projectTitle.normalize("NFKC").toLocaleLowerCase().includes(this.taskQuery);
-        const matchesProject = this.taskProjectIds === null || this.taskProjectIds.has(task2.projectId);
         const matchesStatus = this.taskStatuses === null || this.taskStatuses.has(task2.status);
         const matchesPriority = this.taskPriorities === null || this.taskPriorities.has((_a2 = task2.priority) != null ? _a2 : TASK_PRIORITY_NONE);
-        return matchesText && matchesProject && matchesStatus && matchesPriority;
+        return matchesText && matchesStatus && matchesPriority;
       });
       const priorityRanks = new Map(
         priorityOptions.map((priority, index) => [priority.value, index])
@@ -1904,26 +3046,13 @@ var InsightsView = class extends import_obsidian5.ItemView {
         if (rankDifference === 0) return left.index - right.index;
         return this.taskPrioritySort === "high-to-low" ? rankDifference : -rankDifference;
       }).map(({ task: task2 }) => task2);
-      result.setText(t.memberWorkResult(tasks, member.tasks));
-      reset.disabled = this.taskQuery.length === 0 && this.taskProjectIds === null && this.taskStatuses === null && this.taskPriorities === null;
+      result.setText(t.memberWorkResult(tasks, member.tasks, this.quickSource));
+      reset.disabled = this.taskQuery.length === 0 && this.taskStatuses === null && this.taskPriorities === null;
       this.renderMemberTaskView(root, sortedTasks, projects, priorities, stages, statuses, t, () => {
         this.taskPrioritySort = this.taskPrioritySort === "none" ? "high-to-low" : this.taskPrioritySort === "high-to-low" ? "low-to-high" : "none";
         renderRows();
       });
     };
-    this.renderTaskFilterMenu(
-      filters,
-      "folder-kanban",
-      t.project,
-      t.allProjects,
-      projectOptions,
-      this.taskProjectIds,
-      (selection) => {
-        this.taskProjectIds = selection;
-        renderRows();
-      },
-      t
-    );
     this.renderTaskFilterMenu(
       filters,
       "workflow",
@@ -1953,7 +3082,6 @@ var InsightsView = class extends import_obsidian5.ItemView {
     search.addEventListener("input", renderRows);
     reset.addEventListener("click", () => {
       this.taskQuery = "";
-      this.taskProjectIds = null;
       this.taskStatuses = null;
       this.taskPriorities = null;
       root.empty();
@@ -2997,6 +4125,9 @@ var ProjectManagerInsightsPlugin = class extends import_obsidian6.Plugin {
     this.navigator = new ProjectManagerNavigator(this.app);
     this.toolbarIntegration = new ProjectManagerToolbarIntegration(this.app, this);
     this.registerView(INSIGHTS_VIEW_TYPE, (leaf) => new InsightsView(leaf, this));
+    this.registerObsidianProtocolHandler("open-pm-insights", async () => {
+      await this.openInsights();
+    });
     this.addRibbonIcon("chart-no-axes-combined", translations(this.settings).viewName, () => {
       void this.openInsights();
     });

@@ -1570,9 +1570,9 @@
   z-index: 100;
   display: grid;
   grid-template:
-    "search project status priority reset" auto
-    "result result result result result" auto /
-    minmax(180px, 1fr) minmax(128px, 164px) minmax(128px, 164px) minmax(128px, 164px) auto;
+    "search status priority reset" auto
+    "result result result result" auto /
+    minmax(180px, 1fr) minmax(128px, 164px) minmax(128px, 164px) auto;
   gap: 8px;
   margin-block-end: 10px;
   padding: 8px 8px 7px 10px;
@@ -1623,14 +1623,10 @@
 }
 
 .pmi-task-filter-menu:nth-of-type(1) {
-  grid-area: project;
-}
-
-.pmi-task-filter-menu:nth-of-type(2) {
   grid-area: status;
 }
 
-.pmi-task-filter-menu:nth-of-type(3) {
+.pmi-task-filter-menu:nth-of-type(2) {
   grid-area: priority;
 }
 
@@ -2442,9 +2438,8 @@
   .pmi-task-filter-bar {
     grid-template:
       "search search" auto
-      "project status" auto
-      "priority reset" auto
-      "result result" auto /
+      "status priority" auto
+      "result reset" auto /
       minmax(0, 1fr) minmax(0, 1fr);
   }
 
@@ -2563,3 +2558,1066 @@ body .pm-root .pmi-pm-table tbody td:nth-child(n + 3) { position: static; left: 
 body .pm-root .pmi-pm-table thead th:nth-child(1), body .pm-root .pmi-pm-table tbody td:nth-child(1) { left: 0; }
 body .pm-root .pmi-pm-table thead th:nth-child(2), body .pm-root .pmi-pm-table tbody td:nth-child(2) { left: 96px; box-shadow: 3px 0 7px -5px var(--text-muted); }
 body .pm-root .pmi-pm-table thead th:nth-child(2)::after, body .pm-root .pmi-pm-table tbody td:nth-child(2)::after { content: ""; position: absolute; top: 0; right: 0; bottom: 0; width: 1px; background: var(--background-modifier-border-hover); pointer-events: none; }
+
+
+/* 项目首页：归属、迭代与需求三级工作台。 */
+.pm-dashboard-overview {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(120px, 1fr));
+  gap: 1px;
+  margin-block-end: 14px;
+  border: 1px solid var(--background-modifier-border);
+  border-radius: var(--radius-m);
+  background: var(--background-modifier-border);
+  overflow: hidden;
+}
+.pm-dashboard-overview-item {
+  display: flex;
+  align-items: baseline;
+  justify-content: center;
+  gap: 8px;
+  min-block-size: 66px;
+  padding: 14px 18px;
+  background: var(--background-secondary);
+}
+
+.pm-dashboard-overview-value {
+  color: var(--text-normal);
+  font-size: 22px;
+  font-weight: 700;
+}
+
+.pm-dashboard-overview-label {
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+.pm-dashboard-controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-block-end: 22px;
+}
+
+.pm-dashboard-systems,
+.pm-dashboard-global-filters,
+.pm-requirement-filters {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+button.pm-dashboard-system {
+  block-size: 34px;
+  margin: 0;
+  padding-inline: 14px;
+  border: 1px solid transparent;
+  border-radius: 999px;
+  box-shadow: none;
+  color: var(--text-muted);
+  background: var(--background-secondary);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+button.pm-dashboard-system:hover {
+  border-color: var(--background-modifier-border-hover);
+  color: var(--text-normal);
+  background: var(--background-modifier-hover);
+}
+
+button.pm-dashboard-system.is-active {
+  border-color: color-mix(in srgb, var(--interactive-accent) 30%, transparent);
+  color: var(--text-on-accent);
+  background: var(--interactive-accent);
+}
+
+.pm-dashboard-search {
+  box-sizing: border-box;
+  inline-size: 220px;
+  block-size: 34px;
+  margin: 0;
+  border: 1px solid var(--background-modifier-border);
+  border-radius: var(--radius-s);
+  background: var(--background-primary);
+  color: var(--text-normal);
+  font-size: 12px;
+}
+
+.pm-dashboard-search:focus {
+  border-color: var(--interactive-accent);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--interactive-accent) 16%, transparent);
+}
+
+.pm-dashboard-filter-field {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  block-size: 34px;
+  padding-inline-start: 9px;
+  border: 1px solid var(--background-modifier-border);
+  border-radius: var(--radius-s);
+  background: var(--background-primary);
+}
+
+.pm-dashboard-filter-label {
+  color: var(--text-faint);
+  font-size: 10px;
+}
+
+.pm-dashboard-select {
+  inline-size: auto;
+  max-inline-size: 190px;
+  block-size: 30px;
+  margin: 0;
+  padding-inline: 2px 26px;
+  border: 0;
+  box-shadow: none;
+  background-color: transparent;
+  color: var(--text-normal);
+  font-size: 12px;
+}
+
+.pm-dashboard-select:focus {
+  box-shadow: none;
+}
+
+.pm-dashboard-check {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-block-size: 34px;
+  padding-inline: 10px;
+  border: 1px solid var(--background-modifier-border);
+  border-radius: var(--radius-s);
+  color: var(--text-muted);
+  background: var(--background-primary);
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.pm-dashboard-check input {
+  margin: 0;
+}
+
+.pm-project-system-section {
+  margin-block-end: 30px;
+}
+
+.pm-project-system-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  min-block-size: 42px;
+  margin-block-end: 10px;
+  padding-inline: 2px;
+}
+
+.pm-project-system-title {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 8px 22px;
+}
+
+.pm-project-system-title h3 {
+  margin: 0;
+  color: var(--text-normal);
+  font-size: 17px;
+}
+
+.pm-project-system-title span {
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+.pm-project-system-title span.is-warning {
+  color: var(--text-error);
+}
+
+button.pm-project-system-collapse {
+  flex: 0 0 auto;
+  margin: 0;
+  padding: 5px 9px;
+  border: 0;
+  box-shadow: none;
+  color: var(--text-muted);
+  background: transparent;
+  font-size: 12px;
+}
+
+button.pm-project-system-collapse:hover {
+  color: var(--text-normal);
+  background: var(--background-modifier-hover);
+}
+
+.pm-project-list {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.pm-project-list-card {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 13px;
+  padding: 17px 20px 14px;
+  border: 1px solid var(--background-modifier-border);
+  border-inline-start: 4px solid var(--pm-project-color);
+  border-radius: var(--radius-m);
+  outline: none;
+  background: var(--background-secondary);
+  box-shadow: 0 1px 3px var(--pm-shadow-ambient);
+  cursor: pointer;
+  transition: border-color 120ms ease, box-shadow 120ms ease, transform 120ms ease;
+}
+
+.pm-project-list-card:hover,
+.pm-project-list-card:focus-visible {
+  border-color: color-mix(in srgb, var(--pm-project-color) 55%, var(--background-modifier-border));
+  box-shadow: 0 5px 18px var(--pm-shadow-ambient);
+  transform: translateY(-1px);
+}
+
+.pm-project-list-card.is-expanded {
+  border-color: color-mix(in srgb, var(--pm-project-color) 65%, var(--background-modifier-border));
+  border-end-start-radius: 0;
+  border-end-end-radius: 0;
+  background: color-mix(in srgb, var(--pm-project-color) 4%, var(--background-secondary));
+}
+
+.pm-project-list-card.is-archived {
+  border-style: dashed;
+  border-inline-start-style: solid;
+  background: color-mix(in srgb, var(--text-muted) 4%, var(--background-secondary));
+}
+
+.pm-project-list-card.is-archived .pm-project-list-title,
+.pm-project-list-card.is-archived .pm-project-list-icon {
+  color: var(--text-muted);
+}
+
+.pm-project-list-heading,
+.pm-project-list-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.pm-project-list-heading {
+  display: grid;
+  grid-template-columns: minmax(280px, 1.35fr) minmax(430px, 1fr) auto;
+  align-items: center;
+}
+
+.pm-project-list-title-area,
+.pm-project-list-badges,
+.pm-project-list-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.pm-project-list-title-area {
+  min-inline-size: 0;
+}
+
+.pm-project-manual-dates {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(190px, 1fr));
+  gap: 10px;
+  min-inline-size: 0;
+}
+
+.pm-project-manual-date {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-inline-size: 0;
+  block-size: 38px;
+  padding-inline: 10px;
+  border: 1px solid var(--background-modifier-border);
+  border-radius: var(--radius-s);
+  background: var(--background-primary);
+  cursor: default;
+}
+
+.pm-project-manual-date:focus-within {
+  border-color: var(--interactive-accent);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--interactive-accent) 14%, transparent);
+}
+
+.pm-project-manual-date-label {
+  flex: 0 0 auto;
+  color: var(--text-faint);
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+input.pm-project-manual-date-input {
+  min-inline-size: 0;
+  inline-size: 100%;
+  block-size: 30px;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  box-shadow: none;
+  color: var(--text-normal);
+  background: transparent;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+input.pm-project-manual-date-input:focus {
+  border: 0;
+  box-shadow: none;
+  outline: none;
+}
+
+input.pm-project-manual-date-input::-webkit-calendar-picker-indicator {
+  opacity: .55;
+  cursor: pointer;
+}
+
+.pm-project-list-icon {
+  flex: 0 0 auto;
+  font-size: 22px;
+}
+
+.pm-project-list-title {
+  min-inline-size: 0;
+  margin: 0;
+  color: var(--text-normal);
+  font-size: 16px;
+  font-weight: 700;
+  line-height: 1.4;
+}
+
+.pm-project-status,
+.pm-project-risk-badge,
+.pm-project-archived-badge {
+  display: inline-flex;
+  align-items: center;
+  block-size: 24px;
+  padding-inline: 9px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 650;
+  white-space: nowrap;
+}
+
+.pm-project-status--active {
+  color: var(--text-accent);
+  background: color-mix(in srgb, var(--interactive-accent) 13%, transparent);
+}
+
+.pm-project-status--pending,
+.pm-project-status--paused {
+  color: var(--text-muted);
+  background: var(--background-modifier-hover);
+}
+
+.pm-project-status--completed {
+  color: var(--color-green);
+  background: color-mix(in srgb, var(--color-green) 13%, transparent);
+}
+
+.pm-project-risk-badge {
+  color: var(--text-error);
+  background: color-mix(in srgb, var(--color-red) 12%, transparent);
+}
+
+.pm-project-archived-badge {
+  border: 1px solid var(--background-modifier-border);
+  color: var(--text-muted);
+  background: var(--background-modifier-hover);
+}
+
+.pm-project-list-meta {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.pm-project-general-meta {
+  display: grid;
+  grid-template-columns: minmax(220px, 1fr) auto;
+  align-items: center;
+  gap: 16px;
+}
+
+.pm-project-list-meta-item {
+  display: flex;
+  align-items: baseline;
+  gap: 9px;
+  min-inline-size: 0;
+}
+
+.pm-project-list-meta-label {
+  flex: 0 0 auto;
+  color: var(--text-faint);
+  font-size: 11px;
+}
+
+.pm-project-list-meta-value {
+  min-inline-size: 0;
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+.pm-project-role-meta {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.pm-project-role-meta-item {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  min-inline-size: 0;
+  min-block-size: 38px;
+  padding: 8px 10px;
+  border: 1px solid color-mix(in srgb, var(--background-modifier-border) 70%, transparent);
+  border-radius: var(--radius-s);
+  background: color-mix(in srgb, var(--background-primary) 70%, transparent);
+}
+
+.pm-project-role-meta-label {
+  flex: 0 0 auto;
+  color: var(--text-faint);
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+.pm-project-role-meta-value {
+  min-inline-size: 0;
+  color: var(--text-muted);
+  font-size: 12px;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+
+.pm-project-role-meta-value.is-empty {
+  color: var(--text-faint);
+}
+
+button.pm-project-role-warning {
+  grid-column: 1 / -1;
+  justify-self: start;
+  margin: -4px 0 0;
+  padding: 3px 8px;
+  border: 0;
+  border-radius: var(--radius-s);
+  box-shadow: none;
+  color: var(--color-orange);
+  background: color-mix(in srgb, var(--color-orange) 9%, transparent);
+  font-size: 10px;
+}
+
+button.pm-project-role-warning:hover {
+  color: var(--text-normal);
+  background: color-mix(in srgb, var(--color-orange) 15%, transparent);
+}
+
+.pm-project-list-metrics {
+  display: grid;
+  grid-template-columns: repeat(6, minmax(80px, 1fr));
+  gap: 8px;
+}
+
+.pm-project-list-metric {
+  display: flex;
+  align-items: baseline;
+  justify-content: center;
+  gap: 7px;
+  inline-size: 100%;
+  min-block-size: 38px;
+  margin: 0;
+  padding: 8px 10px;
+  border: 1px solid transparent;
+  border-radius: var(--radius-s);
+  box-shadow: none;
+  background: var(--background-primary);
+  font-family: inherit;
+  cursor: pointer;
+  transition: border-color 120ms ease, background 120ms ease, transform 120ms ease;
+}
+
+button.pm-project-list-metric:hover {
+  border-color: color-mix(in srgb, var(--interactive-accent) 30%, var(--background-modifier-border));
+  background: color-mix(in srgb, var(--interactive-accent) 6%, var(--background-primary));
+  transform: translateY(-1px);
+}
+
+button.pm-project-list-metric:focus-visible {
+  outline: 2px solid var(--interactive-accent);
+  outline-offset: 2px;
+}
+
+button.pm-project-list-metric.is-active {
+  border-color: color-mix(in srgb, var(--interactive-accent) 58%, var(--background-modifier-border));
+  background: color-mix(in srgb, var(--interactive-accent) 11%, var(--background-primary));
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--interactive-accent) 14%, transparent);
+}
+
+.pm-project-list-metric-value {
+  color: var(--text-normal);
+  font-size: 16px;
+  font-weight: 700;
+}
+
+.pm-project-list-metric-label {
+  color: var(--text-muted);
+  font-size: 11px;
+}
+
+.pm-project-list-metric.is-warning .pm-project-list-metric-value {
+  color: var(--text-error);
+}
+
+.pm-project-list-progress {
+  display: grid;
+  grid-template-columns: 86px minmax(160px, 1fr) 40px;
+  align-items: center;
+  gap: 10px;
+}
+
+.pm-project-list-progress-title,
+.pm-project-list-progress-value {
+  color: var(--text-muted);
+  font-size: 11px;
+}
+
+.pm-project-list-progress-value {
+  text-align: end;
+  font-weight: 600;
+}
+
+.pm-project-list-progress-track,
+.pm-requirement-progress-track {
+  block-size: 6px;
+  border-radius: 999px;
+  background: var(--background-modifier-border);
+  overflow: hidden;
+}
+
+.pm-project-list-progress-fill,
+.pm-requirement-progress-fill {
+  block-size: 100%;
+  border-radius: inherit;
+  background: var(--pm-project-color, var(--interactive-accent));
+}
+
+.pm-project-list-risk-text {
+  min-inline-size: 0;
+  color: var(--text-muted);
+  font-size: 11px;
+}
+
+.pm-project-list-risk-text.is-warning {
+  color: var(--text-error);
+}
+
+button.pm-project-list-action,
+button.pm-requirement-title {
+  margin: 0;
+  border: 0;
+  box-shadow: none;
+  background: transparent;
+}
+
+button.pm-project-list-action {
+  block-size: 30px;
+  padding-inline: 10px;
+  color: var(--text-muted);
+  font-size: 11px;
+}
+
+button.pm-project-list-action:hover {
+  color: var(--text-normal);
+  background: var(--background-modifier-hover);
+}
+
+button.pm-project-list-action--primary {
+  color: var(--text-accent);
+}
+
+.pm-requirement-panel {
+  margin-block-start: -12px;
+  padding: 16px 18px 14px;
+  border: 1px solid color-mix(in srgb, var(--interactive-accent) 45%, var(--background-modifier-border));
+  border-block-start: 0;
+  border-end-start-radius: var(--radius-m);
+  border-end-end-radius: var(--radius-m);
+  background: var(--background-primary);
+}
+
+.pm-requirement-panel-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  margin-block-end: 12px;
+}
+
+.pm-requirement-panel-heading {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+}
+
+.pm-requirement-panel-heading h4 {
+  margin: 0;
+  font-size: 14px;
+}
+
+.pm-requirement-panel-heading span {
+  color: var(--text-muted);
+  font-size: 11px;
+}
+
+.pm-requirement-quick-filter {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-block-size: 30px;
+  padding: 3px 5px 3px 10px;
+  border: 1px solid color-mix(in srgb, var(--interactive-accent) 30%, var(--background-modifier-border));
+  border-radius: 999px;
+  color: var(--text-accent);
+  background: color-mix(in srgb, var(--interactive-accent) 8%, transparent);
+  font-size: 11px;
+}
+
+.pm-requirement-quick-filter span {
+  color: inherit;
+}
+
+button.pm-requirement-quick-filter-clear {
+  block-size: 22px;
+  margin: 0;
+  padding-inline: 7px;
+  border: 0;
+  border-radius: 999px;
+  box-shadow: none;
+  color: var(--text-muted);
+  background: var(--background-modifier-hover);
+  font-size: 10px;
+}
+
+button.pm-requirement-quick-filter-clear:hover {
+  color: var(--text-normal);
+  background: var(--background-modifier-border-hover);
+}
+
+.pm-requirement-filters {
+  margin-block-end: 12px;
+}
+
+.pm-requirement-search {
+  inline-size: min(300px, 100%);
+}
+
+.pm-requirement-table-wrapper {
+  max-block-size: 430px;
+  border: 1px solid var(--background-modifier-border);
+  border-radius: var(--radius-s);
+  overflow: auto;
+  overscroll-behavior: contain;
+}
+
+.pm-requirement-table {
+  border-collapse: collapse;
+  inline-size: 100%;
+  min-inline-size: 1120px;
+  font-size: 12px;
+}
+
+.pm-requirement-table th {
+  position: sticky;
+  inset-block-start: 0;
+  z-index: 2;
+  padding: 9px 10px;
+  border-block-end: 1px solid var(--background-modifier-border);
+  color: var(--text-muted);
+  background: var(--background-secondary);
+  font-size: 10px;
+  font-weight: 650;
+  text-align: start;
+  white-space: nowrap;
+}
+
+.pm-requirement-table td {
+  padding: 9px 10px;
+  border-block-end: 1px solid var(--background-modifier-border);
+  color: var(--text-muted);
+  vertical-align: middle;
+}
+
+.pm-requirement-table tbody tr:hover td {
+  background: color-mix(in srgb, var(--interactive-accent) 4%, transparent);
+}
+
+.pm-requirement-table tbody tr.is-overdue td {
+  background: color-mix(in srgb, var(--color-red) 5%, transparent);
+}
+
+.pm-requirement-table tbody tr.is-completed {
+  opacity: .66;
+}
+
+.pm-requirement-id,
+.pm-requirement-stage,
+.pm-requirement-status,
+.pm-requirement-priority,
+.pm-requirement-assignee,
+.pm-requirement-due {
+  white-space: nowrap;
+}
+
+.pm-requirement-module {
+  max-inline-size: 200px;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  overflow: hidden;
+}
+
+.pm-requirement-title-cell {
+  min-inline-size: 320px;
+  max-inline-size: 480px;
+}
+
+button.pm-requirement-title {
+  display: block;
+  inline-size: 100%;
+  padding: 0;
+  color: var(--text-normal);
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 1.45;
+  text-align: start;
+  white-space: normal;
+}
+
+button.pm-requirement-title:hover {
+  color: var(--text-accent);
+  background: transparent;
+}
+
+.pm-requirement-due.is-overdue {
+  color: var(--text-error);
+  font-weight: 600;
+}
+
+.pm-requirement-progress {
+  display: grid;
+  grid-template-columns: minmax(70px, 1fr) 34px;
+  align-items: center;
+  gap: 7px;
+  min-inline-size: 120px;
+}
+
+.pm-requirement-progress-track {
+  block-size: 4px;
+}
+
+.pm-requirement-progress span,
+.pm-requirement-result-count {
+  color: var(--text-faint);
+  font-size: 10px;
+}
+
+.pm-requirement-result-count {
+  padding-block-start: 9px;
+  text-align: end;
+}
+
+.pm-requirement-empty,
+.pm-dashboard-empty-filter {
+  padding: 34px;
+  border: 1px dashed var(--background-modifier-border);
+  border-radius: var(--radius-m);
+  color: var(--text-muted);
+  text-align: center;
+}
+
+/* 首页人员角色管理：全局默认角色与迭代覆盖共用同一套编辑组件。 */
+.pm-member-role-modal {
+  inline-size: min(900px, 92vw);
+}
+
+.pm-member-role-modal .modal-content {
+  display: flex;
+  flex-direction: column;
+  min-block-size: 0;
+}
+
+.pm-member-role-description {
+  margin: 0 0 14px;
+  color: var(--text-muted);
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+.pm-member-role-header,
+.pm-member-role-row {
+  display: grid;
+  grid-template-columns: minmax(120px, .7fr) minmax(360px, 2fr) 80px;
+  align-items: center;
+  gap: 12px;
+}
+
+.pm-project-member-role-header,
+.pm-project-member-role-row {
+  grid-template-columns: minmax(110px, .7fr) minmax(130px, .8fr) minmax(340px, 2fr) 86px;
+}
+
+.pm-member-role-header {
+  padding: 8px 12px;
+  border-block-end: 1px solid var(--background-modifier-border);
+  color: var(--text-faint);
+  background: var(--background-secondary);
+  font-size: 10px;
+  font-weight: 650;
+}
+
+.pm-member-role-list {
+  max-block-size: min(58vh, 520px);
+  border: 1px solid var(--background-modifier-border);
+  border-radius: var(--radius-s);
+  overflow-y: auto;
+}
+
+.pm-member-role-header + .pm-member-role-list {
+  border-block-start: 0;
+  border-start-start-radius: 0;
+  border-start-end-radius: 0;
+}
+
+.pm-member-role-row {
+  min-block-size: 50px;
+  padding: 8px 12px;
+  border-block-end: 1px solid var(--background-modifier-border);
+}
+
+.pm-member-role-row:last-child {
+  border-block-end: 0;
+}
+
+.pm-member-role-row:hover {
+  background: color-mix(in srgb, var(--interactive-accent) 3%, transparent);
+}
+
+.pm-member-role-name {
+  min-inline-size: 0;
+  color: var(--text-normal);
+  font-size: 12px;
+  font-weight: 600;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  overflow: hidden;
+}
+
+.pm-member-role-default {
+  color: var(--text-muted);
+  font-size: 11px;
+}
+
+.pm-member-role-choices {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+
+.pm-member-role-choice,
+.pm-member-role-inherit {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  min-block-size: 28px;
+  margin: 0;
+  padding-inline: 8px;
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 999px;
+  color: var(--text-muted);
+  background: var(--background-primary);
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.pm-member-role-choice:has(input:checked) {
+  border-color: color-mix(in srgb, var(--pm-member-role-color) 40%, var(--background-modifier-border));
+  color: var(--pm-member-role-color);
+  background: color-mix(in srgb, var(--pm-member-role-color) 10%, transparent);
+}
+
+.pm-member-role-choice:has(input:disabled),
+.pm-member-role-inherit:has(input:disabled) {
+  opacity: .5;
+  cursor: default;
+}
+
+.pm-member-role-choice input,
+.pm-member-role-inherit input {
+  margin: 0;
+}
+
+.pm-member-role-choice--project-management {
+  --pm-member-role-color: var(--interactive-accent);
+}
+
+.pm-member-role-choice--product-manager {
+  --pm-member-role-color: #b07d9e;
+}
+
+.pm-member-role-choice--frontend-development {
+  --pm-member-role-color: #8b72be;
+}
+
+.pm-member-role-choice--backend-development {
+  --pm-member-role-color: #6f86a6;
+}
+
+.pm-member-role-choice--testing {
+  --pm-member-role-color: var(--color-orange);
+}
+
+.pm-member-role-state {
+  color: var(--color-green);
+  font-size: 11px;
+}
+
+.pm-member-role-state.is-unmarked {
+  color: var(--color-orange);
+}
+
+.pm-member-role-inherit {
+  justify-self: start;
+}
+
+.pm-member-role-empty {
+  padding: 34px;
+  color: var(--text-muted);
+  text-align: center;
+}
+
+.pm-member-role-footer {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  padding-block-start: 16px;
+}
+
+@media (max-width: 1100px) {
+  .pm-dashboard-overview {
+    grid-template-columns: repeat(3, minmax(110px, 1fr));
+  }
+
+  .pm-project-role-meta {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+
+  .pm-project-list-metrics {
+    grid-template-columns: repeat(3, minmax(80px, 1fr));
+  }
+}
+
+@media (max-width: 1300px) {
+  .pm-project-list-heading {
+    grid-template-columns: minmax(0, 1fr) auto;
+  }
+
+  .pm-project-list-title-area {
+    grid-column: 1;
+    grid-row: 1;
+  }
+
+  .pm-project-list-badges {
+    grid-column: 2;
+    grid-row: 1;
+  }
+
+  .pm-project-manual-dates {
+    grid-column: 1 / -1;
+    grid-row: 2;
+  }
+}
+
+@media (max-width: 700px) {
+  .pm-project-list-container {
+    padding: 14px;
+  }
+
+  .pm-dashboard-overview {
+    grid-template-columns: repeat(2, minmax(100px, 1fr));
+  }
+
+  .pm-dashboard-overview-item {
+    min-block-size: 54px;
+    padding: 10px;
+  }
+
+  .pm-dashboard-controls,
+  .pm-project-system-header,
+  .pm-project-list-heading,
+  .pm-project-list-footer,
+  .pm-requirement-panel-header {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .pm-dashboard-search,
+  .pm-requirement-search {
+    inline-size: 100%;
+  }
+
+  .pm-project-list-card {
+    padding: 14px;
+  }
+
+  .pm-project-list-heading {
+    display: flex;
+  }
+
+  .pm-project-manual-dates {
+    grid-template-columns: 1fr;
+  }
+
+  .pm-project-list-metrics {
+    grid-template-columns: 1fr 1fr;
+  }
+
+  .pm-project-general-meta,
+  .pm-project-role-meta {
+    grid-template-columns: 1fr;
+  }
+
+  .pm-project-list-badges,
+  .pm-project-list-actions {
+    justify-content: flex-end;
+  }
+
+  .pm-member-role-header {
+    display: none;
+  }
+
+  .pm-member-role-list,
+  .pm-member-role-header + .pm-member-role-list {
+    border-block-start: 1px solid var(--background-modifier-border);
+    border-radius: var(--radius-s);
+  }
+
+  .pm-member-role-row,
+  .pm-project-member-role-row {
+    grid-template-columns: 1fr;
+    gap: 7px;
+  }
+}

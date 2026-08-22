@@ -713,9 +713,13 @@ var en = {
   optionCount: (count) => `${count} available`,
   resetFilters: "Reset filters",
   taskFilterResult: (visible, total) => `Showing ${visible} of ${total} tasks`,
-  memberWorkResult: (visibleTasks, totalTasks) => {
+  memberWorkResult: (visibleTasks, totalTasks, source = "all") => {
     const visibleRequirements = visibleTasks.filter((task2) => task2.sourceType === "requirement").length;
     const totalRequirements = totalTasks.filter((task2) => task2.sourceType === "requirement").length;
+    const visibleWorkItems = visibleTasks.length - visibleRequirements;
+    const totalWorkItems = totalTasks.length - totalRequirements;
+    if (source === "requirement") return `Showing ${visibleRequirements} / ${totalRequirements} requirements`;
+    if (source === "task") return `Showing ${visibleWorkItems} / ${totalWorkItems} tasks`;
     return `Showing ${visibleRequirements} requirements · ${visibleTasks.length - visibleRequirements} tasks / ${totalRequirements} requirements · ${totalTasks.length - totalRequirements} tasks`;
   },
   resizeColumn: (column) => `Resize ${column} column`,
@@ -761,9 +765,11 @@ var en = {
   removeAlias: "Remove member mapping",
   hours: (value) => `${value.toLocaleString(void 0, { maximumFractionDigits: 2 })}h`,
   taskCount: (count) => `${count} task${count === 1 ? "" : "s"}`,
-  memberWorkCount: (tasks) => {
+  memberWorkCount: (tasks, source = "all") => {
     const requirements = tasks.filter((task2) => task2.sourceType === "requirement").length;
     const workItems = tasks.length - requirements;
+    if (source === "requirement") return `${requirements} requirement${requirements === 1 ? "" : "s"}`;
+    if (source === "task") return `${workItems} task${workItems === 1 ? "" : "s"}`;
     return `${requirements} requirement${requirements === 1 ? "" : "s"} · ${workItems} task${workItems === 1 ? "" : "s"}`;
   },
   archived: "Archived"
@@ -830,9 +836,13 @@ var zh = {
   optionCount: (count) => `${count} \u4E2A\u53EF\u9009\u9879`,
   resetFilters: "\u91CD\u7F6E\u7B5B\u9009",
   taskFilterResult: (visible, total) => `\u663E\u793A ${visible} / ${total} \u4E2A\u4EFB\u52A1`,
-  memberWorkResult: (visibleTasks, totalTasks) => {
+  memberWorkResult: (visibleTasks, totalTasks, source = "all") => {
     const visibleRequirements = visibleTasks.filter((task2) => task2.sourceType === "requirement").length;
     const totalRequirements = totalTasks.filter((task2) => task2.sourceType === "requirement").length;
+    const visibleWorkItems = visibleTasks.length - visibleRequirements;
+    const totalWorkItems = totalTasks.length - totalRequirements;
+    if (source === "requirement") return `\u663E\u793A ${visibleRequirements} / ${totalRequirements} \u4E2A\u9700\u6C42`;
+    if (source === "task") return `\u663E\u793A ${visibleWorkItems} / ${totalWorkItems} \u4E2A\u4EFB\u52A1`;
     return `\u663E\u793A ${visibleRequirements} \u4E2A\u9700\u6C42 \xB7 ${visibleTasks.length - visibleRequirements} \u4E2A\u4EFB\u52A1 / ${totalRequirements} \u4E2A\u9700\u6C42 \xB7 ${totalTasks.length - totalRequirements} \u4E2A\u4EFB\u52A1`;
   },
   resizeColumn: (column) => `\u8C03\u6574\u201C${column}\u201D\u5217\u5BBD`,
@@ -878,9 +888,11 @@ var zh = {
   removeAlias: "\u5220\u9664\u6210\u5458\u6620\u5C04",
   hours: (value) => `${value.toLocaleString(void 0, { maximumFractionDigits: 2 })}h`,
   taskCount: (count) => `${count} \u4E2A\u4EFB\u52A1`,
-  memberWorkCount: (tasks) => {
+  memberWorkCount: (tasks, source = "all") => {
     const requirements = tasks.filter((task2) => task2.sourceType === "requirement").length;
     const workItems = tasks.length - requirements;
+    if (source === "requirement") return `${requirements} \u4E2A\u9700\u6C42`;
+    if (source === "task") return `${workItems} \u4E2A\u4EFB\u52A1`;
     return `${requirements} \u4E2A\u9700\u6C42 \xB7 ${workItems} \u4E2A\u4EFB\u52A1`;
   },
   archived: "\u5DF2\u5F52\u6863"
@@ -1416,7 +1428,6 @@ var InsightsView = class extends import_obsidian5.ItemView {
     __publicField(this, "memberQuery", "");
     __publicField(this, "quickSource", "all");
     __publicField(this, "taskQuery", "");
-    __publicField(this, "taskProjectIds", null);
     __publicField(this, "taskStatuses", null);
     __publicField(this, "taskPriorities", null);
     __publicField(this, "taskPrioritySort", "none");
@@ -1535,7 +1546,6 @@ var InsightsView = class extends import_obsidian5.ItemView {
         await this.saveQuickFilter(filter);
         this.selectedMemberKey = null;
         this.taskQuery = "";
-        this.taskProjectIds = null;
         this.taskStatuses = null;
         this.taskPriorities = null;
         this.renderDashboard(snapshot, t);
@@ -1704,7 +1714,6 @@ var InsightsView = class extends import_obsidian5.ItemView {
       const nextMemberKey = (_b = (_a = visibleMembers[0]) == null ? void 0 : _a.key) != null ? _b : null;
       if (nextMemberKey !== this.selectedMemberKey) {
         this.taskQuery = "";
-        this.taskProjectIds = null;
         this.taskStatuses = null;
         this.taskPriorities = null;
       }
@@ -1762,7 +1771,7 @@ var InsightsView = class extends import_obsidian5.ItemView {
     else avatar.setText(Array.from(member.name).slice(0, 2).join(""));
     const identity = head.createDiv("pmi-member-identity");
     identity.createEl("strong", { text: member.name });
-    identity.createSpan({ text: t.memberWorkCount(member.tasks) });
+    identity.createSpan({ text: t.memberWorkCount(member.tasks, this.quickSource) });
     head.createEl("strong", {
       cls: "pmi-member-total",
       text: t.hours(member.personal.remaining + member.shared.remaining)
@@ -1772,7 +1781,6 @@ var InsightsView = class extends import_obsidian5.ItemView {
     button.addEventListener("click", () => {
       this.selectedMemberKey = member.key;
       this.taskQuery = "";
-      this.taskProjectIds = null;
       this.taskStatuses = null;
       this.taskPriorities = null;
       this.renderDashboard(snapshot, t);
@@ -1800,7 +1808,7 @@ var InsightsView = class extends import_obsidian5.ItemView {
     const header = root.createDiv("pmi-pane-header pmi-detail-header");
     const identity = header.createDiv("pmi-detail-identity");
     identity.createEl("h2", { text: (_a = member == null ? void 0 : member.name) != null ? _a : t.tasks });
-    identity.createSpan({ text: member ? t.memberWorkCount(member.tasks) : "0" });
+    identity.createSpan({ text: member ? t.memberWorkCount(member.tasks, this.quickSource) : "0" });
     if (!member) {
       root.createDiv({ cls: "pmi-list-empty", text: t.noTasks });
       return;
@@ -1810,11 +1818,6 @@ var InsightsView = class extends import_obsidian5.ItemView {
       root.empty();
       this.renderTaskDetail(root, member, projects, priorities, stages, statuses, t);
     });
-    const projectOptions = [...new Map(member.tasks.map((task2) => [task2.projectId, task2.projectTitle]))].map(([value, label]) => ({
-      value,
-      label,
-      count: member.tasks.filter((task2) => task2.projectId === value).length
-    })).sort((left, right) => left.label.localeCompare(right.label));
     const statusDefinitions = new Map(statuses.map((status) => [status.id, status]));
     const statusOptions = [...new Set(member.tasks.map((task2) => task2.status))].map((value) => ({
       value,
@@ -1848,7 +1851,6 @@ var InsightsView = class extends import_obsidian5.ItemView {
         count: member.tasks.filter((task2) => task2.priority === null).length
       }] : []
     ];
-    this.taskProjectIds = this.normalizeTaskFilter(this.taskProjectIds, projectOptions);
     this.taskStatuses = this.normalizeTaskFilter(this.taskStatuses, statusOptions);
     this.taskPriorities = this.normalizeTaskFilter(this.taskPriorities, priorityOptions);
     const filters = root.createDiv("pmi-task-filter-bar");
@@ -1872,10 +1874,9 @@ var InsightsView = class extends import_obsidian5.ItemView {
       const tasks = member.tasks.filter((task2) => {
         var _a2;
         const matchesText = !this.taskQuery || task2.title.normalize("NFKC").toLocaleLowerCase().includes(this.taskQuery) || task2.projectTitle.normalize("NFKC").toLocaleLowerCase().includes(this.taskQuery);
-        const matchesProject = this.taskProjectIds === null || this.taskProjectIds.has(task2.projectId);
         const matchesStatus = this.taskStatuses === null || this.taskStatuses.has(task2.status);
         const matchesPriority = this.taskPriorities === null || this.taskPriorities.has((_a2 = task2.priority) != null ? _a2 : TASK_PRIORITY_NONE);
-        return matchesText && matchesProject && matchesStatus && matchesPriority;
+        return matchesText && matchesStatus && matchesPriority;
       });
       const priorityRanks = new Map(
         priorityOptions.map((priority, index) => [priority.value, index])
@@ -1891,26 +1892,13 @@ var InsightsView = class extends import_obsidian5.ItemView {
         if (rankDifference === 0) return left.index - right.index;
         return this.taskPrioritySort === "high-to-low" ? rankDifference : -rankDifference;
       }).map(({ task: task2 }) => task2);
-      result.setText(t.memberWorkResult(tasks, member.tasks));
-      reset.disabled = this.taskQuery.length === 0 && this.taskProjectIds === null && this.taskStatuses === null && this.taskPriorities === null;
+      result.setText(t.memberWorkResult(tasks, member.tasks, this.quickSource));
+      reset.disabled = this.taskQuery.length === 0 && this.taskStatuses === null && this.taskPriorities === null;
       this.renderMemberTaskView(root, sortedTasks, projects, priorities, stages, statuses, t, () => {
         this.taskPrioritySort = this.taskPrioritySort === "none" ? "high-to-low" : this.taskPrioritySort === "high-to-low" ? "low-to-high" : "none";
         renderRows();
       });
     };
-    this.renderTaskFilterMenu(
-      filters,
-      "folder-kanban",
-      t.project,
-      t.allProjects,
-      projectOptions,
-      this.taskProjectIds,
-      (selection) => {
-        this.taskProjectIds = selection;
-        renderRows();
-      },
-      t
-    );
     this.renderTaskFilterMenu(
       filters,
       "workflow",
@@ -1940,7 +1928,6 @@ var InsightsView = class extends import_obsidian5.ItemView {
     search.addEventListener("input", renderRows);
     reset.addEventListener("click", () => {
       this.taskQuery = "";
-      this.taskProjectIds = null;
       this.taskStatuses = null;
       this.taskPriorities = null;
       root.empty();
@@ -2984,6 +2971,9 @@ var ProjectManagerInsightsPlugin = class extends import_obsidian6.Plugin {
     this.navigator = new ProjectManagerNavigator(this.app);
     this.toolbarIntegration = new ProjectManagerToolbarIntegration(this.app, this);
     this.registerView(INSIGHTS_VIEW_TYPE, (leaf) => new InsightsView(leaf, this));
+    this.registerObsidianProtocolHandler("open-pm-insights", async () => {
+      await this.openInsights();
+    });
     this.addRibbonIcon("chart-no-axes-combined", translations(this.settings).viewName, () => {
       void this.openInsights();
     });
