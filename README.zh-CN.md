@@ -43,8 +43,8 @@ npm run build
 
 1. 校验 `vendor/main.vendor.js` 和 `vendor/insights.vendor.js` 的基线哈希。
 2. 生成 Enhanced 主模块和 Insights 内部模块。
-3. 合并两个插件生命周期与 `custom/dashboard.js` 首页扩展并输出根目录 `main.js`。
-4. 合并 Enhanced、Insights 与 `custom/dashboard.css` 样式并输出根目录 `styles.css`。
+3. 合并两个插件生命周期、`custom/dashboard.js` 首页扩展与 `custom/iteration-detail.js` 迭代详情扩展，并输出根目录 `main.js`。
+4. 合并 Enhanced、Insights、首页与迭代详情样式，并输出根目录 `styles.css`。
 
 官方 TypeScript 源码仍保留，可以单独执行 `pnpm build:upstream`，但该命令生成的是上游版本，不包含当前完整定制。
 

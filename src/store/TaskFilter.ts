@@ -32,6 +32,8 @@ export function matchesFilter(task: Task, filter: FilterState, statuses: StatusC
     const q = filter.text.toLowerCase()
     if (
       !(
+        task.id.toLowerCase() === q ||
+        matchesZentaoId(task, q) ||
         task.title.toLowerCase().includes(q) ||
         task.status.includes(q) ||
         task.priority.includes(q) ||
@@ -48,6 +50,22 @@ export function matchesFilter(task: Task, filter: FilterState, statuses: StatusC
   if (filter.tags.length && !task.tags.some((t) => filter.tags.includes(t))) return false
   if (filter.dueDateFilter !== 'any' && !matchDueDateFilter(task, filter.dueDateFilter, statuses)) return false
   return true
+}
+
+/** 将常用事项 ID 输入形式归一化后，与禅道来源 ID 精确比较。 */
+function matchesZentaoId(task: Task, query: string): boolean {
+  const rawZentaoId = task.customFields.zentaoId
+  const zentaoId =
+    typeof rawZentaoId === 'string' || typeof rawZentaoId === 'number' ? String(rawZentaoId).trim().toLowerCase() : ''
+  if (!zentaoId) return false
+
+  const normalized = query
+    .trim()
+    .toLowerCase()
+    .replace(/^(?:需求|任务|里程碑|事项)\s*/u, '')
+    .replace(/^#\s*/, '')
+    .trim()
+  return zentaoId === normalized
 }
 
 export function applyTaskFilter(tasks: Task[], filter: FilterState, statuses: StatusConfig[] = []): Task[] {

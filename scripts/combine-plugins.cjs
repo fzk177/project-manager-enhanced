@@ -6,10 +6,12 @@ const path = require('path')
 const repositoryRoot = path.join(__dirname, '..')
 const enhancedPath = path.join(repositoryRoot, 'build', 'enhanced.js')
 const insightsPath = path.join(repositoryRoot, 'build', 'insights.js')
+const iterationDetailPath = path.join(repositoryRoot, 'custom', 'iteration-detail.js')
 const dashboardPath = path.join(repositoryRoot, 'custom', 'dashboard.js')
 const outputPath = path.join(repositoryRoot, 'main.js')
 const enhancedSource = fs.readFileSync(enhancedPath, 'utf8')
 const insightsSource = fs.readFileSync(insightsPath, 'utf8')
+const iterationDetailSource = fs.readFileSync(iterationDetailPath, 'utf8').trimEnd()
 const dashboardSource = fs.readFileSync(dashboardPath, 'utf8')
 
 const combinedSource = `'use strict'
@@ -18,6 +20,7 @@ const insightsModule = { exports: {} }
 
 ;(function loadEnhanced(module, exports, require) {
 ${enhancedSource}
+${iterationDetailSource}
 ${dashboardSource}
 })(enhancedModule, enhancedModule.exports, require)
 

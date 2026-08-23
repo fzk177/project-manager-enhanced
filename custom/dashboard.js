@@ -15,7 +15,6 @@ const PM_DASHBOARD_DATES_SETTING = 'dashboardIterationDates';
 const PM_ARCHIVED_PROJECTS_SETTING = 'dashboardArchivedProjects';
 const PM_MEMBER_ROLES_SETTING = 'dashboardMemberRoles';
 const PM_TESTING_DATE_FIELD = 'testingDate';
-const PM_PLANNED_RELEASE_DATE_FIELD = 'plannedReleaseDate';
 const PM_MEMBER_ROLE_DEFINITIONS = [
   { id: 'project-management', label: '项目管理' },
   { id: 'product-manager', label: '产品经理' },
@@ -681,7 +680,6 @@ function pmRenderProjectCard(context, container, summary, summaries) {
   titleArea.createEl('h3', { text: summary.project.title, cls: 'pm-project-list-title' });
   const manualDates = heading.createDiv('pm-project-manual-dates');
   pmRenderProjectManualDate(context, manualDates, summary.project, '提测时间', PM_TESTING_DATE_FIELD);
-  pmRenderProjectManualDate(context, manualDates, summary.project, '计划上线时间', PM_PLANNED_RELEASE_DATE_FIELD);
   const badges = heading.createDiv('pm-project-list-badges');
   if (summary.archived) badges.createSpan({ text: '已归档', cls: 'pm-project-archived-badge' });
   badges.createSpan({ text: summary.status.label, cls: `pm-project-status pm-project-status--${summary.status.key}` });

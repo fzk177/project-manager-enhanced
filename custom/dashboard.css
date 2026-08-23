@@ -268,7 +268,8 @@ button.pm-project-system-collapse:hover {
 
 .pm-project-manual-dates {
   display: grid;
-  grid-template-columns: repeat(2, minmax(190px, 1fr));
+  grid-template-columns: minmax(190px, 380px);
+  justify-content: end;
   gap: 10px;
   min-inline-size: 0;
 }

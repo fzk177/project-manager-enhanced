@@ -183,6 +183,9 @@ replaceOnce(
 )
 
 const quickFilterHelpers = [
+  'function projectSearchMatchesZentaoId(e,t){let n=String(e.customFields.zentaoId??``)',
+  '.trim().toLowerCase();if(!n)return!1;let r=t.trim().toLowerCase()',
+  '.replace(/^(?:需求|任务|里程碑|事项)\\s*/u,``).replace(/^#\\s*/,``).trim();return n===r}',
   'function quickSourceType(e){let t=String(e.customFields.zentaoSourceType??``);',
   'return t===`story`||e.tags.includes(`zentao-requirement`)?`requirement`:',
   't===`task`||e.tags.includes(`zentao-task`)?`task`:',
@@ -220,6 +223,12 @@ const quickFilterHelpers = [
   'return i.find(e=>e.label.includes(n))?.id??i.find(e=>r.includes(e.id))?.id??r[0]??`all`}',
 ].join('')
 replaceOnce('注入快速组合筛选语义', 'function Ed(e){', `${quickFilterHelpers}function Ed(e){`)
+
+replaceOnce(
+  '事项搜索匹配禅道 ID',
+  'e.id.toLowerCase()===r||e.title.toLowerCase().includes(r)',
+  'e.id.toLowerCase()===r||projectSearchMatchesZentaoId(e,r)||e.title.toLowerCase().includes(r)',
+)
 
 replaceOnce(
   '识别快速组合筛选激活状态',

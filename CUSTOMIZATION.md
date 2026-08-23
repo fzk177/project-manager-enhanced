@@ -18,6 +18,7 @@
 - 表格虚拟化阈值调整、视图复用和排序指示同步。
 - 响应式头部布局、折叠面板和分组卡片样式。
 - `custom/dashboard.js` 与 `custom/dashboard.css` 提供按系统分组的迭代首页、需求展开、人员角色、手工日期和归档能力。
+- `custom/iteration-detail.js` 与 `custom/iteration-detail.css` 提供迭代概览、需求搜索层级、临时筛选、渐进表格和吸附操作区。
 - Project Manager Insights 0.2.4 内部模块、设置迁移和工作量洞察页面。
 
 ## 验收基线
