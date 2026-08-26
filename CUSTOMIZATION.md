@@ -9,6 +9,15 @@
 
 `vendor/main.vendor.js` 已包含早期个人改造；`scripts/patch-main.cjs` 记录后续可验证补丁。二者共同构成当前精确复现层。
 
+## 近期安装版恢复基线
+
+- 恢复日期：`2026-08-26`
+- `vendor/main.recovered.js` SHA-256：`699edf0ac794519da27b90500acaa821f2388cf4e4cff59b60f0338f2c5d3003`
+- `vendor/styles.recovered.css` SHA-256：`3d38025cd8cfd4f866ba2554ab76cb3b4793d3a1dae547e5c2bb14763e310e14`
+- 构建入口：`scripts/build-recovered-runtime.cjs`
+
+近期多轮界面调试曾直接修改 vault 安装产物，现有 TypeScript 与旧补丁层不能完整重建这些能力。为避免发布时再次丢失定制，当前生产构建以本地已验收 Bundle 为不可变恢复基线，并在复制前强制校验哈希。该恢复层不宣称已经还原缺失的 TypeScript 源码。
+
 ## 后续补丁
 
 - 项目状态读取、保存与项目面板分类。
@@ -18,6 +27,7 @@
 - 表格虚拟化阈值调整、视图复用和排序指示同步。
 - 响应式头部布局、折叠面板和分组卡片样式。
 - `custom/dashboard.js` 与 `custom/dashboard.css` 提供按系统分组的迭代首页、需求展开、人员角色、手工日期和归档能力。
+- `custom/insights-member-dashboard.js` 与 `custom/insights-member-dashboard.css` 提供 PM 洞察顶部对象统计、成员需求/任务双分区卡片和右侧联动筛选。
 - `custom/iteration-detail.js` 与 `custom/iteration-detail.css` 提供迭代概览、需求搜索层级、临时筛选、渐进表格和吸附操作区。
 - Project Manager Insights 0.2.4 内部模块、设置迁移和工作量洞察页面。
 

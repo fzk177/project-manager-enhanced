@@ -1,4 +1,8 @@
 /* 迭代详情顶部概览 */
+.pm-project-header-filter-panel .pm-insight-filter-archive {
+  display: none;
+}
+
 .pm-iteration-summary-mount {
   flex-shrink: 0;
   overflow: visible;

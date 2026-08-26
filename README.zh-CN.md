@@ -41,10 +41,11 @@ npm run build
 
 构建过程：
 
-1. 校验 `vendor/main.vendor.js` 和 `vendor/insights.vendor.js` 的基线哈希。
-2. 生成 Enhanced 主模块和 Insights 内部模块。
-3. 合并两个插件生命周期、`custom/dashboard.js` 首页扩展与 `custom/iteration-detail.js` 迭代详情扩展，并输出根目录 `main.js`。
-4. 合并 Enhanced、Insights、首页与迭代详情样式，并输出根目录 `styles.css`。
+1. 校验 `vendor/main.recovered.js` 和 `vendor/styles.recovered.css` 的 SHA-256。
+2. 从已经过本地使用验证的恢复基线逐字节生成根目录 `main.js` 和 `styles.css`。
+3. 对生成的 `main.js` 执行 JavaScript 语法检查。
+
+恢复基线来自当前 vault 安装版，包含健康度、交付批次、关注迭代、迭代总结与近期 PM 洞察调试成果。它是可重复构建的编译 Bundle，不代表已经恢复成原始 TypeScript 源码。
 
 官方 TypeScript 源码仍保留，可以单独执行 `pnpm build:upstream`，但该命令生成的是上游版本，不包含当前完整定制。
 
