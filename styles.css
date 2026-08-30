@@ -593,6 +593,167 @@ button.pm-iteration-summary-requirement-row:hover {
   }
 }
 
+/* 禅道遗留事项保留审计入口，但不混入活动事项表格、甘特图和看板。 */
+.pm-orphaned-items {
+  box-sizing: border-box;
+  margin: 0 var(--pm-iteration-page-gutter, 16px) var(--pm-iteration-module-gap, 10px);
+  border: 1px solid color-mix(in srgb, var(--color-orange) 35%, var(--background-modifier-border));
+  border-radius: var(--radius-m);
+  background: color-mix(in srgb, var(--color-orange) 5%, var(--background-primary));
+}
+
+.pm-orphaned-items-summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 14px;
+  cursor: pointer;
+  list-style: none;
+}
+
+.pm-orphaned-items-summary::-webkit-details-marker {
+  display: none;
+}
+
+.pm-orphaned-items-summary-title,
+.pm-orphaned-items-summary-icon,
+.pm-orphaned-items-meta,
+.pm-orphaned-items-state-strip {
+  display: flex;
+  align-items: center;
+}
+
+.pm-orphaned-items-summary-title {
+  gap: 7px;
+  color: var(--text-normal);
+  font-size: 12px;
+  font-weight: 650;
+}
+
+.pm-orphaned-items-summary-icon {
+  width: 14px;
+  height: 14px;
+  color: var(--color-orange);
+}
+
+.pm-orphaned-items-count,
+.pm-orphaned-items-state {
+  border-radius: 999px;
+  padding: 2px 7px;
+  font-size: 10px;
+  font-weight: 600;
+}
+
+.pm-orphaned-items-count {
+  color: var(--color-orange);
+  background: color-mix(in srgb, var(--color-orange) 14%, transparent);
+}
+
+.pm-orphaned-items-summary-tip {
+  color: var(--text-muted);
+  font-size: 10px;
+}
+
+.pm-orphaned-items-body {
+  border-top: 1px solid var(--background-modifier-border);
+  padding: 10px 12px 12px;
+}
+
+.pm-orphaned-items-state-strip {
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: 8px;
+}
+
+.pm-orphaned-items-state.is-pending,
+.pm-orphaned-items-state.is-removed {
+  color: var(--color-orange);
+  background: color-mix(in srgb, var(--color-orange) 12%, transparent);
+}
+
+.pm-orphaned-items-state.is-moved {
+  color: var(--color-blue);
+  background: color-mix(in srgb, var(--color-blue) 12%, transparent);
+}
+
+.pm-orphaned-items-state.is-deleted,
+.pm-orphaned-items-state.is-failed {
+  color: var(--color-red);
+  background: color-mix(in srgb, var(--color-red) 11%, transparent);
+}
+
+.pm-orphaned-items-list {
+  display: grid;
+  gap: 6px;
+}
+
+button.pm-orphaned-items-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  width: 100%;
+  margin: 0;
+  border: 1px solid var(--background-modifier-border);
+  border-radius: var(--radius-s);
+  padding: 8px 10px;
+  color: var(--text-normal);
+  background: var(--background-primary);
+  box-shadow: none;
+  text-align: left;
+}
+
+button.pm-orphaned-items-row:hover,
+button.pm-orphaned-items-row:focus-visible {
+  border-color: var(--interactive-accent);
+  background: var(--background-modifier-hover);
+}
+
+.pm-orphaned-items-identity {
+  display: grid;
+  min-width: 0;
+  gap: 2px;
+}
+
+.pm-orphaned-items-source {
+  color: var(--text-muted);
+  font-size: 10px;
+}
+
+.pm-orphaned-items-title {
+  overflow: hidden;
+  color: var(--text-normal);
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.pm-orphaned-items-meta {
+  flex: 0 0 auto;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 6px;
+  color: var(--text-muted);
+  font-size: 10px;
+}
+
+@media (max-width: 760px) {
+  .pm-orphaned-items-summary-tip {
+    display: none;
+  }
+
+  button.pm-orphaned-items-row {
+    align-items: flex-start;
+    flex-direction: column;
+    gap: 6px;
+  }
+
+  .pm-orphaned-items-meta {
+    justify-content: flex-start;
+  }
+}
+
 .pm-project-header-primary {
   align-items: stretch;
   flex-direction: column;
@@ -3181,7 +3342,7 @@ body .pm-root .pmi-pm-table thead th:nth-child(2)::after, body .pm-root .pmi-pm-
 /* 项目首页：归属、迭代与需求三级工作台。 */
 .pm-dashboard-overview {
   display: grid;
-  grid-template-columns: repeat(5, minmax(120px, 1fr));
+  grid-template-columns: repeat(6, minmax(0, 1fr));
   gap: 1px;
   margin-block-end: 14px;
   border: 1px solid var(--background-modifier-border);
@@ -4419,8 +4580,12 @@ button.pmi-member-task-state {
 
 .pm-iteration-filter-sticky {
   display: flex;
-  position: relative;
+  position: sticky;
+  top: 0;
+  left: 0;
   z-index: 50;
+  box-sizing: border-box;
+  width: 100%;
   flex-shrink: 0;
   flex-direction: column;
   background: var(--background-primary);
@@ -4438,7 +4603,77 @@ button.pmi-member-task-state {
 }
 
 .pm-project-detail-root {
+  --pm-iteration-page-gutter: 16px;
+  --pm-iteration-module-gap: 10px;
   overflow: hidden;
+}
+
+/* 视图切换统一放到筛选栏右侧，顶部工具栏不再重复展示。 */
+.pm-project-detail-root .pm-toolbar > .pm-view-switcher {
+  display: none;
+}
+
+/* 左侧承载搜索和常规筛选，右侧类型筛选与视图入口保持独立且不换行。 */
+.pm-project-detail-root .pm-project-header-filter-panel .pm-project-header-filter:has(> .pm-iteration-filter-layout-right) {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 12px;
+}
+
+.pm-iteration-filter-layout-left {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  overflow: visible;
+}
+
+.pm-project-detail-root .pm-iteration-filter-layout-left .pm-insight-filter-search {
+  flex: 1 1 240px;
+  min-width: 180px;
+}
+
+.pm-project-detail-root .pm-iteration-filter-layout-left > button.pm-chip-btn {
+  flex: 0 1 112px;
+  min-width: 96px;
+}
+
+.pm-project-detail-root .pm-iteration-filter-layout-left > button.pm-insight-filter-reset {
+  flex: 0 0 auto;
+  min-width: 86px;
+  margin-inline-start: 0;
+}
+
+.pm-iteration-filter-layout-right {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 8px;
+  padding-inline-start: 12px;
+  border-inline-start: 1px solid var(--background-modifier-border);
+  white-space: nowrap;
+}
+
+.pm-iteration-source-filter {
+  box-sizing: border-box;
+  flex: 0 0 112px;
+  width: 112px;
+  min-width: 112px;
+}
+
+.pm-project-detail-root .pm-iteration-view-switcher {
+  flex: 0 0 auto;
+  min-height: 40px;
+  margin-inline-start: 0;
+  border: 1px solid var(--background-modifier-border);
+  padding: 3px;
+  background: var(--background-primary);
+}
+
+.pm-project-detail-root .pm-iteration-view-switcher .pm-view-btn.clickable-icon {
+  width: 32px;
+  height: 32px;
 }
 
 .pm-project-detail-scroll {
@@ -4455,10 +4690,42 @@ button.pmi-member-task-state {
   overflow: hidden;
 }
 
-/*
- * 表格继续使用整页横向滚动，但顶部工具栏与概览只吸附水平方向，
- * 避免拖动宽表格时上方内容一起偏移。
- */
+.pm-project-detail-root--table .pm-project-detail-scroll {
+  overflow-x: hidden;
+  overflow-y: auto;
+}
+
+/* 甘特图和看板使用迭代页容器的真实剩余高度，避免 100vh 将 Obsidian 顶部区域重复计入。 */
+.pm-project-detail-root--gantt .pm-project-detail-scroll,
+.pm-project-detail-root--kanban .pm-project-detail-scroll {
+  overflow-x: hidden;
+  overflow-y: auto;
+}
+
+.pm-project-detail-root--gantt .pm-project-detail-scroll > .pm-content.pm-iteration-table-module,
+.pm-project-detail-root--kanban .pm-project-detail-scroll > .pm-content.pm-iteration-table-module {
+  flex: 0 0 auto;
+  box-sizing: border-box;
+  width: auto;
+  height: var(--pm-iteration-module-height, calc(100vh - var(--pm-iteration-sticky-offset, 0px) - 32px));
+  min-width: 0;
+  min-height: 0;
+  margin: 0 var(--pm-iteration-page-gutter) var(--pm-iteration-module-gap);
+  border: 1px solid var(--background-modifier-border);
+  border-radius: var(--radius-m);
+  background: color-mix(in srgb, var(--background-secondary) 76%, var(--background-primary));
+  box-shadow: 0 2px 8px var(--background-modifier-box-shadow);
+  overflow: hidden;
+}
+
+.pm-project-detail-root--gantt .pm-gantt-view,
+.pm-project-detail-root--kanban .pm-kanban-view {
+  min-width: 0;
+  min-height: 0;
+  height: 100%;
+}
+
+/* 表格使用模块内部横向滚动，顶部工具栏与概览始终保持当前页面宽度。 */
 .pm-project-detail-root--table .pm-project-detail-scroll > .pm-toolbar,
 .pm-project-detail-root--table .pm-project-detail-scroll > .pm-iteration-summary-mount {
   position: sticky;
@@ -4481,28 +4748,55 @@ button.pmi-member-task-state {
   max-width: 100%;
 }
 
-.pm-project-detail-root--table .pm-iteration-filter-sticky .pm-project-header-filter-panel {
-  margin-block: 0;
+.pm-project-detail-root .pm-iteration-filter-sticky .pm-project-header-filter-panel {
+  margin: 0 var(--pm-iteration-page-gutter) var(--pm-iteration-module-gap);
 }
 
-.pm-project-detail-root--table .pm-project-detail-scroll > .pm-content {
+/* 表格视图将筛选栏作为模块头部，与下方表格主体无缝衔接。 */
+.pm-project-detail-root--table .pm-iteration-filter-sticky .pm-project-header-filter-panel {
+  margin-bottom: 0;
+  border-radius: var(--radius-m) var(--radius-m) 0 0;
+  background: color-mix(in srgb, var(--background-secondary) 76%, var(--background-primary));
+}
+
+.pm-project-detail-root--table .pm-project-detail-scroll > .pm-content.pm-iteration-table-module {
   flex: 0 0 auto;
+  box-sizing: border-box;
+  width: auto;
+  height: var(--pm-iteration-module-height, calc(100vh - var(--pm-iteration-sticky-offset, 0px) - 32px));
+  min-width: 0;
+  margin: 0 var(--pm-iteration-page-gutter) var(--pm-iteration-module-gap);
+  border: 1px solid var(--background-modifier-border);
+  border-top: 0;
+  border-radius: 0 0 var(--radius-m) var(--radius-m);
+  background: color-mix(in srgb, var(--background-secondary) 76%, var(--background-primary));
+  box-shadow: 0 2px 8px var(--background-modifier-box-shadow);
   min-height: 0;
-  overflow: visible;
+  overflow: hidden;
 }
 
 .pm-project-detail-root--table .pm-table-view {
-  height: auto;
+  height: 100%;
   min-height: 0;
 }
 
 .pm-project-detail-root--table .pm-table-wrapper {
-  flex: none;
-  overflow: visible;
+  flex: 1 1 auto;
+  min-height: 0;
+  width: 100%;
+  max-width: 100%;
+  max-height: none;
+  overflow: auto;
+  overscroll-behavior-x: contain;
+}
+
+.pm-project-detail-root--table .pm-table {
+  width: max-content;
+  min-width: 100%;
 }
 
 .pm-project-detail-root--table .pm-table thead th {
-  top: var(--pm-iteration-table-header-top, var(--pm-iteration-sticky-offset, 0px));
+  top: 0;
   z-index: 40;
 }
 
@@ -4516,7 +4810,7 @@ body .pm-root.pm-project-detail-root--table .pm-table tbody td:nth-child(-n + 4)
 }
 
 .pm-iteration-summary {
-  margin: 10px 16px 8px;
+  margin: var(--pm-iteration-module-gap) var(--pm-iteration-page-gutter) var(--pm-iteration-module-gap);
   border: 1px solid var(--background-modifier-border);
   border-radius: var(--radius-m);
   background: color-mix(in srgb, var(--background-secondary) 76%, var(--background-primary));
@@ -5003,8 +5297,8 @@ button.pm-iteration-risk-chip.is-active.is-warning {
 }
 
 @media (max-width: 600px) {
-  .pm-iteration-summary {
-    margin-inline: 10px;
+  .pm-project-detail-root {
+    --pm-iteration-page-gutter: 10px;
   }
 
   .pm-iteration-summary-body {
@@ -6764,6 +7058,343 @@ button.pm-project-follow-button--detail {
   color: var(--color-orange);
 }
 
+/* Bug 概况优先展示未关闭总数，再用紧凑标签补充 S1、S2 风险级别。 */
+.pm-project-detail-root--table .pm-table-cell-bug-summary {
+  min-width: 164px !important;
+  padding: 12px 14px;
+  text-align: left !important;
+  vertical-align: middle;
+  white-space: nowrap;
+}
+
+.pm-project-detail-root--table th.pm-table-cell-bug-summary {
+  padding-block: 8px;
+}
+
+.pm-bug-summary {
+  display: flex;
+  box-sizing: border-box;
+  width: max-content;
+  max-width: 100%;
+  min-width: 0;
+  margin: 0;
+  flex-direction: column;
+  align-items: flex-start;
+  justify-content: center;
+  gap: 9px;
+  color: var(--text-normal);
+}
+
+.pm-bug-summary-main {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 24px;
+  font-size: 12px;
+  line-height: 1;
+}
+
+.pm-bug-summary-risk-dot {
+  flex: 0 0 auto;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--color-red);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--color-red) 10%, transparent);
+}
+
+.pm-bug-summary-label {
+  color: color-mix(in srgb, var(--text-normal) 82%, var(--text-muted));
+  font-weight: 560;
+}
+
+.pm-bug-summary-count {
+  color: var(--color-red);
+  font-size: 18px;
+  font-weight: 750;
+  line-height: 1;
+}
+
+.pm-bug-summary-levels {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.pm-bug-summary-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  min-height: 24px;
+  box-sizing: border-box;
+  border: 1px solid;
+  border-radius: 7px;
+  padding: 3px 8px;
+  font-size: 10px;
+  line-height: 1;
+}
+
+.pm-bug-summary-chip.is-s1 {
+  border-color: color-mix(in srgb, var(--color-red) 30%, var(--background-modifier-border));
+  color: color-mix(in srgb, var(--color-red) 68%, var(--text-normal));
+  background: color-mix(in srgb, var(--color-red) 8%, var(--background-primary));
+}
+
+.pm-bug-summary-chip.is-s2 {
+  border-color: color-mix(in srgb, var(--color-orange) 34%, var(--background-modifier-border));
+  color: color-mix(in srgb, var(--color-orange) 66%, var(--text-normal));
+  background: color-mix(in srgb, var(--color-orange) 9%, var(--background-primary));
+}
+
+.pm-bug-summary-chip.is-zero {
+  opacity: .72;
+}
+
+.pm-bug-summary-chip-dot {
+  flex: 0 0 auto;
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: currentColor;
+}
+
+.pm-bug-summary.is-cleared {
+  min-height: 52px;
+  flex-direction: row;
+  align-items: center;
+  justify-content: flex-start !important;
+  gap: 9px;
+  color: var(--color-green);
+}
+
+.pm-bug-summary-cleared-icon {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: center;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--color-green);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--color-green) 10%, transparent);
+}
+
+.pm-bug-summary-cleared-copy {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 5px;
+}
+
+.pm-bug-summary-cleared-copy strong {
+  color: color-mix(in srgb, var(--color-green) 78%, var(--text-normal));
+  font-size: 12px;
+  font-weight: 680;
+}
+
+.pm-bug-summary-cleared-copy > span {
+  color: var(--text-muted);
+  font-size: 10px;
+}
+
+.pm-bug-summary.is-not-applicable {
+  min-height: 28px;
+  color: var(--text-faint);
+}
+
+.pm-bug-summary-not-applicable {
+  font-size: 16px;
+}
+
+/* 需求与任务使用不同的识别胶囊、标题层级和树形连接线。 */
+.pm-project-detail-root--table .pm-zentao-type-story .pm-table-cell-zentao-id .pm-chip,
+.pm-project-detail-root--table .pm-zentao-type-task .pm-table-cell-zentao-id .pm-chip {
+  gap: 6px;
+  border: 1px solid;
+  border-radius: 999px;
+  padding: 3px 8px;
+  font-size: 10px;
+  font-weight: 700;
+  line-height: 1.4;
+}
+
+.pm-project-detail-root--table .pm-zentao-type-story .pm-table-cell-zentao-id .pm-chip {
+  --pm-chip-color: var(--color-blue) !important;
+  border-color: color-mix(in srgb, var(--color-blue) 30%, var(--background-modifier-border));
+  background: color-mix(in srgb, var(--color-blue) 12%, var(--background-primary));
+}
+
+.pm-project-detail-root--table .pm-zentao-type-task .pm-table-cell-zentao-id .pm-chip {
+  --pm-chip-color: var(--color-purple) !important;
+  border-color: color-mix(in srgb, var(--color-purple) 25%, var(--background-modifier-border));
+  background: color-mix(in srgb, var(--color-purple) 7%, var(--background-primary));
+}
+
+.pm-project-detail-root--table .pm-zentao-type-story .pm-table-cell-zentao-id .pm-chip::before,
+.pm-project-detail-root--table .pm-zentao-type-task .pm-table-cell-zentao-id .pm-chip::before {
+  content: "";
+  flex: 0 0 auto;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: currentColor;
+}
+
+.pm-project-detail-root--table .pm-zentao-type-story .pm-table-cell-title {
+  position: sticky;
+  padding-block: 12px;
+}
+
+.pm-project-detail-root--table .pm-zentao-type-story .pm-table-cell-title::before {
+  content: "";
+  position: absolute;
+  top: 8px;
+  bottom: 8px;
+  left: 0;
+  width: 4px;
+  border-radius: 0 4px 4px 0;
+  background: var(--color-blue);
+  opacity: .72;
+}
+
+.pm-project-detail-root--table .pm-zentao-type-story .pm-task-title-text {
+  color: var(--text-normal);
+  font-size: 14px;
+  font-weight: 720;
+  line-height: 1.55;
+}
+
+.pm-project-detail-root--table .pm-zentao-type-task .pm-task-title-text {
+  color: color-mix(in srgb, var(--text-normal) 88%, var(--text-muted));
+  font-size: 12.5px;
+  font-weight: 540;
+  line-height: 1.5;
+}
+
+/* 层级控制与类型胶囊统一收进事项 ID 列，避免额外展开列产生大块空白。 */
+.pm-project-detail-root--table .pm-table-cell-zentao-id--hierarchy {
+  position: sticky;
+  padding-inline: 10px;
+}
+
+.pm-project-detail-root--table .pm-table-hierarchy-identity {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.pm-project-detail-root--table .pm-table-hierarchy-node {
+  position: relative;
+  flex: 0 0 26px;
+  width: 26px;
+  height: 26px;
+}
+
+.pm-project-detail-root--table .pm-zentao-type-task .pm-table-hierarchy-node::after {
+  content: "";
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 7px;
+  height: 7px;
+  border: 2px solid var(--background-primary);
+  border-radius: 50%;
+  background: var(--color-purple);
+  transform: translate(-50%, -50%);
+}
+
+.pm-project-detail-root--table .pm-zentao-type-story .pm-table-hierarchy-node::after {
+  content: "";
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 8px;
+  height: 8px;
+  border-radius: 2px;
+  background: var(--color-blue);
+  transform: translate(-50%, -50%) rotate(45deg);
+}
+
+/* 子任务树线在事项 ID 列中连续展示，节点与父需求按钮保持同一轴线。 */
+.pm-project-detail-root--table .pm-zentao-type-task[data-pm-depth]:not([data-pm-depth="0"]) .pm-table-cell-zentao-id--hierarchy::before,
+.pm-project-detail-root--table .pm-zentao-type-task[data-pm-depth]:not([data-pm-depth="0"]) .pm-table-cell-zentao-id--hierarchy::after {
+  content: "";
+  position: absolute;
+  pointer-events: none;
+  background: color-mix(in srgb, var(--color-purple) 34%, var(--background-modifier-border));
+}
+
+.pm-project-detail-root--table .pm-zentao-type-task[data-pm-depth]:not([data-pm-depth="0"]) .pm-table-cell-zentao-id--hierarchy::before {
+  top: 0;
+  bottom: 0;
+  left: 23px;
+  width: 1px;
+}
+
+.pm-project-detail-root--table .pm-zentao-type-task[data-pm-depth]:not([data-pm-depth="0"]) .pm-table-cell-zentao-id--hierarchy::after {
+  top: 50%;
+  left: 23px;
+  width: 18px;
+  height: 1px;
+}
+
+/* 需求展开入口使用明确的圆形按钮，并保留原有键盘与提示能力。 */
+.pm-project-detail-root--table .pm-zentao-type-story .pm-collapse-toggle {
+  width: 26px;
+  height: 26px;
+  border: 1px solid color-mix(in srgb, var(--color-blue) 32%, var(--background-modifier-border));
+  border-radius: 50%;
+  color: var(--color-blue);
+  background: color-mix(in srgb, var(--color-blue) 10%, var(--background-primary));
+  transition: color 120ms ease, background 120ms ease, border-color 120ms ease, transform 120ms ease;
+}
+
+.pm-project-detail-root--table .pm-zentao-type-story .pm-collapse-toggle:hover {
+  border-color: var(--color-blue);
+  color: var(--text-on-accent);
+  background: var(--color-blue);
+  transform: scale(1.06);
+}
+
+.pm-project-detail-root--table .pm-zentao-type-story .pm-collapse-toggle .svg-icon {
+  width: 14px;
+  height: 14px;
+  transition: transform 120ms ease;
+}
+
+/* 移除独立展开列后，模块列前移到第四列并继续保持隐藏。 */
+.pm-project-detail-root--table .pm-table:not(.pmi-pm-table) thead th:nth-child(4),
+.pm-project-detail-root--table .pm-table:not(.pmi-pm-table) tbody td:nth-child(4) {
+  display: none;
+}
+
+/* 冻结区现在只包含多选、事项 ID 和事项标题三列。 */
+body .pm-root.pm-project-detail-root--table .pm-table:not(.pmi-pm-table) {
+  --pm-freeze-expand-width: 0px;
+  --pm-freeze-id-width: 148px;
+}
+
+body .pm-root.pm-project-detail-root--table .pm-table:not(.pmi-pm-table) thead th:nth-child(3),
+body .pm-root.pm-project-detail-root--table .pm-table:not(.pmi-pm-table) tbody td:nth-child(3) {
+  left: calc(var(--pm-freeze-select-width) + var(--pm-freeze-id-width));
+  box-shadow: 3px 0 7px -5px var(--text-muted);
+}
+
+body .pm-root.pm-project-detail-root--table .pm-table:not(.pmi-pm-table) thead th:nth-child(3)::after,
+body .pm-root.pm-project-detail-root--table .pm-table:not(.pmi-pm-table) tbody td:nth-child(3)::after {
+  content: "";
+  position: absolute;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  width: 1px;
+  background: var(--background-modifier-border-hover);
+  pointer-events: none;
+}
+
 /* 表格默认收起多选相关列，仅在用户显式开启后展示。 */
 .pm-project-detail-root--table:not(.pm-table-multi-select-enabled) .pm-table-cell-select,
 .pm-project-detail-root--table:not(.pm-table-multi-select-enabled) .pm-table-cell-actions,
@@ -6772,7 +7403,7 @@ button.pm-project-follow-button--detail {
   display: none;
 }
 
-/* 隐藏复选列后同步归零冻结偏移，避免展开列左侧留白或透出底层数据列。 */
+/* 隐藏复选列后同步归零冻结偏移，避免事项 ID 左侧留白或透出底层数据列。 */
 body .pm-root.pm-project-detail-root--table:not(.pm-table-multi-select-enabled) .pm-table {
   --pm-freeze-select-width: 0px;
 }
@@ -7912,10 +8543,10 @@ button.pm-delivery-delete:hover {
   width: 180px;
 }
 
+button.pm-delivery-select-all,
 button.pm-delivery-unassigned-filter {
   flex: 0 0 auto;
   min-height: 30px;
-  margin-left: auto;
   padding: 4px 10px;
   border: 1px solid var(--background-modifier-border);
   color: var(--text-muted);
@@ -7925,11 +8556,18 @@ button.pm-delivery-unassigned-filter {
   white-space: nowrap;
 }
 
+button.pm-delivery-select-all {
+  margin-left: auto;
+}
+
+button.pm-delivery-select-all:hover,
 button.pm-delivery-unassigned-filter:hover {
   border-color: var(--interactive-accent);
   color: var(--text-accent);
 }
 
+button.pm-delivery-select-all.is-active,
+button.pm-delivery-select-all.is-active:hover,
 button.pm-delivery-unassigned-filter.is-active,
 button.pm-delivery-unassigned-filter.is-active:hover {
   border-color: var(--interactive-accent);

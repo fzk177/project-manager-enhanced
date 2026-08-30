@@ -10,8 +10,8 @@ const recoveredStylesPath = path.join(repositoryRoot, 'vendor', 'styles.recovere
 const outputMainPath = path.join(repositoryRoot, 'main.js')
 const outputStylesPath = path.join(repositoryRoot, 'styles.css')
 
-const RECOVERED_MAIN_SHA256 = '699edf0ac794519da27b90500acaa821f2388cf4e4cff59b60f0338f2c5d3003'
-const RECOVERED_STYLES_SHA256 = '3d38025cd8cfd4f866ba2554ab76cb3b4793d3a1dae547e5c2bb14763e310e14'
+const RECOVERED_MAIN_SHA256 = '1dab0c4e81fea78d85106913569604fa8ed752fd992043bb2638befe44605ae5'
+const RECOVERED_STYLES_SHA256 = '366e28a56e009ba6b103533927627745f5711ed4c3daa07720b9019e25e93d1f'
 
 /**
  * 校验从本地安装版恢复的编译产物，避免基线被意外修改后继续生成不可追溯的发布文件。

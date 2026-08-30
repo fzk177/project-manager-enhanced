@@ -2232,9 +2232,13 @@ function pmOpenIterationMemberHealth(view, member, health) {
 }
 
 /**
- * 渲染人员工时汇总，默认展示风险和剩余工时靠前的五人。
+ * 渲染人员工时汇总，默认展示全部人员，并保留手动收起入口。
  */
 function pmRenderIterationMembers(container, view, health) {
+  if (view.iterationSummaryMembersExpanded === undefined) {
+    view.iterationSummaryMembersExpanded = true;
+  }
+
   const bugFacts = pmBugFactsForProject(view.plugin, view.project?.id);
   const members = [...health.members];
   const memberKeys = new Set(members.map((member) => pmNormalizeBugPerson(member.name)));
@@ -2469,7 +2473,7 @@ function pmOpenTaskCompletenessExceptionModal(view, record, kind, onSaved) {
 /**
  * 在完整性表格中生成单个任务类型的检查结果与操作。
  */
-function pmRenderTaskCompletenessCell(cell, view, modal, record, kind) {
+function pmRenderTaskCompletenessCell(cell, view, modal, record, kind, onChanged) {
   const testing = kind === `testing`;
   const tasks = testing ? record.testingTasks : record.developmentTasks;
   const missing = testing ? record.missingTesting : record.missingDevelopment;
@@ -2496,7 +2500,7 @@ function pmRenderTaskCompletenessCell(cell, view, modal, record, kind) {
       try {
         await pmSaveTaskCompletenessException(view, record, kind, false);
         new e.Notice(`已恢复${kindLabel}任务完整性检查。`);
-        modal.close();
+        onChanged();
       } catch (error) {
         console.error(`[项目管理] 恢复任务完整性检查失败：`, error);
         new e.Notice(`恢复检查失败，请重试。`);
@@ -2520,46 +2524,59 @@ function pmRenderTaskCompletenessCell(cell, view, modal, record, kind) {
     attr: { type: `button` },
   });
   excludeButton.addEventListener(`click`, () => {
-    pmOpenTaskCompletenessExceptionModal(view, record, kind, () => modal.close());
+    pmOpenTaskCompletenessExceptionModal(view, record, kind, onChanged);
   });
 }
 
-function pmOpenTaskCompletenessModal(view, completeness, initialFilter = `all`, scopeName = ``) {
+function pmOpenTaskCompletenessModal(
+  view,
+  completeness,
+  initialFilter = `all`,
+  scopeName = ``,
+  scopeId = PM_DELIVERY_SCOPE_ALL,
+) {
   const modal = new e.Modal(view.plugin.app);
   modal.containerEl.addClass(`pm-task-completeness-modal-container`);
   modal.contentEl.addClass(`pm-task-completeness-modal`);
   modal.contentEl.createEl(`h2`, { text: scopeName ? `任务完整性 · ${scopeName}` : `任务完整性` });
-  modal.contentEl.createDiv({
-    text: `共 ${completeness.total} 项需求，开发覆盖 ${completeness.developmentCovered}/${completeness.developmentExpected}，测试覆盖 ${completeness.testingCovered}/${completeness.testingExpected}${completeness.excluded > 0 ? `，${completeness.excluded}项需求已标记无需对应任务` : ``}。`,
-    cls: `pm-task-completeness-summary`,
-  });
-  if (completeness.missingTesting > 0) {
-    modal.contentEl.createDiv({
-      text: `${completeness.missingTesting}项需求尚未建立测试任务，当前测试负载可能被低估。`,
-      cls: `pm-task-completeness-warning`,
-    });
-  }
+  const overview = modal.contentEl.createDiv(`pm-task-completeness-overview`);
 
   const controls = modal.contentEl.createDiv(`pm-task-completeness-controls`);
   const tableWrap = modal.contentEl.createDiv(`pm-task-completeness-table-wrap`);
   let activeFilter = initialFilter;
+  let currentCompleteness = completeness;
   const filterButtons = new Map();
   const filterOptions = [
-    [`all`, `全部待处理 ${completeness.missingAny}`],
-    [`development`, `缺开发 ${completeness.missingDevelopment}`],
-    [`testing`, `缺测试 ${completeness.missingTesting}`],
-    [`both`, `同时缺失 ${completeness.missingBoth}`],
-    [`excluded`, `已标记无需 ${completeness.excluded}`],
+    [`all`, `全部待处理`, `missingAny`],
+    [`development`, `缺开发`, `missingDevelopment`],
+    [`testing`, `缺测试`, `missingTesting`],
+    [`both`, `同时缺失`, `missingBoth`],
+    [`excluded`, `已标记无需`, `excluded`],
   ];
 
+  const renderOverview = () => {
+    overview.empty();
+    overview.createDiv({
+      text: `共 ${currentCompleteness.total} 项需求，开发覆盖 ${currentCompleteness.developmentCovered}/${currentCompleteness.developmentExpected}，测试覆盖 ${currentCompleteness.testingCovered}/${currentCompleteness.testingExpected}${currentCompleteness.excluded > 0 ? `，${currentCompleteness.excluded}项需求已标记无需对应任务` : ``}。`,
+      cls: `pm-task-completeness-summary`,
+    });
+    if (currentCompleteness.missingTesting > 0) {
+      overview.createDiv({
+        text: `${currentCompleteness.missingTesting}项需求尚未建立测试任务，当前测试负载可能被低估。`,
+        cls: `pm-task-completeness-warning`,
+      });
+    }
+  };
+
   const renderTable = () => {
+    const scrollTop = tableWrap.scrollTop;
     for (const [filterId, button] of filterButtons) {
       button.toggleClass(`is-active`, filterId === activeFilter);
     }
     tableWrap.empty();
     const sourceRecords = activeFilter === `excluded`
-      ? completeness.excludedRecords
-      : completeness.missingRecords;
+      ? currentCompleteness.excludedRecords
+      : currentCompleteness.missingRecords;
     const records = sourceRecords.filter((record) => {
       if (activeFilter === `development`) return record.missingDevelopment;
       if (activeFilter === `testing`) return record.missingTesting;
@@ -2577,6 +2594,7 @@ function pmOpenTaskCompletenessModal(view, completeness, initialFilter = `all`, 
       header.createEl(`th`, { text: label });
     }
     const body = table.createEl(`tbody`);
+    const stages = view.plugin.store.configFor(view.project).stages;
     for (const record of records) {
       const row = body.createEl(`tr`);
       const requirementCell = row.createEl(`td`);
@@ -2586,23 +2604,40 @@ function pmOpenTaskCompletenessModal(view, completeness, initialFilter = `all`, 
         attr: { type: `button` },
       });
       requirementButton.addEventListener(`click`, () => {
-        modal.close();
         Q(view.plugin, view.project, {
           task: record.requirement,
-          onSave: async () => view.plugin.refreshProjectViews(),
+          onSave: async () => {
+            view.plugin.refreshProjectViews();
+            refreshCompleteness();
+          },
         });
       });
       row.createEl(`td`, { text: record.batchName });
-      row.createEl(`td`, { text: record.stage });
-      pmRenderTaskCompletenessCell(row.createEl(`td`), view, modal, record, `development`);
-      pmRenderTaskCompletenessCell(row.createEl(`td`), view, modal, record, `testing`);
+      const stage = cd(stages, record.stage);
+      row.createEl(`td`, { text: stage?.label ?? record.stage });
+      pmRenderTaskCompletenessCell(row.createEl(`td`), view, modal, record, `development`, refreshCompleteness);
+      pmRenderTaskCompletenessCell(row.createEl(`td`), view, modal, record, `testing`, refreshCompleteness);
       row.createEl(`td`, { text: record.risk, cls: `is-${record.riskLevel}` });
     }
+    tableWrap.scrollTop = scrollTop;
   };
 
-  for (const [filterId, label] of filterOptions) {
+  // 标记或恢复后基于项目最新数据重算统计，让用户留在当前弹窗继续处理其他需求。
+  const refreshCompleteness = () => {
+    const allTasks = pmDeliveryAllProjectTasks(view.project);
+    const deliveryPlan = pmDeliveryPlanForProject(view.plugin, view.project);
+    const deliveryContext = pmDeliveryBuildContext(allTasks, deliveryPlan, scopeId);
+    currentCompleteness = pmBuildTaskCompleteness(allTasks, deliveryContext, scopeId);
+    for (const [filterId, label, countField] of filterOptions) {
+      filterButtons.get(filterId)?.setText(`${label} ${currentCompleteness[countField]}`);
+    }
+    renderOverview();
+    renderTable();
+  };
+
+  for (const [filterId, label, countField] of filterOptions) {
     const button = controls.createEl(`button`, {
-      text: label,
+      text: `${label} ${currentCompleteness[countField]}`,
       cls: `pm-task-completeness-filter`,
       attr: { type: `button` },
     });
@@ -2612,6 +2647,7 @@ function pmOpenTaskCompletenessModal(view, completeness, initialFilter = `all`, 
       renderTable();
     });
   }
+  renderOverview();
   renderTable();
   modal.onClose = () => {
     modal.containerEl.removeClass(`pm-task-completeness-modal-container`);
@@ -2651,11 +2687,23 @@ function pmRenderIterationHealthOverview(container, view, health) {
     if (metricId === `completeness`) {
       metric.addClass(`is-actionable`);
       metric.setAttribute(`role`, `button`);
-      metric.addEventListener(`click`, () => pmOpenTaskCompletenessModal(view, completeness));
+      metric.addEventListener(`click`, () => pmOpenTaskCompletenessModal(
+        view,
+        completeness,
+        `all`,
+        ``,
+        health.delivery?.scopeId ?? PM_DELIVERY_SCOPE_ALL,
+      ));
       metric.addEventListener(`keydown`, (event) => {
         if (event.key !== `Enter` && event.key !== ` `) return;
         event.preventDefault();
-        pmOpenTaskCompletenessModal(view, completeness);
+        pmOpenTaskCompletenessModal(
+          view,
+          completeness,
+          `all`,
+          ``,
+          health.delivery?.scopeId ?? PM_DELIVERY_SCOPE_ALL,
+        );
       });
     }
     if (!timing) {
@@ -2963,6 +3011,12 @@ function pmDeliveryIndependentTaskCount(context, batchId) {
   )).length;
 }
 
+// 交付批次范围也是有效筛选。否则表格会继续应用原来的折叠状态，隐藏命中的独立任务。
+const pmDeliveryOriginalFilterActive = Ed;
+Ed = function pmDeliveryFilterActive(filter) {
+  return pmDeliveryOriginalFilterActive(filter) || filter.pmDeliveryScopeActive === true;
+};
+
 // 在现有筛选模型外叠加批次范围，分类、状态和人员筛选仍可以继续组合使用。
 const pmDeliveryOriginalTaskMatchesFilter = Od;
 Od = function pmDeliveryTaskMatchesFilter(task, filter, statuses = []) {
@@ -2983,7 +3037,12 @@ function pmDeliveryTableContext(context) {
   return context.pmDeliveryContext;
 }
 
-// 在现有任务表中增加交付批次列，需求下属任务展示继承后的同一批次。
+// 表格渲染完成后会移除独立展开列，因此需要先按基础表格索引完成截止日期替换。
+const PM_TABLE_EXPAND_COLUMN_INDEX = 1;
+const PM_TABLE_DUE_COLUMN_INDEX = 10;
+const PM_TABLE_IDENTITY_COLUMN_WIDTH = 148;
+
+// 在现有任务表中使用交付批次替换截止日期列，需求下属任务展示继承后的同一批次。
 const pmDeliveryOriginalRenderTableRow = Cp;
 Cp = function pmDeliveryRenderTableRow(container, task, depth, context, groupTone = `a`) {
   pmDeliveryOriginalRenderTableRow(container, task, depth, context, groupTone);
@@ -3003,7 +3062,10 @@ Cp = function pmDeliveryRenderTableRow(container, task, depth, context, groupTon
   content.textContent = textValue;
   cell.appendChild(content);
   cell.setAttribute(`title`, textValue);
-  row.insertBefore(cell, row.lastElementChild);
+  const dueCell = row.children[PM_TABLE_DUE_COLUMN_INDEX];
+  if (!(dueCell instanceof HTMLTableCellElement)) return;
+  row.insertBefore(cell, dueCell);
+  dueCell.remove();
 };
 
 const pmDeliveryOriginalRenderTable = Ap;
@@ -3012,7 +3074,8 @@ Ap = function pmDeliveryRenderTable(context) {
   const headerRow = context.state.wrapper?.querySelector(`thead tr`);
   if (!(headerRow instanceof HTMLTableRowElement)) return;
 
-  const actionHeader = headerRow.lastElementChild;
+  const dueHeader = headerRow.children[PM_TABLE_DUE_COLUMN_INDEX];
+  if (!(dueHeader instanceof HTMLTableCellElement)) return;
   const header = headerRow.ownerDocument.createElement(`th`);
   header.className = `pm-table-cell-delivery-batch`;
   header.style.width = `120px`;
@@ -3020,7 +3083,18 @@ Ap = function pmDeliveryRenderTable(context) {
   content.className = `pm-table-cell-delivery-batch-content`;
   content.textContent = `交付批次`;
   header.appendChild(content);
-  headerRow.insertBefore(header, actionHeader);
+  headerRow.insertBefore(header, dueHeader);
+  dueHeader.remove();
+
+  const expandHeader = headerRow.children[PM_TABLE_EXPAND_COLUMN_INDEX];
+  if (!(expandHeader instanceof HTMLTableCellElement)) return;
+  expandHeader.remove();
+
+  const identityHeader = headerRow.children[PM_TABLE_EXPAND_COLUMN_INDEX];
+  if (identityHeader instanceof HTMLTableCellElement) {
+    identityHeader.style.width = `${PM_TABLE_IDENTITY_COLUMN_WIDTH}px`;
+    identityHeader.style.minWidth = `${PM_TABLE_IDENTITY_COLUMN_WIDTH}px`;
+  }
 };
 
 function pmDeliveryApplyScopeFilter(view, plan) {
@@ -3241,6 +3315,15 @@ function pmOpenDeliveryDrawer(view, statuses, manualDates) {
     associationCopy.createEl(`h4`, { text: `关联需求` });
     associationCopy.createSpan({ text: `任务将自动继承所属需求的交付批次` });
     const unassignedItemCount = context.unassignedRequirementIds.size + context.unlinkedTaskIds.size;
+    const selectAllButton = associationHeading.createEl(`button`, {
+      text: `全选`,
+      cls: `pm-delivery-select-all`,
+      attr: {
+        type: `button`,
+        title: `全选当前筛选结果中的需求`,
+        'aria-pressed': `false`,
+      },
+    });
     const unassignedFilterButton = associationHeading.createEl(`button`, {
       text: `仅看未安排（${unassignedItemCount}）`,
       cls: `pm-delivery-unassigned-filter`,
@@ -3260,6 +3343,7 @@ function pmOpenDeliveryDrawer(view, statuses, manualDates) {
       const currentBatchId = String(draftPlan.assignments[requirementId] ?? ``);
       const currentBatch = context.batchById.get(currentBatchId);
       const row = requirementList.createEl(`label`, { cls: `pm-delivery-requirement-row` });
+      row.setAttribute(`data-requirement-id`, requirementId);
       row.setAttribute(`data-search-text`, `${requirement.title} ${requirementId}`.toLowerCase());
       row.setAttribute(`data-unassigned`, String(!currentBatch));
       const checkbox = row.createEl(`input`, { type: `checkbox` });
@@ -3267,6 +3351,7 @@ function pmOpenDeliveryDrawer(view, statuses, manualDates) {
       checkbox.addEventListener(`change`, () => {
         if (checkbox.checked) selectedRequirementIds.add(requirementId);
         else selectedRequirementIds.delete(requirementId);
+        refreshRequirementSelectAllState();
       });
       const copy = row.createDiv();
       copy.createEl(`strong`, { text: requirement.title });
@@ -3276,6 +3361,35 @@ function pmOpenDeliveryDrawer(view, statuses, manualDates) {
           : currentBatch?.name ?? `当前未安排`,
       });
     }
+
+    // 全选只作用于当前筛选后可见的需求，避免误改搜索结果之外的批次归属。
+    const visibleRequirementRows = () => Array.from(
+      requirementList.querySelectorAll(`.pm-delivery-requirement-row:not(.is-hidden)`),
+    );
+    const refreshRequirementSelectAllState = () => {
+      const visibleRows = visibleRequirementRows();
+      const allVisibleSelected = visibleRows.length > 0 && visibleRows.every((row) => (
+        row.querySelector(`input[type="checkbox"]`)?.checked
+      ));
+      selectAllButton.textContent = allVisibleSelected ? `取消全选` : `全选`;
+      selectAllButton.disabled = visibleRows.length === 0;
+      selectAllButton.toggleClass(`is-active`, allVisibleSelected);
+      selectAllButton.setAttribute(`aria-pressed`, String(allVisibleSelected));
+    };
+    selectAllButton.addEventListener(`click`, () => {
+      const visibleRows = visibleRequirementRows();
+      const shouldSelect = !visibleRows.every((row) => row.querySelector(`input[type="checkbox"]`)?.checked);
+      for (const row of visibleRows) {
+        const requirementId = String(row.getAttribute(`data-requirement-id`) ?? ``);
+        const checkbox = row.querySelector(`input[type="checkbox"]`);
+        if (!requirementId || !checkbox) continue;
+
+        checkbox.checked = shouldSelect;
+        if (shouldSelect) selectedRequirementIds.add(requirementId);
+        else selectedRequirementIds.delete(requirementId);
+      }
+      refreshRequirementSelectAllState();
+    });
 
     const taskAssociation = editor.createDiv(`pm-delivery-association`);
     const taskAssociationHeading = taskAssociation.createDiv(`pm-delivery-association-heading`);
@@ -3327,6 +3441,7 @@ function pmOpenDeliveryDrawer(view, statuses, manualDates) {
           row.toggleClass(`is-hidden`, !matchesKeyword || !matchesAssignment);
         }
       }
+      refreshRequirementSelectAllState();
     };
     searchInput.addEventListener(`input`, refreshAssociationFilters);
     taskSearchInput.addEventListener(`input`, refreshAssociationFilters);
@@ -3336,6 +3451,7 @@ function pmOpenDeliveryDrawer(view, statuses, manualDates) {
       unassignedFilterButton.setAttribute(`aria-pressed`, String(showOnlyUnassigned));
       refreshAssociationFilters();
     });
+    refreshRequirementSelectAllState();
 
     const batchHistory = draftPlan.history
       .filter((item) => item.batchId === batch.id && item.type === `schedule-change`)
@@ -3539,14 +3655,14 @@ function pmRenderDeliveryBatches(container, view, plan, statuses, manualDates) {
     }
     completenessRow.addEventListener(`click`, (event) => {
       event.stopPropagation();
-      pmOpenTaskCompletenessModal(view, completeness, `all`, batch.name);
+      pmOpenTaskCompletenessModal(view, completeness, `all`, batch.name, batch.id);
     });
     completenessRow.addEventListener(`keydown`, (event) => {
       if (event.key !== `Enter` && event.key !== ` `) return;
 
       event.preventDefault();
       event.stopPropagation();
-      pmOpenTaskCompletenessModal(view, completeness, `all`, batch.name);
+      pmOpenTaskCompletenessModal(view, completeness, `all`, batch.name, batch.id);
     });
     const progress = card.createDiv(`pm-delivery-overview-progress`);
     progress.createDiv(`pm-delivery-overview-progress-fill`).style.width = `${pmhClamp(summary.health.actual / 100) * 100}%`;
@@ -4522,6 +4638,181 @@ function pmOpenIterationSummaryDrawer(view, initialScopeId = PM_DELIVERY_SCOPE_A
   modal.open();
 }
 
+const PM_ORPHAN_STATE_META = Object.freeze({
+  missing_unconfirmed: { label: `待确认`, tone: `pending` },
+  moved_to_other_execution: { label: `移至其他迭代`, tone: `moved` },
+  removed_from_execution: { label: `已移出迭代`, tone: `removed` },
+  deleted_remote: { label: `禅道已删除`, tone: `deleted` },
+  verify_failed: { label: `验证失败`, tone: `failed` },
+});
+
+/**
+ * 将复用的任务详情弹窗调整为只读模式，遗留事项仅供核对，不允许从当前迭代修改。
+ */
+function pmMountReadonlyTaskDetail(task, attempt = 0) {
+  const modalContainers = [...document.querySelectorAll(`.modal-container`)].reverse();
+  const modalContainer = modalContainers.find((container) => {
+    const taskId = container.querySelector(`.pm-te-crumb-id`)?.textContent;
+    return taskId === task.id && !container.querySelector(`.pm-task-modal--readonly`);
+  });
+  const content = modalContainer?.querySelector(`.pm-task-modal`);
+  const body = content?.querySelector(`.pm-te-body`);
+  if (!(content instanceof HTMLElement) || !(body instanceof HTMLElement)) {
+    if (attempt < 20) window.setTimeout(() => pmMountReadonlyTaskDetail(task, attempt + 1), 50);
+    return;
+  }
+
+  content.addClass(`pm-task-modal--readonly`);
+
+  // 只保留右上角关闭按钮，隐藏可能修改或删除事项的更多操作入口。
+  const headerButtons = [...content.querySelectorAll(`.pm-te-header-btn`)];
+  for (const button of headerButtons.slice(0, -1)) button.remove();
+
+  // 底部继续展示来源文件路径，但只读查看不需要取消和保存操作。
+  for (const button of content.querySelectorAll(`.pm-te-footer button`)) button.remove();
+
+  for (const input of body.querySelectorAll(`input`)) {
+    if ([`checkbox`, `radio`].includes(input.type)) input.disabled = true;
+    else input.readOnly = true;
+    input.tabIndex = -1;
+  }
+  for (const textarea of body.querySelectorAll(`textarea`)) {
+    textarea.readOnly = true;
+    textarea.tabIndex = -1;
+  }
+  for (const select of body.querySelectorAll(`select`)) {
+    select.disabled = true;
+    select.tabIndex = -1;
+  }
+  for (const element of body.querySelectorAll(`button, [role="button"], [contenteditable="true"]`)) {
+    element.setAttribute(`aria-disabled`, `true`);
+    element.setAttribute(`tabindex`, `-1`);
+    if (element.hasAttribute(`contenteditable`)) element.setAttribute(`contenteditable`, `false`);
+  }
+
+  // 拦截属性组件和描述预览的编辑事件，同时不影响弹窗滚动及文字选择。
+  for (const eventName of [`click`, `input`, `change`, `paste`, `drop`, `dragover`]) {
+    body.addEventListener(eventName, (event) => {
+      event.preventDefault();
+      event.stopImmediatePropagation();
+    }, true);
+  }
+  content.addEventListener(`keydown`, (event) => {
+    if (event.key !== `Enter` || !event.shiftKey) return;
+    event.preventDefault();
+    event.stopImmediatePropagation();
+  }, true);
+  body.querySelector(`:focus`)?.blur();
+}
+
+/**
+ * 从遗留文件读取完整事项数据，并使用现有任务详情布局打开只读窗口。
+ */
+async function pmOpenOrphanedItemDetail(view, file) {
+  try {
+    const loaded = await view.plugin.store.loadTaskFile(file);
+    if (!loaded.task) {
+      view.plugin.showNotice(`无法读取遗留事项详情。`);
+      return;
+    }
+
+    Q(view.plugin, view.project, {
+      task: loaded.task,
+      readonly: true,
+      onSave: async () => {},
+    });
+    pmMountReadonlyTaskDetail(loaded.task);
+  } catch (error) {
+    console.error(`[PM] 打开禅道遗留事项详情失败：${file.path}`, error);
+    view.plugin.showNotice(`打开遗留事项详情失败。`);
+  }
+}
+
+/**
+ * 渲染已从活动事项中隔离的禅道遗留清单。
+ */
+function pmRenderOrphanedItems(view) {
+  if (!view.iterationSummaryEl || !view.project) return;
+
+  const records = pmOrphanedItemsForProject(view.plugin, view.project.id);
+  if (records.length === 0) return;
+  if (view.iterationOrphanedItemsExpanded === undefined) {
+    view.iterationOrphanedItemsExpanded = false;
+  }
+
+  const section = view.iterationSummaryEl.createEl(`details`, {
+    cls: `pm-orphaned-items`,
+  });
+  section.open = view.iterationOrphanedItemsExpanded;
+  section.addEventListener(`toggle`, () => {
+    view.iterationOrphanedItemsExpanded = section.open;
+  });
+  const summary = section.createEl(`summary`, { cls: `pm-orphaned-items-summary` });
+  const summaryTitle = summary.createDiv(`pm-orphaned-items-summary-title`);
+  const summaryIcon = summaryTitle.createSpan(`pm-orphaned-items-summary-icon`);
+  e.setIcon(summaryIcon, `archive-restore`);
+  summaryTitle.createSpan({ text: `不在当前迭代事项` });
+  summaryTitle.createSpan({ text: `${records.length}`, cls: `pm-orphaned-items-count` });
+  summary.createSpan({
+    text: `已从活动统计、看板、甘特图和洞察中隔离`,
+    cls: `pm-orphaned-items-summary-tip`,
+  });
+
+  const body = section.createDiv(`pm-orphaned-items-body`);
+  const stateCounts = new Map();
+  for (const record of records) {
+    const state = String(record.state ?? `missing_unconfirmed`);
+    stateCounts.set(state, (stateCounts.get(state) ?? 0) + 1);
+  }
+  const stateStrip = body.createDiv(`pm-orphaned-items-state-strip`);
+  for (const [state, count] of stateCounts) {
+    const meta = PM_ORPHAN_STATE_META[state] ?? { label: state, tone: `pending` };
+    stateStrip.createSpan({
+      text: `${meta.label} ${count}`,
+      cls: `pm-orphaned-items-state is-${meta.tone}`,
+    });
+  }
+
+  const list = body.createDiv(`pm-orphaned-items-list`);
+  for (const record of records) {
+    const state = String(record.state ?? `missing_unconfirmed`);
+    const meta = PM_ORPHAN_STATE_META[state] ?? { label: state, tone: `pending` };
+    const sourceType = String(record.sourceType ?? ``);
+    const sourceLabel = sourceType === `story` ? `需求` : sourceType === `task` ? `任务` : `事项`;
+    const zentaoId = String(record.zentaoId ?? ``) || `未知`;
+    const filePath = String(record.filePath ?? ``);
+    const file = view.plugin.app.vault.getAbstractFileByPath(filePath);
+    const title = file instanceof e.TFile ? file.basename : `${sourceLabel} #${zentaoId}`;
+    const row = list.createEl(`button`, {
+      cls: `pm-orphaned-items-row is-${meta.tone}`,
+      attr: { type: `button`, title: filePath || `本地文件不存在` },
+    });
+    const identity = row.createDiv(`pm-orphaned-items-identity`);
+    identity.createSpan({ text: `${sourceLabel} #${zentaoId}`, cls: `pm-orphaned-items-source` });
+    identity.createSpan({ text: title, cls: `pm-orphaned-items-title` });
+
+    const metadata = row.createDiv(`pm-orphaned-items-meta`);
+    metadata.createSpan({ text: meta.label, cls: `pm-orphaned-items-state is-${meta.tone}` });
+    metadata.createSpan({ text: `连续 ${Number(record.missingSyncCount ?? 0)} 次` });
+    const remoteExecutionIds = Array.isArray(record.remoteExecutionIds)
+      ? record.remoteExecutionIds.map(String).filter(Boolean)
+      : [];
+    if (remoteExecutionIds.length > 0) {
+      metadata.createSpan({ text: `当前迭代 #${remoteExecutionIds.join(`、#`)}` });
+    }
+    const firstMissingAt = String(record.firstMissingAt ?? ``);
+    if (firstMissingAt) metadata.createSpan({ text: `首次 ${firstMissingAt.slice(0, 10)}` });
+
+    row.addEventListener(`click`, () => {
+      if (!(file instanceof e.TFile)) {
+        view.plugin.showNotice(`遗留事项文件不存在。`);
+        return;
+      }
+      void pmOpenOrphanedItemDetail(view, file);
+    });
+  }
+}
+
 /**
  * 渲染迭代详情页顶部全量概览。
  */
@@ -4649,7 +4940,10 @@ function pmRenderIterationSummary(view) {
     pmRenderIterationSummary(view);
   });
 
-  if (view.iterationSummaryCollapsed) return;
+  if (view.iterationSummaryCollapsed) {
+    pmRenderOrphanedItems(view);
+    return;
+  }
 
   const body = section.createDiv(`pm-iteration-summary-body`);
   pmRenderIterationHealthOverview(body, view, summary.health);
@@ -4663,6 +4957,7 @@ function pmRenderIterationSummary(view) {
   pmRenderIterationEffort(body, summary.effort, summary.health);
   pmRenderIterationMembers(body, view, summary.health);
   pmRenderIterationRisks(body, view, summary.risks, bugStats);
+  pmRenderOrphanedItems(view);
 }
 
 /**
@@ -4673,8 +4968,13 @@ function pmUpdateIterationStickyOffset(view) {
 
   window.requestAnimationFrame(() => {
     const stickyHeight = view.iterationStickyEl?.offsetHeight ?? 0;
+    const viewportHeight = view.iterationPageScrollEl?.clientHeight || view.contentEl.clientHeight;
+    const styleWindow = view.bodyEl.ownerDocument.defaultView ?? window;
+    const moduleMarginBottom = Number.parseFloat(styleWindow.getComputedStyle(view.bodyEl).marginBottom) || 0;
+    const moduleHeight = Math.max(0, viewportHeight - stickyHeight - moduleMarginBottom);
     view.contentEl.style.setProperty(`--pm-iteration-sticky-offset`, `${stickyHeight}px`);
     view.contentEl.style.setProperty(`--pm-iteration-table-header-top`, `${stickyHeight}px`);
+    view.contentEl.style.setProperty(`--pm-iteration-module-height`, `${moduleHeight}px`);
   });
 }
 
@@ -4692,6 +4992,7 @@ function pmMountIterationStickyHeader(view) {
   if (typeof ResizeObserver !== `undefined`) {
     view.iterationStickyResizeObserver = new ResizeObserver(() => pmUpdateIterationStickyOffset(view));
     view.iterationStickyResizeObserver.observe(view.iterationStickyEl);
+    view.iterationStickyResizeObserver.observe(view.contentEl);
   }
   pmUpdateIterationStickyOffset(view);
 }
@@ -4722,6 +5023,7 @@ Um.prototype.ensureInitialized = function ensureInitialized() {
   if (this.iterationSummaryEl) return;
 
   this.contentEl.addClass(`pm-project-detail-root`);
+  this.bodyEl.addClass(`pm-iteration-table-module`);
   this.iterationSummaryEl = this.contentEl.createDiv(`pm-iteration-summary-mount`);
   this.headerEl.before(this.iterationSummaryEl);
   this.iterationStickyAnchorEl = this.contentEl.createDiv(`pm-iteration-sticky-anchor`);
@@ -5097,7 +5399,7 @@ function pmCreateProjectTodoButton(plugin, source) {
  * 在搜索框左侧增加独立的多选开关，避免和筛选条件混淆。
  */
 function pmMountTableMultiSelectToggle(view) {
-  const filterRow = view.headerEl.querySelector(`.pm-project-header-filter`);
+  const filterRow = view.contentEl.querySelector(`.pm-project-header-filter`);
   if (!(filterRow instanceof HTMLElement)) return;
   if (filterRow.querySelector(`button.pm-table-multi-select-toggle`)) return;
 
@@ -5124,15 +5426,142 @@ function pmMountTableMultiSelectToggle(view) {
   else filterRow.appendChild(button);
 }
 
+/**
+ * 将视图切换入口放到筛选栏末尾，筛选栏重绘时重新创建，避免移动原节点后丢失交互。
+ */
+function pmMountIterationViewSwitcher(view) {
+  const filterRow = view.contentEl.querySelector(`.pm-project-header-filter`);
+  if (!(filterRow instanceof HTMLElement)) return;
+  if (filterRow.querySelector(`.pm-iteration-view-switcher`)) return;
+
+  const switcher = new Fm(filterRow, {
+    options: [
+      { id: `table`, icon: `table`, label: `表格` },
+      { id: `gantt`, icon: `git-fork`, label: `甘特图` },
+      { id: `kanban`, icon: `layout-dashboard`, label: `看板` },
+    ],
+    active: view.currentView,
+    onChange: (viewId) => {
+      view.currentView = viewId;
+      view.renderProjectToolbar();
+      view.renderCurrentView();
+    },
+  });
+  switcher.el.addClass(`pm-iteration-view-switcher`);
+}
+
+/**
+ * 将搜索和常规筛选放在左侧，类型筛选和视图切换固定放在右侧。
+ */
+function pmMountIterationFilterLayout(view) {
+  const filterRow = view.contentEl.querySelector(`.pm-project-header-filter`);
+  if (!(filterRow instanceof HTMLElement)) return;
+  if (filterRow.querySelector(`.pm-iteration-filter-layout-right`)) return;
+
+  const switcher = filterRow.querySelector(`.pm-iteration-view-switcher`);
+  if (!(switcher instanceof HTMLElement)) return;
+
+  const left = filterRow.ownerDocument.createElement(`div`);
+  left.className = `pm-iteration-filter-layout-left`;
+  const right = filterRow.ownerDocument.createElement(`div`);
+  right.className = `pm-iteration-filter-layout-right`;
+
+  // 先收拢现有搜索和筛选项，再将右侧操作区作为独立列放回筛选栏。
+  for (const element of Array.from(filterRow.children)) {
+    if (element !== switcher) left.appendChild(element);
+  }
+
+  const currentSource = [`requirement`, `task`].includes(view.filter.quickSource)
+    ? view.filter.quickSource
+    : `all`;
+  const typeFilter = projectSingleFilter(
+    filterRow,
+    `list-filter`,
+    `类型`,
+    currentSource,
+    [
+      { id: `requirement`, label: `需求` },
+      { id: `task`, label: `任务` },
+      { id: `all`, label: `全部` },
+    ],
+    (source) => {
+      view.filter.quickSource = source;
+      view.handleQuickFilterMutation(view.filter);
+    },
+  );
+  typeFilter.addClass(`pm-iteration-source-filter`);
+  typeFilter.addEventListener(`toggle`, () => {
+    if (!typeFilter.open) return;
+
+    // 类型筛选打开时关闭其他筛选，避免多个弹层相互覆盖。
+    for (const menu of filterRow.querySelectorAll(`.pm-insight-project-filter-menu[open]`)) {
+      if (menu !== typeFilter) menu.open = false;
+    }
+  });
+
+  right.appendChild(typeFilter);
+  right.appendChild(switcher);
+  filterRow.appendChild(left);
+  filterRow.appendChild(right);
+}
+
+/**
+ * 监听原筛选组件的内部重绘，及时恢复迭代页的左右分区布局。
+ */
+function pmObserveIterationFilterLayout(view) {
+  view.iterationFilterMutationObserver?.disconnect();
+
+  view.iterationFilterMutationObserver = new MutationObserver(() => {
+    const filterRow = view.contentEl.querySelector(`.pm-project-header-filter`);
+    if (!(filterRow instanceof HTMLElement)) return;
+    if (filterRow.querySelector(`.pm-iteration-filter-layout-right`)) return;
+
+    pmMountTableMultiSelectToggle(view);
+    pmMountIterationViewSwitcher(view);
+    pmMountIterationFilterLayout(view);
+    pmSyncTableMultiSelectMode(view);
+    pmUpdateIterationStickyOffset(view);
+  });
+  view.iterationFilterMutationObserver.observe(view.contentEl, { childList: true, subtree: true });
+}
+
 // 在表格事项标题旁增加个人待办入口，里程碑不参与待办联动。
 const pmProjectTodoOriginalRenderTableRow = Cp;
 Cp = function pmProjectTodoRenderTableRow(container, task, depth, context, groupTone = `a`) {
   pmProjectTodoOriginalRenderTableRow(container, task, depth, context, groupTone);
-  if (pmhTaskSourceType(task) === `milestone`) return;
-
   const row = container.lastElementChild;
   if (!(row instanceof HTMLTableRowElement)) return;
+  row.dataset.pmDepth = String(depth);
+
+  const expandCell = row.querySelector(`.pm-table-cell-expand`);
+  const identityCell = row.querySelector(`.pm-table-cell-zentao-id`);
   const titleCell = row.querySelector(`.pm-table-cell-title`);
+  if (expandCell instanceof HTMLTableCellElement && identityCell instanceof HTMLTableCellElement) {
+    const identityContent = row.ownerDocument.createElement(`div`);
+    identityContent.className = `pm-table-hierarchy-identity`;
+    const toggle = expandCell.querySelector(`.pm-collapse-toggle`);
+    if (toggle instanceof HTMLElement) {
+      toggle.setAttribute(`role`, `button`);
+      toggle.setAttribute(`tabindex`, `0`);
+      toggle.addEventListener(`keydown`, (event) => {
+        if (event.key !== `Enter` && event.key !== ` `) return;
+        event.preventDefault();
+        toggle.click();
+      });
+      identityContent.appendChild(toggle);
+    } else {
+      const spacer = row.ownerDocument.createElement(`span`);
+      spacer.className = `pm-table-hierarchy-node`;
+      identityContent.appendChild(spacer);
+    }
+    while (identityCell.firstChild) identityContent.appendChild(identityCell.firstChild);
+    identityCell.appendChild(identityContent);
+    identityCell.addClass(`pm-table-cell-zentao-id--hierarchy`);
+    expandCell.remove();
+  }
+  if (titleCell instanceof HTMLElement) titleCell.style.paddingLeft = `10px`;
+  if (pmhTaskSourceType(task) === `milestone`) return;
+
   const titleText = titleCell?.querySelector(`.pm-task-title-text`);
   if (!(titleCell instanceof HTMLElement) || !(titleText instanceof HTMLElement)) return;
 
@@ -5166,15 +5595,196 @@ function pmMountProjectTodoDetailButton(plugin, project, task, attempt = 0) {
 const pmProjectTodoOriginalOpenTaskModal = Q;
 Q = function pmProjectTodoOpenTaskModal(plugin, project, options) {
   pmProjectTodoOriginalOpenTaskModal(plugin, project, options);
-  if (!options?.task || pmhTaskSourceType(options.task) === `milestone`) return;
+  if (!options?.task || options.readonly || pmhTaskSourceType(options.task) === `milestone`) return;
   pmMountProjectTodoDetailButton(plugin, project, options.task);
+};
+
+// 这些同步字段保留在事项数据和详情中，但不再作为表格动态列展示。
+const PM_TABLE_HIDDEN_CUSTOM_FIELD_IDS = [
+  `zentaoModuleId`,
+  `estimatedHours`,
+  `consumedHours`,
+  `remainingHours`,
+  `actualStartedAt`,
+  `actualFinishedAt`,
+];
+for (const fieldId of PM_TABLE_HIDDEN_CUSTOM_FIELD_IDS) {
+  Fp.add(fieldId);
+  wp.add(fieldId);
+}
+
+const PM_BUG_SUMMARY_FIELD_ID = `bugSummary`;
+
+/**
+ * 将同步结果中的 Bug 数量统一转换为非负整数，避免异常数据破坏表格布局。
+ */
+function pmBugSummaryCount(value) {
+  const count = Number(value);
+  return Number.isFinite(count) && count > 0 ? Math.floor(count) : 0;
+}
+
+/**
+ * 识别同步脚本生成的 Bug 汇总文本，并转换为结构化统计数据。
+ */
+function pmBugSummaryStatsFromText(value) {
+  const summary = String(value ?? ``).trim();
+  if (summary === `无未关闭Bug`) {
+    return { unclosed: 0, severity1: 0, severity2: 0 };
+  }
+
+  const matched = summary.match(/^未关闭\s*(\d+)\s*｜\s*S1\s*(\d+)\s*｜\s*S2\s*(\d+)$/u);
+  if (!matched) return null;
+  return {
+    unclosed: pmBugSummaryCount(matched[1]),
+    severity1: pmBugSummaryCount(matched[2]),
+    severity2: pmBugSummaryCount(matched[3]),
+  };
+}
+
+/**
+ * 定位当前行的 Bug 概况自定义字段单元格。
+ */
+function pmBugSummaryCell(row, context) {
+  const visibleCustomFields = Ip(context.project);
+  const bugFieldIndex = visibleCustomFields.findIndex((field) => field.id === PM_BUG_SUMMARY_FIELD_ID);
+  if (bugFieldIndex < 0) return null;
+
+  // 自定义字段始终位于操作列之前，从右侧反推可避免受前方冻结列调整影响。
+  const cellIndex = row.children.length - visibleCustomFields.length - 1 + bugFieldIndex;
+  const cell = row.children[cellIndex];
+  return cell instanceof HTMLTableCellElement ? cell : null;
+}
+
+/**
+ * 将原来的 Bug 汇总字符串渲染为总数、风险级别和清零状态三层信息。
+ */
+function pmRenderBugSummaryCell(cell, task) {
+  const customFields = task.customFields ?? {};
+  const sourceType = String(customFields.zentaoSourceType ?? ``);
+  const hasBugStats = Object.prototype.hasOwnProperty.call(customFields, `bugUnclosed`)
+    || String(customFields[PM_BUG_SUMMARY_FIELD_ID] ?? ``).trim().length > 0;
+  const unclosed = pmBugSummaryCount(customFields.bugUnclosed);
+  const severity1 = pmBugSummaryCount(customFields.bugUnclosedSeverity1);
+  const severity2 = pmBugSummaryCount(customFields.bugUnclosedSeverity2);
+  const ownerDocument = cell.ownerDocument;
+
+  const createElement = (tagName, className = ``, text = ``) => {
+    const element = ownerDocument.createElement(tagName);
+    if (className) element.className = className;
+    if (text) element.textContent = text;
+    return element;
+  };
+
+  cell.replaceChildren();
+  cell.classList.add(`pm-table-cell-bug-summary`);
+  cell.style.textAlign = `left`;
+
+  if (sourceType !== `story` || !hasBugStats) {
+    const notApplicable = createElement(`div`, `pm-bug-summary is-not-applicable`);
+    notApplicable.appendChild(createElement(`span`, `pm-bug-summary-not-applicable`, `—`));
+    cell.appendChild(notApplicable);
+    cell.setAttribute(`aria-label`, `当前事项不单独展示 Bug 概况`);
+    cell.setAttribute(`title`, `当前事项不单独展示 Bug 概况`);
+    return;
+  }
+
+  if (unclosed === 0) {
+    const cleared = createElement(`div`, `pm-bug-summary is-cleared`);
+    cleared.appendChild(createElement(`span`, `pm-bug-summary-cleared-icon`));
+    const copy = createElement(`span`, `pm-bug-summary-cleared-copy`);
+    copy.appendChild(createElement(`strong`, ``, `Bug 已清零`));
+    copy.appendChild(createElement(`span`, ``, `暂无未关闭项`));
+    cleared.appendChild(copy);
+    cell.appendChild(cleared);
+    cell.setAttribute(`aria-label`, `Bug 已清零，暂无未关闭项`);
+    cell.setAttribute(`title`, `Bug 已清零，暂无未关闭项`);
+    return;
+  }
+
+  const summary = createElement(`div`, `pm-bug-summary is-open`);
+  const main = createElement(`div`, `pm-bug-summary-main`);
+  main.appendChild(createElement(`span`, `pm-bug-summary-risk-dot`));
+  main.appendChild(createElement(`span`, `pm-bug-summary-label`, `未关闭`));
+  main.appendChild(createElement(`strong`, `pm-bug-summary-count`, String(unclosed)));
+  summary.appendChild(main);
+
+  const levels = createElement(`div`, `pm-bug-summary-levels`);
+  for (const [label, count, tone] of [
+    [`S1`, severity1, `s1`],
+    [`S2`, severity2, `s2`],
+  ]) {
+    const chip = createElement(`span`, `pm-bug-summary-chip is-${tone}${count === 0 ? ` is-zero` : ``}`);
+    chip.appendChild(createElement(`span`, `pm-bug-summary-chip-dot`));
+    chip.appendChild(createElement(`strong`, ``, label));
+    chip.appendChild(createElement(`span`, ``, String(count)));
+    levels.appendChild(chip);
+  }
+  summary.appendChild(levels);
+  cell.appendChild(summary);
+
+  const accessibleSummary = `未关闭 Bug ${unclosed}，S1 ${severity1}，S2 ${severity2}`;
+  cell.setAttribute(`aria-label`, accessibleSummary);
+  cell.setAttribute(`title`, accessibleSummary);
+}
+
+// 原始表格把同步自定义字段统一渲染为文本，这里只接管格式完全匹配的 Bug 汇总值。
+const pmBugSummaryOriginalCustomFieldCell = sp;
+sp = class pmBugSummaryCustomFieldCell {
+  el;
+
+  constructor(container, value) {
+    const stats = pmBugSummaryStatsFromText(value);
+    if (!stats) {
+      const original = new pmBugSummaryOriginalCustomFieldCell(container, value);
+      this.el = original.el;
+      return;
+    }
+
+    this.el = container.createEl(`td`, { cls: `pm-table-cell` });
+    pmRenderBugSummaryCell(this.el, {
+      customFields: {
+        zentaoSourceType: `story`,
+        bugSummary: String(value),
+        bugUnclosed: stats.unclosed,
+        bugUnclosedSeverity1: stats.severity1,
+        bugUnclosedSeverity2: stats.severity2,
+      },
+    });
+  }
+};
+
+// 在完整行结构调整结束后再替换 Bug 概况，避免冻结列和交付批次改造造成列定位偏移。
+const pmBugSummaryOriginalRenderTableRow = Cp;
+Cp = function pmBugSummaryRenderTableRow(container, task, depth, context, groupTone = `a`) {
+  pmBugSummaryOriginalRenderTableRow(container, task, depth, context, groupTone);
+  const row = container.lastElementChild;
+  if (!(row instanceof HTMLTableRowElement)) return;
+
+  const cell = pmBugSummaryCell(row, context);
+  if (cell) pmRenderBugSummaryCell(cell, task);
+};
+
+// 给 Bug 概况列增加稳定标识和最小宽度，防止内容重新退化为多行文本。
+const pmBugSummaryOriginalRenderTable = Ap;
+Ap = function pmBugSummaryRenderTable(context) {
+  pmBugSummaryOriginalRenderTable(context);
+  const headerRow = context.state.wrapper?.querySelector(`thead tr`);
+  if (!(headerRow instanceof HTMLTableRowElement)) return;
+
+  const header = pmBugSummaryCell(headerRow, context);
+  if (!(header instanceof HTMLTableCellElement)) return;
+  header.addClass(`pm-table-cell-bug-summary`);
+  header.setAttribute(`title`, `未关闭 Bug 总数与 S1、S2 风险概况`);
 };
 
 // 每次筛选栏重绘后重新挂载到吸附容器。
 Um.prototype.renderProjectHeader = function renderProjectHeader() {
   projectViewRenderProjectHeader.call(this);
   pmMountTableMultiSelectToggle(this);
+  pmMountIterationViewSwitcher(this);
+  pmMountIterationFilterLayout(this);
   pmMountIterationStickyHeader(this);
+  pmObserveIterationFilterLayout(this);
   pmSyncTableMultiSelectMode(this);
 };
 
@@ -5183,7 +5793,11 @@ const projectViewHandleSavedViewUpdate = Um.prototype.handleSavedViewUpdate;
 // 更新已保存视图会直接刷新头部组件，需要再次挂载完整吸附操作区。
 Um.prototype.handleSavedViewUpdate = async function handleSavedViewUpdate(savedViewId) {
   await projectViewHandleSavedViewUpdate.call(this, savedViewId);
+  pmMountTableMultiSelectToggle(this);
+  pmMountIterationViewSwitcher(this);
+  pmMountIterationFilterLayout(this);
   pmMountIterationStickyHeader(this);
+  pmObserveIterationFilterLayout(this);
 };
 
 /**
@@ -5236,11 +5850,14 @@ Um.prototype.handleSavedViewSelect = function handleSavedViewSelect(savedViewId)
 
 const projectViewRenderCurrentView = Um.prototype.renderCurrentView;
 
-// 表格视图启用整页滚动，甘特图和看板继续使用各自的内部布局。
+// 三种视图切换时同步更新根节点状态，具体滚动范围由各自模块负责。
 Um.prototype.renderCurrentView = function renderCurrentView() {
   this.contentEl.toggleClass(`pm-project-detail-root--table`, this.currentView === `table`);
+  this.contentEl.toggleClass(`pm-project-detail-root--gantt`, this.currentView === `gantt`);
+  this.contentEl.toggleClass(`pm-project-detail-root--kanban`, this.currentView === `kanban`);
   projectViewRenderCurrentView.call(this);
   pmSyncTableMultiSelectMode(this);
+  pmUpdateIterationStickyOffset(this);
 };
 
 const projectViewLoadProject = Um.prototype.loadProject;
@@ -5248,6 +5865,8 @@ const projectViewLoadProject = Um.prototype.loadProject;
 // 首次进入或切换迭代后刷新概览。
 Um.prototype.loadProject = async function loadProject() {
   this.iterationTableMultiSelectMode = false;
+  this.iterationSummaryMembersExpanded = true;
+  this.iterationOrphanedItemsExpanded = false;
   await projectViewLoadProject.call(this);
   pmRenderIterationSummary(this);
 };
@@ -5326,6 +5945,8 @@ Um.prototype.onClose = async function onClose() {
   }
   this.iterationStickyResizeObserver?.disconnect();
   this.iterationStickyResizeObserver = null;
+  this.iterationFilterMutationObserver?.disconnect();
+  this.iterationFilterMutationObserver = null;
   await projectViewOnClose.call(this);
 
   if (!this.filePath || !Object.prototype.hasOwnProperty.call(this.plugin.settings.projectFilters, this.filePath)) {
@@ -5357,12 +5978,16 @@ nh.prototype.onload = async function onload() {
   this.pmBugFactsReloadTimer = null;
   this.pmIterationSummaryDataByProject = new Map();
   this.pmIterationSummaryReloadTimer = null;
+  this.pmOrphanedItemsByProject = new Map();
+  this.pmOrphanedItemsReloadTimer = null;
   await pmReloadBugFacts(this);
   await pmReloadIterationSummaryData(this);
+  await pmReloadOrphanedItems(this);
 
   const refreshDataSupport = (file) => {
     if (pmBugFactsFile(file)) pmScheduleBugFactsReload(this);
     if (pmIterationSummaryFile(file)) pmScheduleIterationSummaryReload(this);
+    if (pmOrphanedItemsFile(file)) pmScheduleOrphanedItemsReload(this);
   };
   this.registerEvent(this.app.vault.on('create', refreshDataSupport));
   this.registerEvent(this.app.vault.on('modify', refreshDataSupport));
@@ -5375,12 +6000,18 @@ nh.prototype.onload = async function onload() {
       || String(oldPath ?? '').replace(/\\/g, '/').endsWith(PM_ITERATION_SUMMARY_PATH_SUFFIX)) {
       pmScheduleIterationSummaryReload(this);
     }
+    if (pmOrphanedItemsFile(file)
+      || String(oldPath ?? '').replace(/\\/g, '/').endsWith(PM_ORPHANED_ITEMS_PATH_SUFFIX)) {
+      pmScheduleOrphanedItemsReload(this);
+    }
   }));
   this.register(() => {
     if (this.pmBugFactsReloadTimer !== null) window.clearTimeout(this.pmBugFactsReloadTimer);
     if (this.pmIterationSummaryReloadTimer !== null) window.clearTimeout(this.pmIterationSummaryReloadTimer);
+    if (this.pmOrphanedItemsReloadTimer !== null) window.clearTimeout(this.pmOrphanedItemsReloadTimer);
     this.pmBugFactsReloadTimer = null;
     this.pmIterationSummaryReloadTimer = null;
+    this.pmOrphanedItemsReloadTimer = null;
   });
 };
 'use strict'
@@ -5402,6 +6033,7 @@ const PM_FOLLOWED_PROJECTS_SETTING = 'dashboardFollowedProjects';
 const PM_MEMBER_ROLES_SETTING = 'dashboardMemberRoles';
 const PM_BUG_FACTS_PATH_SUFFIX = `/03.数据支持/zentao-bug-facts.json`;
 const PM_ITERATION_SUMMARY_PATH_SUFFIX = `/03.数据支持/zentao-iteration-summary.json`;
+const PM_ORPHANED_ITEMS_PATH_SUFFIX = `/03.数据支持/zentao-orphaned-items.json`;
 const PM_MEMBER_ROLE_DEFINITIONS = [
   { id: 'project-management', label: '项目管理' },
   { id: 'product-manager', label: '产品经理' },
@@ -5435,6 +6067,10 @@ function pmEmptyBugStats() {
 
 function pmBugFactsForProject(plugin, projectId) {
   return plugin.pmBugFactsByProject?.get(String(projectId))?.records ?? [];
+}
+
+function pmOrphanedItemsForProject(plugin, projectId) {
+  return plugin.pmOrphanedItemsByProject?.get(String(projectId))?.records ?? [];
 }
 
 function pmNormalizeBugPerson(value) {
@@ -5552,6 +6188,43 @@ function pmScheduleIterationSummaryReload(plugin) {
   plugin.pmIterationSummaryReloadTimer = window.setTimeout(() => {
     plugin.pmIterationSummaryReloadTimer = null;
     void pmReloadIterationSummaryData(plugin).then(() => plugin.refreshProjectViews());
+  }, 200);
+}
+
+function pmOrphanedItemsFile(file) {
+  return String(file?.path ?? '').replace(/\\/g, '/').endsWith(PM_ORPHANED_ITEMS_PATH_SUFFIX);
+}
+
+/**
+ * 遗留清单只保存同步审计字段，不加载需求或任务正文。
+ */
+async function pmReloadOrphanedItems(plugin) {
+  const datasets = new Map();
+  const files = plugin.app.vault.getFiles().filter(pmOrphanedItemsFile);
+  for (const file of files) {
+    try {
+      const data = JSON.parse(await plugin.app.vault.cachedRead(file));
+      if (Number(data.schemaVersion) !== 1 || !data.projectId || !Array.isArray(data.records)) continue;
+
+      datasets.set(String(data.projectId), {
+        executionId: String(data.executionId ?? ''),
+        dataHash: String(data.dataHash ?? ''),
+        records: data.records.filter((record) => record && typeof record === 'object'),
+      });
+    } catch (error) {
+      console.error(`[PM] 无法读取禅道遗留事项数据：${file.path}`, error);
+    }
+  }
+  plugin.pmOrphanedItemsByProject = datasets;
+}
+
+function pmScheduleOrphanedItemsReload(plugin) {
+  if (plugin.pmOrphanedItemsReloadTimer !== null && plugin.pmOrphanedItemsReloadTimer !== undefined) {
+    window.clearTimeout(plugin.pmOrphanedItemsReloadTimer);
+  }
+  plugin.pmOrphanedItemsReloadTimer = window.setTimeout(() => {
+    plugin.pmOrphanedItemsReloadTimer = null;
+    void pmReloadOrphanedItems(plugin).then(() => plugin.refreshProjectViews());
   }, 200);
 }
 
