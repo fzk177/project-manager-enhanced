@@ -4772,6 +4772,7 @@ button.pmi-member-task-state {
   background: color-mix(in srgb, var(--background-secondary) 76%, var(--background-primary));
   box-shadow: 0 2px 8px var(--background-modifier-box-shadow);
   min-height: 0;
+  contain: layout paint;
   overflow: hidden;
 }
 
@@ -4793,6 +4794,55 @@ button.pmi-member-task-state {
 .pm-project-detail-root--table .pm-table {
   width: max-content;
   min-width: 100%;
+}
+
+/* 固定列算法只依赖表头列宽，侧栏改变页面宽度时不再扫描全部单元格。 */
+.pm-project-detail-root--table .pm-table.pm-table--fixed-layout {
+  width: max(100%, var(--pm-table-fixed-width, 100%));
+  min-width: max(100%, var(--pm-table-fixed-width, 100%));
+  table-layout: fixed;
+}
+
+.pm-project-page-refresh {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: var(--input-height);
+  padding-inline: 10px;
+  white-space: nowrap;
+}
+
+.pm-project-page-refresh-icon {
+  display: inline-flex;
+  align-items: center;
+  --icon-size: 14px;
+}
+
+.pm-project-page-refresh.is-refreshing .pm-project-page-refresh-icon svg {
+  animation: pm-project-page-refresh-spin 0.65s linear infinite;
+}
+
+@keyframes pm-project-page-refresh-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .pm-project-page-refresh.is-refreshing .pm-project-page-refresh-icon svg {
+    animation: none;
+  }
+}
+
+/* 占位行只维持滚动高度，不参与冻结列、背景和阴影绘制。 */
+body .pm-root.pm-project-detail-root--table .pm-table tr.pm-table-virtual-spacer > td {
+  position: static;
+  z-index: auto;
+  left: auto;
+  border: 0;
+  padding: 0;
+  background: transparent;
+  box-shadow: none;
 }
 
 .pm-project-detail-root--table .pm-table thead th {
@@ -5047,48 +5097,6 @@ button.pm-iteration-summary-card-metric.is-active:hover {
   transition: width 0.2s ease;
 }
 
-.pm-iteration-effort {
-  display: grid;
-  grid-template-columns: repeat(5, minmax(0, 1fr));
-  border: 1px solid var(--background-modifier-border);
-  border-radius: var(--radius-s);
-  background: var(--background-primary);
-  overflow: hidden;
-}
-
-.pm-iteration-effort-item {
-  display: flex;
-  flex-direction: column;
-  gap: 3px;
-  min-width: 0;
-  padding: 8px 10px;
-  border-inline-end: 1px solid var(--background-modifier-border);
-}
-
-.pm-iteration-effort-item:last-child {
-  border-inline-end: 0;
-}
-
-.pm-iteration-effort-label {
-  color: var(--text-muted);
-  font-size: 10px;
-}
-
-.pm-iteration-effort-value {
-  color: var(--text-normal);
-  font-variant-numeric: tabular-nums;
-  font-size: 14px;
-  font-weight: 700;
-}
-
-.pm-iteration-effort-item.is-warning .pm-iteration-effort-value {
-  color: var(--color-orange);
-}
-
-.pm-iteration-effort-item.is-danger .pm-iteration-effort-value {
-  color: var(--color-red);
-}
-
 .pm-iteration-members {
   border: 1px solid var(--background-modifier-border);
   border-radius: var(--radius-s);
@@ -5110,10 +5118,19 @@ button.pm-iteration-summary-card-metric.is-active:hover {
   font-weight: 700;
 }
 
+.pm-iteration-members-description {
+  color: var(--text-muted);
+  font-size: 9px;
+}
+
 .pm-iteration-members-count,
 .pm-iteration-members-empty {
   color: var(--text-muted);
   font-size: 10px;
+}
+
+.pm-iteration-members-count {
+  margin-inline-start: auto;
 }
 
 .pm-iteration-members-attention {
@@ -5287,13 +5304,6 @@ button.pm-iteration-risk-chip.is-active.is-warning {
     grid-template-columns: 1fr;
   }
 
-  .pm-iteration-effort {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
-
-  .pm-iteration-effort-item {
-    border-bottom: 1px solid var(--background-modifier-border);
-  }
 }
 
 @media (max-width: 600px) {
@@ -5827,10 +5837,6 @@ button.pm-health-calculation-trigger:hover {
   color: var(--color-red);
 }
 
-.pm-iteration-effort {
-  grid-template-columns: repeat(7, minmax(90px, 1fr));
-}
-
 .pm-iteration-members-row {
   grid-template-columns: minmax(150px, 1.15fr) 92px minmax(150px, 1.2fr) 74px minmax(150px, 1.15fr) minmax(170px, 1.25fr) 92px;
   min-width: 960px;
@@ -6193,48 +6199,890 @@ button.pm-project-pressure-row.is-active {
   font-size: 10px;
 }
 
-.pm-project-pressure-tasks {
-  border-top: 1px solid var(--background-modifier-border);
+/* 项目交付风险看板 */
+.pm-project-pressure-heading-copy {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
 }
 
-.pm-project-pressure-tasks > summary {
-  padding: 8px 10px;
-  color: var(--text-accent);
-  background: var(--background-secondary);
-  font-size: 10px;
-  font-weight: 650;
-  cursor: pointer;
+.pm-project-pressure-heading-copy > span {
+  color: var(--text-muted);
+  font-size: 9px;
 }
 
-.pm-project-pressure-task-wrapper {
-  max-height: 320px;
-  overflow: auto;
+.pm-project-pressure-heading-total {
+  flex-shrink: 0;
+  font-variant-numeric: tabular-nums;
 }
 
-.pm-project-pressure-task-table {
+.pm-project-pressure-summary {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 8px;
+  padding: 10px 10px 0;
+}
+
+button.pm-project-pressure-summary-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
   width: 100%;
-  min-width: 840px;
-  border-collapse: collapse;
+  min-width: 0;
+  height: auto;
+  margin: 0;
+  border: 1px solid var(--background-modifier-border);
+  border-inline-start: 3px solid var(--interactive-accent);
+  border-radius: var(--radius-s);
+  padding: 7px 9px;
+  color: var(--text-normal);
+  background: var(--background-secondary);
+  box-shadow: none;
+  text-align: start;
+  cursor: pointer;
+  transition:
+    transform 160ms ease,
+    border-color 160ms ease,
+    background-color 160ms ease,
+    box-shadow 160ms ease;
+}
+
+button.pm-project-pressure-summary-item:hover {
+  border-color: var(--interactive-accent);
+  background: var(--background-modifier-hover);
+  transform: translateY(-1px);
+}
+
+button.pm-project-pressure-summary-item:active {
+  transform: scale(0.98);
+}
+
+button.pm-project-pressure-summary-item:focus-visible {
+  outline: 2px solid var(--interactive-accent);
+  outline-offset: 2px;
+}
+
+button.pm-project-pressure-summary-item.is-active {
+  border-color: var(--interactive-accent);
+  background: color-mix(in srgb, var(--interactive-accent) 12%, var(--background-secondary));
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--interactive-accent) 20%, transparent);
+  animation: pm-project-pressure-summary-selected 260ms ease-out;
+}
+
+button.pm-project-pressure-summary-item > span {
+  overflow: hidden;
+  color: var(--text-muted);
+  font-size: 10px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+button.pm-project-pressure-summary-item.is-active > span {
+  color: var(--text-normal);
+  font-weight: 650;
+}
+
+button.pm-project-pressure-summary-item > strong {
+  font-size: 15px;
+  font-variant-numeric: tabular-nums;
+}
+
+button.pm-project-pressure-summary-item.is-danger {
+  border-inline-start-color: var(--color-red);
+}
+
+button.pm-project-pressure-summary-item.is-danger > strong {
+  color: var(--color-red);
+}
+
+button.pm-project-pressure-summary-item.is-danger.is-active {
+  border-color: var(--color-red);
+  background: color-mix(in srgb, var(--color-red) 10%, var(--background-secondary));
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--color-red) 18%, transparent);
+}
+
+button.pm-project-pressure-summary-item.is-warning {
+  border-inline-start-color: var(--color-orange);
+}
+
+button.pm-project-pressure-summary-item.is-warning > strong {
+  color: var(--color-orange);
+}
+
+button.pm-project-pressure-summary-item.is-warning.is-active {
+  border-color: var(--color-orange);
+  background: color-mix(in srgb, var(--color-orange) 10%, var(--background-secondary));
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--color-orange) 18%, transparent);
+}
+
+button.pm-project-pressure-summary-item.is-unknown {
+  border-inline-start-color: var(--text-faint);
+}
+
+@keyframes pm-project-pressure-summary-selected {
+  0% {
+    transform: scale(0.96);
+  }
+
+  65% {
+    transform: scale(1.025);
+  }
+
+  100% {
+    transform: translateY(-1px);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  button.pm-project-pressure-summary-item {
+    transition: none;
+  }
+
+  button.pm-project-pressure-summary-item.is-active {
+    animation: none;
+  }
+}
+
+.pm-project-pressure-tabs {
+  display: flex;
+  gap: 4px;
+  padding: 10px 10px 0;
+}
+
+button.pm-project-pressure-tab {
+  height: auto;
+  margin: 0;
+  border: 0;
+  border-bottom: 2px solid transparent;
+  border-radius: var(--radius-s) var(--radius-s) 0 0;
+  padding: 6px 10px;
+  color: var(--text-muted);
+  background: transparent;
+  box-shadow: none;
   font-size: 10px;
 }
 
-.pm-project-pressure-task-table th,
-.pm-project-pressure-task-table td {
-  padding: 7px 8px;
-  border-bottom: 1px solid var(--background-modifier-border);
+button.pm-project-pressure-tab:hover {
+  color: var(--text-normal);
+  background: var(--background-modifier-hover);
+}
+
+button.pm-project-pressure-tab.is-active {
+  border-bottom-color: var(--interactive-accent);
+  color: var(--text-accent);
+  background: color-mix(in srgb, var(--interactive-accent) 7%, transparent);
+  font-weight: 700;
+}
+
+.pm-project-pressure-panels {
+  padding: 8px 10px 10px;
+}
+
+.pm-project-pressure-panel.is-hidden {
+  display: none;
+}
+
+.pm-project-pressure-panel .pm-project-pressure-list {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+@media (min-width: 1500px) {
+  .pm-project-pressure-panel .pm-project-pressure-member-list {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+}
+
+.pm-project-pressure-card,
+button.pm-project-pressure-card {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  width: 100%;
+  min-width: 0;
+  height: auto;
+  margin: 0;
+  border: 1px solid var(--background-modifier-border);
+  border-inline-start: 3px solid var(--color-green);
+  border-radius: var(--radius-s);
+  padding: 9px 10px;
+  color: var(--text-normal);
+  background: var(--background-primary);
+  box-shadow: none;
+  font-size: 10px;
   text-align: start;
 }
 
-.pm-project-pressure-task-table th {
-  position: sticky;
-  top: 0;
-  z-index: 1;
+button.pm-project-pressure-card:hover {
+  border-color: var(--interactive-accent);
+  background: color-mix(in srgb, var(--interactive-accent) 4%, var(--background-primary));
+}
+
+.pm-project-pressure-card.is-active {
+  border-color: var(--interactive-accent);
+  background: color-mix(in srgb, var(--interactive-accent) 8%, var(--background-primary));
+}
+
+.pm-project-pressure-card.is-danger {
+  border-inline-start-color: var(--color-red);
+}
+
+.pm-project-pressure-card.is-warning {
+  border-inline-start-color: var(--color-orange);
+}
+
+.pm-project-pressure-card.is-unknown {
+  border-inline-start-color: var(--text-faint);
+}
+
+.pm-project-pressure-card-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 8px;
+  width: 100%;
+}
+
+.pm-project-pressure-card-identity {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.pm-project-pressure-card-identity > strong,
+.pm-project-pressure-card-identity > span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.pm-project-pressure-card-identity > strong {
+  font-size: 11px;
+}
+
+.pm-project-pressure-card-identity > span {
   color: var(--text-muted);
+  font-size: 9px;
+}
+
+.pm-project-pressure-badge {
+  flex-shrink: 0;
+  border-radius: 99px;
+  padding: 2px 7px;
+  color: var(--color-green);
+  background: color-mix(in srgb, var(--color-green) 12%, transparent);
+  font-size: 9px;
+  font-weight: 700;
+}
+
+.pm-project-pressure-card.is-danger .pm-project-pressure-badge {
+  color: var(--color-red);
+  background: color-mix(in srgb, var(--color-red) 12%, transparent);
+}
+
+.pm-project-pressure-card.is-warning .pm-project-pressure-badge {
+  color: var(--color-orange);
+  background: color-mix(in srgb, var(--color-orange) 12%, transparent);
+}
+
+.pm-project-pressure-card.is-unknown .pm-project-pressure-badge {
+  color: var(--text-muted);
+  background: var(--background-modifier-hover);
+}
+
+.pm-project-pressure-card-metrics {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 5px;
+  width: 100%;
+}
+
+.pm-project-pressure-card-metrics > span {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+  border-radius: 4px;
+  padding: 4px 6px;
   background: var(--background-secondary);
 }
 
-.pm-project-pressure-task-table tr.is-danger td {
+.pm-project-pressure-card-metrics > span > span {
+  overflow: hidden;
+  color: var(--text-muted);
+  font-size: 8px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.pm-project-pressure-card-metrics strong {
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+
+.pm-project-pressure-card-metrics > span.is-danger strong {
   color: var(--color-red);
+}
+
+.pm-project-pressure-node {
+  color: var(--text-normal);
+  font-weight: 650;
+}
+
+.pm-project-pressure-stage-hours,
+.pm-project-pressure-reasons,
+.pm-project-pressure-primary-task {
+  overflow: hidden;
+  color: var(--text-muted);
+  font-size: 9px;
+  line-height: 1.4;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.pm-project-pressure-card.is-danger .pm-project-pressure-reasons {
+  color: var(--color-red);
+}
+
+.pm-project-pressure-card.is-warning .pm-project-pressure-reasons {
+  color: var(--color-orange);
+}
+
+/* 人员节点评估突出节点、负载与主要任务，避免均匀平铺指标造成视觉重点缺失。 */
+.pm-project-pressure-member-card,
+button.pm-project-pressure-member-card {
+  gap: 8px;
+  padding: 10px 11px;
+  cursor: pointer;
+}
+
+.pm-project-pressure-member-card:hover {
+  border-color: var(--interactive-accent);
+  background: color-mix(in srgb, var(--interactive-accent) 4%, var(--background-primary));
+}
+
+.pm-project-pressure-member-card .pm-project-pressure-card-identity > strong {
+  font-size: 14px;
+  font-weight: 700;
+  line-height: 1.25;
+}
+
+.pm-project-pressure-member-focus {
+  display: grid;
+  grid-template-columns: minmax(100px, 0.8fr) minmax(170px, 1.45fr) minmax(90px, 0.75fr);
+  align-items: stretch;
+  min-width: 0;
+  border: 1px solid var(--background-modifier-border);
+  border-radius: var(--radius-s);
+  background: var(--background-secondary);
+  overflow: hidden;
+}
+
+.pm-project-pressure-member-node,
+.pm-project-pressure-member-workload,
+.pm-project-pressure-member-stage {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  min-width: 0;
+  padding: 7px 9px;
+}
+
+.pm-project-pressure-member-node,
+.pm-project-pressure-member-workload {
+  border-inline-end: 1px solid var(--background-modifier-border);
+}
+
+.pm-project-pressure-member-node > span:first-child,
+.pm-project-pressure-member-workload-header span,
+.pm-project-pressure-member-stage > span:first-child {
+  color: var(--text-muted);
+  font-size: 8px;
+}
+
+.pm-project-pressure-member-node > strong {
+  margin-top: 2px;
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+
+.pm-project-pressure-member-node-time {
+  margin-top: 1px;
+  color: var(--text-normal);
+  font-size: 9px;
+  font-weight: 600;
+}
+
+.pm-project-pressure-member-workload {
+  gap: 5px;
+}
+
+.pm-project-pressure-member-workload-header {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.pm-project-pressure-member-workload-header > div {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.pm-project-pressure-member-workload-header strong {
+  margin-top: 1px;
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+
+.pm-project-pressure-member-load {
+  flex-shrink: 0;
+  color: var(--text-normal) !important;
+  font-size: 11px !important;
+  font-variant-numeric: tabular-nums;
+  font-weight: 700;
+}
+
+.pm-project-pressure-member-load-track {
+  height: 5px;
+  border-radius: 99px;
+  background: var(--background-modifier-border);
+  overflow: hidden;
+}
+
+.pm-project-pressure-member-load-fill {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: var(--color-green);
+}
+
+.pm-project-pressure-member-card.is-warning .pm-project-pressure-member-load-fill {
+  background: var(--color-orange);
+}
+
+.pm-project-pressure-member-card.is-danger .pm-project-pressure-member-load-fill {
+  background: var(--color-red);
+}
+
+.pm-project-pressure-member-gap {
+  color: var(--text-muted);
+  font-size: 8px;
+}
+
+.pm-project-pressure-member-gap.is-danger {
+  color: var(--color-red);
+  font-weight: 600;
+}
+
+.pm-project-pressure-member-stage > strong {
+  margin-top: 2px;
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+
+.pm-project-pressure-member-stage > span:last-child {
+  color: var(--text-muted);
+  font-size: 9px;
+  font-variant-numeric: tabular-nums;
+}
+
+.pm-project-pressure-member-assessment {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: center;
+  gap: 7px;
+  border-radius: 4px;
+  padding: 5px 8px;
+  color: var(--color-green);
+  background: color-mix(in srgb, var(--color-green) 8%, transparent);
+}
+
+.pm-project-pressure-member-assessment > span {
+  font-size: 8px;
+}
+
+.pm-project-pressure-member-assessment > strong {
+  overflow: hidden;
+  font-size: 9px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.pm-project-pressure-member-risk-chips {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  min-width: 0;
+  overflow: hidden;
+}
+
+.pm-project-pressure-member-risk-chips > strong {
+  overflow: hidden;
+  font-size: 9px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+button.pm-project-pressure-member-risk-chip {
+  flex: 0 1 auto;
+  min-width: 0;
+  height: auto;
+  margin: 0;
+  border: 1px solid currentColor;
+  border-radius: 99px;
+  padding: 2px 7px;
+  color: inherit;
+  background: var(--background-primary);
+  box-shadow: none;
+  font-size: 8px;
+  font-weight: 700;
+  line-height: 1.3;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+button.pm-project-pressure-member-risk-chip:hover,
+button.pm-project-pressure-member-risk-chip:focus-visible {
+  background: color-mix(in srgb, currentColor 10%, var(--background-primary));
+}
+
+button.pm-project-pressure-member-risk-chip.is-danger {
+  color: var(--color-red);
+}
+
+button.pm-project-pressure-member-risk-chip.is-warning {
+  color: var(--color-orange);
+}
+
+button.pm-project-pressure-member-risk-chip.is-unknown {
+  color: var(--text-muted);
+}
+
+button.pm-project-pressure-member-risk-chip.is-more {
+  flex-shrink: 0;
+  color: var(--text-muted);
+  border-color: var(--background-modifier-border-hover);
+}
+
+.pm-project-pressure-member-card.is-warning .pm-project-pressure-member-assessment {
+  color: var(--color-orange);
+  background: color-mix(in srgb, var(--color-orange) 8%, transparent);
+}
+
+.pm-project-pressure-member-card.is-danger .pm-project-pressure-member-assessment {
+  color: var(--color-red);
+  background: color-mix(in srgb, var(--color-red) 8%, transparent);
+}
+
+.pm-project-pressure-member-card.is-unknown .pm-project-pressure-member-assessment {
+  color: var(--text-muted);
+  background: var(--background-modifier-hover);
+}
+
+.pm-project-pressure-risk-detail {
+  position: fixed;
+  z-index: var(--layer-popover, 1000);
+  display: flex;
+  flex-direction: column;
+  width: min(480px, calc(100vw - 24px));
+  max-height: min(680px, calc(100vh - 24px));
+  border: 1px solid var(--background-modifier-border);
+  border-radius: var(--radius-m);
+  color: var(--text-normal);
+  background: var(--background-primary);
+  box-shadow: var(--shadow-l);
+  overflow: hidden;
+}
+
+.pm-project-pressure-risk-detail-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px 14px 9px;
+  border-bottom: 1px solid var(--background-modifier-border);
+}
+
+.pm-project-pressure-risk-detail-header > div {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.pm-project-pressure-risk-detail-header strong {
+  font-size: 13px;
+}
+
+.pm-project-pressure-risk-detail-header span {
+  color: var(--text-muted);
+  font-size: 10px;
+}
+
+button.pm-project-pressure-risk-detail-close {
+  flex-shrink: 0;
+  width: 24px;
+  height: 24px;
+  margin: -3px -4px 0 0;
+  border: 0;
+  padding: 0;
+  color: var(--text-muted);
+  background: transparent;
+  box-shadow: none;
+  font-size: 18px;
+}
+
+.pm-project-pressure-risk-detail-tabs {
+  display: flex;
+  gap: 5px;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--background-modifier-border);
+  overflow-x: auto;
+}
+
+.pm-project-pressure-risk-detail-tabs > button {
+  flex-shrink: 0;
+  height: auto;
+  margin: 0;
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 99px;
+  padding: 3px 8px;
+  color: var(--text-muted);
+  background: var(--background-secondary);
+  box-shadow: none;
+  font-size: 9px;
+}
+
+.pm-project-pressure-risk-detail-tabs > button.is-active {
+  border-color: var(--interactive-accent);
+  color: var(--text-accent);
+  background: color-mix(in srgb, var(--interactive-accent) 10%, var(--background-primary));
+  font-weight: 700;
+}
+
+.pm-project-pressure-risk-detail-content {
+  padding: 10px 12px 12px;
+  overflow-y: auto;
+}
+
+.pm-project-pressure-risk-calculation {
+  margin-bottom: 10px;
+  border: 1px solid var(--background-modifier-border);
+  border-radius: var(--radius-s);
+  padding: 9px;
+  background: var(--background-secondary);
+}
+
+.pm-project-pressure-risk-calculation-title {
+  margin-bottom: 7px;
+  font-size: 10px;
+  font-weight: 700;
+}
+
+.pm-project-pressure-risk-calculation-summary {
+  display: block;
+  font-size: 14px;
+  font-variant-numeric: tabular-nums;
+  line-height: 1.3;
+}
+
+.pm-project-pressure-risk-calculation-summary.is-danger {
+  color: var(--color-red);
+}
+
+.pm-project-pressure-risk-calculation-formula {
+  margin-top: 7px;
+  color: var(--text-muted);
+  font-size: 9px;
+  line-height: 1.45;
+}
+
+.pm-project-pressure-risk-detail-list-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 6px;
+  font-size: 10px;
+}
+
+.pm-project-pressure-risk-detail-list-heading span {
+  color: var(--text-muted);
+  font-size: 9px;
+}
+
+.pm-project-pressure-risk-task-list {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+
+button.pm-project-pressure-risk-task {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 9px;
+  width: 100%;
+  height: auto;
+  margin: 0;
+  border: 1px solid var(--background-modifier-border);
+  border-radius: var(--radius-s);
+  padding: 7px 8px;
+  color: var(--text-normal);
+  background: var(--background-primary);
+  box-shadow: none;
+  text-align: start;
+}
+
+button.pm-project-pressure-risk-task:hover,
+button.pm-project-pressure-risk-task:focus-visible {
+  border-color: var(--interactive-accent);
+  background: color-mix(in srgb, var(--interactive-accent) 5%, var(--background-primary));
+}
+
+.pm-project-pressure-risk-task-copy {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.pm-project-pressure-risk-task-copy > strong,
+.pm-project-pressure-risk-task-copy > span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.pm-project-pressure-risk-task-copy > strong {
+  font-size: 10px;
+}
+
+.pm-project-pressure-risk-task-copy > span {
+  color: var(--text-muted);
+  font-size: 8px;
+}
+
+.pm-project-pressure-risk-task-badges {
+  display: flex;
+  justify-content: flex-end;
+  gap: 4px;
+  max-width: 190px;
+  flex-wrap: wrap;
+}
+
+.pm-project-pressure-risk-task-badges > span {
+  border-radius: 99px;
+  padding: 2px 6px;
+  color: var(--text-muted);
+  background: var(--background-secondary);
+  font-size: 8px;
+  white-space: nowrap;
+}
+
+.pm-project-pressure-risk-task-badges > span.is-danger {
+  color: var(--color-red);
+  background: color-mix(in srgb, var(--color-red) 10%, transparent);
+}
+
+.pm-project-pressure-risk-task-badges > span.is-warning {
+  color: var(--color-orange);
+  background: color-mix(in srgb, var(--color-orange) 10%, transparent);
+}
+
+.pm-project-pressure-risk-task-badges > span.is-action {
+  color: var(--text-accent);
+  background: color-mix(in srgb, var(--interactive-accent) 9%, transparent);
+}
+
+.pm-project-pressure-risk-detail-basis {
+  margin-top: 7px;
+  color: var(--text-muted);
+  font-size: 9px;
+}
+
+.pm-project-pressure-member-primary {
+  display: grid;
+  grid-template-columns: 46px minmax(0, 1fr);
+  align-items: center;
+  gap: 7px;
+  min-width: 0;
+  padding-top: 1px;
+}
+
+.pm-project-pressure-member-primary-label {
+  color: var(--text-muted);
+  font-size: 8px;
+}
+
+.pm-project-pressure-member-primary-copy {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.pm-project-pressure-member-primary-copy > strong,
+.pm-project-pressure-member-primary-copy > span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.pm-project-pressure-member-primary-copy > strong {
+  font-size: 9px;
+  font-weight: 600;
+}
+
+.pm-project-pressure-member-primary-copy > span {
+  color: var(--text-muted);
+  font-size: 8px;
+}
+
+@media (max-width: 1000px) {
+  .pm-project-pressure-panel .pm-project-pressure-list {
+    grid-template-columns: 1fr;
+  }
+}
+
+@media (max-width: 700px) {
+  .pm-project-pressure-summary,
+  .pm-project-pressure-card-metrics {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .pm-project-pressure-member-focus {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .pm-project-pressure-member-stage {
+    grid-column: 1 / -1;
+    border-top: 1px solid var(--background-modifier-border);
+  }
+
+  .pm-project-pressure-risk-detail {
+    top: auto !important;
+    right: 12px;
+    bottom: 12px;
+    left: 12px !important;
+    width: auto;
+    max-height: calc(100vh - 24px);
+  }
+
+  button.pm-project-pressure-risk-task {
+    grid-template-columns: 1fr;
+  }
+
+  .pm-project-pressure-risk-task-badges {
+    justify-content: flex-start;
+    max-width: none;
+  }
 }
 
 .pmi-project-pressure {
@@ -6934,10 +7782,6 @@ button.pmi-health-tab.is-active {
     grid-template-columns: repeat(3, minmax(90px, 1fr));
   }
 
-  .pm-iteration-effort {
-    grid-template-columns: repeat(4, minmax(90px, 1fr));
-  }
-
   .pmi-member-bug-summary {
     grid-template-columns: repeat(4, minmax(80px, 1fr));
   }
@@ -7320,7 +8164,7 @@ button.pm-project-follow-button--detail {
 
 /* 子任务树线在事项 ID 列中连续展示，节点与父需求按钮保持同一轴线。 */
 .pm-project-detail-root--table .pm-zentao-type-task[data-pm-depth]:not([data-pm-depth="0"]) .pm-table-cell-zentao-id--hierarchy::before,
-.pm-project-detail-root--table .pm-zentao-type-task[data-pm-depth]:not([data-pm-depth="0"]) .pm-table-cell-zentao-id--hierarchy::after {
+.pm-project-detail-root--table .pm-zentao-type-task[data-pm-depth]:not([data-pm-depth="0"]) .pm-table-hierarchy-node::before {
   content: "";
   position: absolute;
   pointer-events: none;
@@ -7334,9 +8178,9 @@ button.pm-project-follow-button--detail {
   width: 1px;
 }
 
-.pm-project-detail-root--table .pm-zentao-type-task[data-pm-depth]:not([data-pm-depth="0"]) .pm-table-cell-zentao-id--hierarchy::after {
+.pm-project-detail-root--table .pm-zentao-type-task[data-pm-depth]:not([data-pm-depth="0"]) .pm-table-hierarchy-node::before {
   top: 50%;
-  left: 23px;
+  left: 50%;
   width: 18px;
   height: 1px;
 }
@@ -7401,6 +8245,84 @@ body .pm-root.pm-project-detail-root--table .pm-table:not(.pmi-pm-table) tbody t
 .pm-project-detail-root--table:not(.pm-table-multi-select-enabled) .pm-table thead th:last-child,
 .pm-project-detail-root--table:not(.pm-table-multi-select-enabled) .pm-table-view > .pm-bulk-bar {
   display: none;
+}
+
+/*
+ * 事项表格使用轻量分组卡片：需求与其下属任务共用外框，独立任务形成单行卡片。
+ * 继续使用原生表格单元格拼接边框，确保冻结列、列宽拖动和横向滚动保持原有行为。
+ */
+.pm-project-detail-root--table .pm-table:not(.pmi-pm-table) {
+  --pm-iteration-card-border: color-mix(in srgb, var(--color-blue) 20%, var(--background-modifier-border));
+  --pm-iteration-card-shadow: color-mix(in srgb, var(--background-modifier-box-shadow) 28%, transparent);
+  border-collapse: separate;
+  border-spacing: 0;
+}
+
+.pm-project-detail-root--table .pm-table:not(.pmi-pm-table) .pm-iteration-card-row {
+  border-bottom: 0;
+}
+
+.pm-project-detail-root--table .pm-table:not(.pmi-pm-table) .pm-iteration-card-row > td {
+  border-bottom: 1px solid color-mix(in srgb, var(--background-modifier-border) 72%, transparent);
+  background: var(--background-primary);
+  background-clip: padding-box;
+  transition: background-color 120ms ease, box-shadow 120ms ease;
+}
+
+.pm-project-detail-root--table .pm-table:not(.pmi-pm-table) .pm-iteration-card-row.pm-zentao-type-story > td {
+  background: color-mix(in srgb, var(--color-blue) 3.5%, var(--background-primary));
+}
+
+/* 首行的透明上边框承担卡片间距，内阴影绘制真正的卡片上边线。 */
+.pm-project-detail-root--table .pm-table:not(.pmi-pm-table) .pm-iteration-card-start > td {
+  border-top: 10px solid transparent;
+  box-shadow: inset 0 1px 0 var(--pm-iteration-card-border);
+}
+
+.pm-project-detail-root--table .pm-table:not(.pmi-pm-table) .pm-iteration-card-end > td {
+  border-bottom-color: var(--pm-iteration-card-border);
+}
+
+/* 多选关闭时事项 ID 是最左可见列，多选开启后由复选框列承接左边框。 */
+.pm-project-detail-root--table:not(.pm-table-multi-select-enabled) .pm-table:not(.pmi-pm-table) .pm-iteration-card-row > .pm-table-cell-zentao-id,
+.pm-project-detail-root--table.pm-table-multi-select-enabled .pm-table:not(.pmi-pm-table) .pm-iteration-card-row > .pm-table-cell-select {
+  border-left: 1px solid var(--pm-iteration-card-border);
+}
+
+.pm-project-detail-root--table:not(.pm-table-multi-select-enabled) .pm-table:not(.pmi-pm-table) .pm-iteration-card-start > .pm-table-cell-zentao-id,
+.pm-project-detail-root--table.pm-table-multi-select-enabled .pm-table:not(.pmi-pm-table) .pm-iteration-card-start > .pm-table-cell-select {
+  border-top-left-radius: 8px;
+}
+
+.pm-project-detail-root--table:not(.pm-table-multi-select-enabled) .pm-table:not(.pmi-pm-table) .pm-iteration-card-end > .pm-table-cell-zentao-id,
+.pm-project-detail-root--table.pm-table-multi-select-enabled .pm-table:not(.pmi-pm-table) .pm-iteration-card-end > .pm-table-cell-select {
+  border-bottom-left-radius: 8px;
+}
+
+/* Bug 概况是当前业务表格最右侧信息列，操作列保持在卡片外且默认隐藏。 */
+.pm-project-detail-root--table .pm-table:not(.pmi-pm-table) .pm-iteration-card-row > .pm-table-cell-bug-summary {
+  border-right: 1px solid var(--pm-iteration-card-border);
+}
+
+.pm-project-detail-root--table .pm-table:not(.pmi-pm-table) .pm-iteration-card-start > .pm-table-cell-bug-summary {
+  border-top-right-radius: 8px;
+}
+
+.pm-project-detail-root--table .pm-table:not(.pmi-pm-table) .pm-iteration-card-end > .pm-table-cell-bug-summary {
+  border-bottom-right-radius: 8px;
+}
+
+/* 悬停只强调当前行，避免整张卡片压过阶段、优先级等业务色彩。 */
+.pm-project-detail-root--table .pm-table:not(.pmi-pm-table) .pm-iteration-card-row:not(.pm-table-row--selected):hover > td {
+  background: color-mix(in srgb, var(--interactive-accent) 5%, var(--background-primary));
+}
+
+.pm-project-detail-root--table .pm-table:not(.pmi-pm-table) .pm-iteration-card-row.pm-table-row--selected > td {
+  background: color-mix(in srgb, var(--interactive-accent) 9%, var(--background-primary));
+}
+
+.theme-dark .pm-project-detail-root--table .pm-table:not(.pmi-pm-table) {
+  --pm-iteration-card-border: color-mix(in srgb, var(--color-blue) 28%, var(--background-modifier-border));
 }
 
 /* 隐藏复选列后同步归零冻结偏移，避免事项 ID 左侧留白或透出底层数据列。 */
@@ -8761,6 +9683,39 @@ button.pm-iteration-summary-copy:focus-visible {
 
 .pm-iteration-summary-notice-heading button.pm-iteration-summary-copy span {
   color: inherit;
+}
+
+.pm-iteration-summary-notice-tabs {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 9px 16px;
+  border-bottom: 1px solid var(--background-modifier-border);
+  background: var(--background-primary);
+}
+
+.pm-iteration-summary-notice-tabs button {
+  height: 28px;
+  margin: 0;
+  border: 0;
+  border-radius: var(--radius-s);
+  padding: 4px 10px;
+  color: var(--text-muted);
+  background: transparent;
+  box-shadow: none;
+  font-size: 10px;
+  font-weight: 600;
+}
+
+.pm-iteration-summary-notice-tabs button:hover,
+.pm-iteration-summary-notice-tabs button:focus-visible {
+  color: var(--text-normal);
+  background: var(--background-modifier-hover);
+}
+
+.pm-iteration-summary-notice-tabs button.is-active {
+  color: var(--text-accent);
+  background: color-mix(in srgb, var(--interactive-accent) 10%, var(--background-primary));
 }
 
 .pm-iteration-summary-copy-icon {

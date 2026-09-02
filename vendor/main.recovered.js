@@ -807,9 +807,62 @@ function pmhPressureLoadLabel(load) {
 }
 
 /**
- * 将迭代压力拆到人员、需求和任务，便于从风险结果继续追溯具体来源。
+ * 确定任务参与风险计算的交付节点。
+ * 开发任务关注提测时间，测试任务关注上线时间；没有交付批次时再回退任务截止时间和迭代节点。
  */
-function pmhBuildPressure(workItems, unfinishedTasks, projectDates) {
+function pmhPressureTaskTarget(task, projectDates, deliveryContext) {
+  const kind = pmhTaskKind(task);
+  const batch = pmDeliveryTaskBatch(task, deliveryContext);
+  const batchTarget = kind === `testing`
+    ? pmhValidDate(batch?.releaseDate)
+    : pmhValidDate(batch?.testingDate);
+  const taskDue = pmhValidDate(task.due);
+  const fallbackTarget = kind === `testing`
+    ? pmhValidDate(projectDates.completion)
+    : pmhValidDate(projectDates.testing);
+
+  return {
+    targetDate: batchTarget || taskDue || fallbackTarget,
+    targetType: kind === `testing` ? `上线` : `提测`,
+    batchName: String(batch?.name ?? ``),
+    targetSource: batchTarget ? `交付批次` : taskDue ? `任务截止时间` : fallbackTarget ? `迭代节点` : ``,
+  };
+}
+
+/**
+ * 将风险级别转换为排序值，数值越小表示风险越高。
+ */
+function pmhPressureLevelRank(level) {
+  return { danger: 0, warning: 1, unknown: 2, healthy: 3 }[level] ?? 2;
+}
+
+/**
+ * 根据节点是否超期、工时缺口和数据完整性生成风险等级。
+ */
+function pmhPressureRiskLevel({ overdue = false, blocked = false, unassigned = false, gap = 0, load = 0, missingTarget = false }) {
+  if (overdue || blocked || unassigned || gap > 0 || load > PMH_MAXIMUM_LOAD) return `danger`;
+  if (missingTarget) return `unknown`;
+  if (load > PMH_HEALTHY_LOAD) return `warning`;
+  return `healthy`;
+}
+
+/**
+ * 节点履约风险只描述交付节点前的承载能力，避免与综合健康状态混用“正常”等模糊文案。
+ */
+function pmhPressureRiskLabel(level) {
+  return {
+    healthy: `节点可承接`,
+    warning: `节点承载紧张`,
+    danger: `节点履约风险`,
+    unknown: `节点信息不足`,
+  }[level] ?? `节点信息不足`;
+}
+
+/**
+ * 将迭代压力拆到人员、需求和任务，并按每个交付节点累计人员工作量。
+ * 同一人员的任务按目标日期从近到远排队，避免总体负载正常时掩盖近期节点工时不足。
+ */
+function pmhBuildPressure(workItems, unfinishedTasks, projectDates, deliveryContext) {
   const requirements = workItems.filter((task) => pmhTaskKind(task) === `requirement`);
   const requirementById = new Map();
   for (const requirement of requirements) {
@@ -824,107 +877,249 @@ function pmhBuildPressure(workItems, unfinishedTasks, projectDates) {
     const remaining = pmhTaskRemaining(task);
     const parentId = String(task.parentId ?? ``).trim();
     const storyId = String(task.customFields?.storyId ?? ``).trim();
-    const requirement = requirementById.get(parentId) ?? requirementById.get(storyId);
-    const due = pmhValidDate(task.due);
-    const overdue = Boolean(due && due < pmhToday());
+    const linkedRequirementId = deliveryContext?.requirementIdByTaskId.get(String(task.id ?? ``));
+    const requirement = requirementById.get(linkedRequirementId)
+      ?? requirementById.get(parentId)
+      ?? requirementById.get(storyId);
+    const target = pmhPressureTaskTarget(task, projectDates, deliveryContext);
+    const overdue = Boolean(target.targetDate && target.targetDate < pmhToday());
     const blocked = PMH_BLOCKED_STATUSES.has(String(task.status ?? ``).toLowerCase());
     const unestimated = pmhTaskEstimate(task) <= 0;
-    const reasons = [];
-    if (blocked) reasons.push(`阻塞`);
-    if (overdue) reasons.push(`任务逾期`);
-    if (unestimated) reasons.push(`未估时`);
-    if (remaining > PMH_DAILY_CAPACITY_HOURS) reasons.push(`剩余${Math.ceil(remaining / PMH_DAILY_CAPACITY_HOURS)}人日`);
+    const unassigned = owners.length === 0;
+    const missingTarget = !target.targetDate;
     return {
       id: String(task.id ?? ``),
       title: String(task.title ?? `未命名任务`),
+      status: String(task.status ?? ``),
       requirementTitle: String(requirement?.title ?? `未关联需求`),
       requirementId: String(requirement?.id ?? `unlinked`),
       kind: pmhTaskKind(task),
       owners: effectiveOwners,
       remaining: pmhRound(remaining),
       actual: pmhRound(pmhTaskActualProgress(task) * 100),
-      due,
+      targetDate: target.targetDate,
+      targetType: target.targetType,
+      targetSource: target.targetSource,
+      batchName: target.batchName,
+      availableDays: target.targetDate ? pmhWorkdaysBetween(pmhToday(), target.targetDate) : 0,
       blocked,
       overdue,
       unestimated,
-      reasons,
+      unassigned,
+      missingTarget,
+      reasons: [],
     };
-  }).sort((left, right) => Number(right.blocked) - Number(left.blocked)
-    || Number(right.overdue) - Number(left.overdue)
-    || right.remaining - left.remaining
-    || left.title.localeCompare(right.title, `zh-CN`));
+  });
 
   const memberNames = new Set(taskPressure.flatMap((task) => task.owners));
-  const testingAvailableDays = projectDates.testing ? pmhWorkdaysBetween(pmhToday(), projectDates.testing) : 0;
-  const completionAvailableDays = projectDates.completion ? pmhWorkdaysBetween(pmhToday(), projectDates.completion) : 0;
   const memberPressure = [...memberNames].map((name) => {
     const ownedTasks = taskPressure.filter((task) => task.owners.includes(name));
     const shareFor = (task) => task.remaining / Math.max(1, task.owners.length);
-    const testingRemaining = ownedTasks
+    const developmentRemaining = ownedTasks
       .filter((task) => task.kind === `development`)
       .reduce((total, task) => total + shareFor(task), 0);
+    const testingRemaining = ownedTasks
+      .filter((task) => task.kind === `testing`)
+      .reduce((total, task) => total + shareFor(task), 0);
     const totalRemaining = ownedTasks.reduce((total, task) => total + shareFor(task), 0);
-    const testingLoad = testingRemaining > 0
-      ? testingAvailableDays > 0 ? testingRemaining / (testingAvailableDays * PMH_DAILY_CAPACITY_HOURS) : Number.POSITIVE_INFINITY
-      : 0;
-    const completionLoad = totalRemaining > 0
-      ? completionAvailableDays > 0 ? totalRemaining / (completionAvailableDays * PMH_DAILY_CAPACITY_HOURS) : Number.POSITIVE_INFINITY
-      : 0;
-    const load = Math.max(testingLoad, completionLoad);
+    const datedTasks = ownedTasks
+      .filter((task) => task.targetDate)
+      .sort((left, right) => left.targetDate.localeCompare(right.targetDate)
+        || right.remaining - left.remaining);
+    const targetDates = [...new Set(datedTasks.map((task) => task.targetDate))];
+    const nodeRisks = targetDates.map((targetDate) => {
+      const nodeTasks = datedTasks.filter((task) => task.targetDate <= targetDate);
+      const required = nodeTasks.reduce((total, task) => total + shareFor(task), 0);
+      const availableDays = pmhWorkdaysBetween(pmhToday(), targetDate);
+      const capacity = availableDays * PMH_DAILY_CAPACITY_HOURS;
+      const load = capacity > 0
+        ? required / capacity
+        : required > 0 ? Number.POSITIVE_INFINITY : 0;
+      return {
+        targetDate,
+        targetType: datedTasks.find((task) => task.targetDate === targetDate)?.targetType ?? `交付`,
+        required: pmhRound(required),
+        availableDays,
+        capacity: pmhRound(capacity),
+        gap: pmhRound(Math.max(required - capacity, 0)),
+        load,
+      };
+    });
+    const bottleneck = [...nodeRisks].sort((left, right) => Number(right.gap > 0) - Number(left.gap > 0)
+      || (Number.isFinite(right.load) ? right.load : Number.MAX_SAFE_INTEGER)
+        - (Number.isFinite(left.load) ? left.load : Number.MAX_SAFE_INTEGER)
+      || left.targetDate.localeCompare(right.targetDate))[0] ?? null;
+    const load = bottleneck?.load ?? 0;
+    const gap = bottleneck?.gap ?? 0;
     const blocked = ownedTasks.filter((task) => task.blocked).length;
-    const level = blocked > 0 || load > PMH_MAXIMUM_LOAD
-      ? `danger`
-      : load > PMH_HEALTHY_LOAD ? `warning` : `healthy`;
+    const overdue = ownedTasks.filter((task) => task.overdue).length;
+    const missingTarget = ownedTasks.filter((task) => task.missingTarget).length;
+    const unestimated = ownedTasks.filter((task) => task.unestimated).length;
+    const unassigned = name === `未分配` ? ownedTasks.length : 0;
+    const level = pmhPressureRiskLevel({
+      overdue: overdue > 0,
+      blocked: blocked > 0,
+      unassigned: unassigned > 0,
+      gap,
+      load,
+      missingTarget: missingTarget > 0 || unestimated > 0,
+    });
+    const reasons = [];
+    if (overdue > 0) reasons.push(`${overdue}个任务已超期`);
+    if (gap > 0) reasons.push(`${pmhFormatDate(bottleneck?.targetDate)}前缺口${gap}h`);
+    if (blocked > 0) reasons.push(`${blocked}个阻塞任务`);
+    if (unassigned > 0) reasons.push(`${unassigned}个任务未分配`);
+    if (missingTarget > 0) reasons.push(`${missingTarget}个任务缺少交付时间`);
+    if (unestimated > 0) reasons.push(`${unestimated}个任务未估时`);
+    if (reasons.length === 0 && load > PMH_HEALTHY_LOAD) reasons.push(`节点可用产能接近满载`);
+    if (reasons.length === 0) reasons.push(`节点前产能充足`);
     return {
       name,
       taskCount: ownedTasks.length,
+      developmentRemaining: pmhRound(developmentRemaining),
       testingRemaining: pmhRound(testingRemaining),
       remaining: pmhRound(totalRemaining),
       workdays: Math.ceil(totalRemaining / PMH_DAILY_CAPACITY_HOURS),
       load,
       loadLabel: pmhPressureLoadLabel(load),
+      required: bottleneck?.required ?? 0,
+      capacity: bottleneck?.capacity ?? 0,
+      gap,
+      targetDate: bottleneck?.targetDate ?? ``,
+      targetType: bottleneck?.targetType ?? `交付`,
+      availableDays: bottleneck?.availableDays ?? 0,
       blocked,
+      overdue,
+      missingTarget,
+      unestimated,
+      riskTaskCount: ownedTasks.filter((task) => task.overdue || task.blocked || task.missingTarget).length,
       level,
-      label: pmhHealthLabel(level),
+      label: pmhPressureRiskLabel(level),
       primaryTask: ownedTasks[0]?.title ?? `--`,
+      reasons,
+      nodeRisks,
     };
   }).sort((left, right) => {
-    const levelRank = { danger: 0, warning: 1, healthy: 2 };
     const rightLoad = Number.isFinite(right.load) ? right.load : Number.MAX_SAFE_INTEGER;
     const leftLoad = Number.isFinite(left.load) ? left.load : Number.MAX_SAFE_INTEGER;
-    return levelRank[left.level] - levelRank[right.level]
+    return pmhPressureLevelRank(left.level) - pmhPressureLevelRank(right.level)
+      || right.gap - left.gap
       || rightLoad - leftLoad
       || right.remaining - left.remaining
       || left.name.localeCompare(right.name, `zh-CN`);
   });
 
+  const memberByName = new Map(memberPressure.map((member) => [member.name, member]));
+  for (const task of taskPressure) {
+    const ownerNodeRisks = task.owners.map((owner) => {
+      const member = memberByName.get(owner);
+      const nodeRisk = member?.nodeRisks.find((node) => node.targetDate === task.targetDate) ?? null;
+      return { owner, member, nodeRisk };
+    });
+    const bottleneck = [...ownerNodeRisks].sort((left, right) => (right.nodeRisk?.gap ?? 0) - (left.nodeRisk?.gap ?? 0)
+      || (Number.isFinite(right.nodeRisk?.load) ? right.nodeRisk.load : Number.MAX_SAFE_INTEGER)
+        - (Number.isFinite(left.nodeRisk?.load) ? left.nodeRisk.load : Number.MAX_SAFE_INTEGER))[0] ?? null;
+    const gap = bottleneck?.nodeRisk?.gap ?? 0;
+    const load = bottleneck?.nodeRisk?.load ?? 0;
+    const level = pmhPressureRiskLevel({
+      overdue: task.overdue,
+      blocked: task.blocked,
+      unassigned: task.unassigned,
+      gap,
+      load,
+      missingTarget: task.missingTarget || task.unestimated,
+    });
+    if (task.overdue) task.reasons.push(`${task.targetType}节点已超期`);
+    if (gap > 0) task.reasons.push(`${bottleneck?.owner ?? `负责人`}节点前缺口${gap}h`);
+    if (task.blocked) task.reasons.push(`任务阻塞`);
+    if (task.unassigned) task.reasons.push(`未分配负责人`);
+    if (task.missingTarget) task.reasons.push(`缺少${task.targetType}时间`);
+    if (task.unestimated) task.reasons.push(`未估时`);
+    if (task.reasons.length === 0 && load > PMH_HEALTHY_LOAD) task.reasons.push(`节点产能接近满载`);
+    if (task.reasons.length === 0) task.reasons.push(`节点前产能充足`);
+    task.gap = gap;
+    task.load = load;
+    task.loadLabel = pmhPressureLoadLabel(load);
+    task.bottleneckOwner = bottleneck?.owner ?? task.owners[0] ?? `未分配`;
+    task.level = level;
+    task.label = pmhPressureRiskLabel(level);
+  }
+  taskPressure.sort((left, right) => pmhPressureLevelRank(left.level) - pmhPressureLevelRank(right.level)
+    || Number(right.overdue) - Number(left.overdue)
+    || right.gap - left.gap
+    || (left.targetDate || `9999-12-31`).localeCompare(right.targetDate || `9999-12-31`)
+    || right.remaining - left.remaining
+    || left.title.localeCompare(right.title, `zh-CN`));
+
+  // 任务完成风险计算和排序后，再回填人员的主要风险任务与风险任务数量。
+  for (const member of memberPressure) {
+    const ownedTasks = taskPressure.filter((task) => task.owners.includes(member.name));
+    member.primaryTask = ownedTasks[0]?.title ?? `--`;
+    member.primaryTaskInfo = ownedTasks[0] ?? null;
+    member.riskTaskCount = ownedTasks.filter((task) => [`danger`, `warning`, `unknown`].includes(task.level)).length;
+  }
+
   const requirementMap = new Map();
   for (const task of taskPressure) {
-    let requirement = requirementMap.get(task.requirementId);
+    const pressureItemId = task.requirementId === `unlinked` ? `task:${task.id}` : task.requirementId;
+    let requirement = requirementMap.get(pressureItemId);
     if (!requirement) {
       requirement = {
-        id: task.requirementId,
-        title: task.requirementTitle,
+        id: pressureItemId,
+        title: task.requirementId === `unlinked` ? task.title : task.requirementTitle,
+        typeLabel: task.requirementId === `unlinked` ? `独立任务` : `需求`,
         taskCount: 0,
         remaining: 0,
+        developmentRemaining: 0,
+        testingRemaining: 0,
         blocked: 0,
         overdue: 0,
+        missingTarget: 0,
+        unassigned: 0,
+        unestimated: 0,
+        gap: 0,
+        level: `healthy`,
+        targetDate: task.targetDate,
+        targetType: task.targetType,
+        reasons: new Set(),
         owners: new Set(),
       };
-      requirementMap.set(task.requirementId, requirement);
+      requirementMap.set(pressureItemId, requirement);
     }
     requirement.taskCount += 1;
     requirement.remaining += task.remaining;
+    requirement.developmentRemaining += task.kind === `development` ? task.remaining : 0;
+    requirement.testingRemaining += task.kind === `testing` ? task.remaining : 0;
     requirement.blocked += Number(task.blocked);
     requirement.overdue += Number(task.overdue);
+    requirement.missingTarget += Number(task.missingTarget);
+    requirement.unassigned += Number(task.unassigned);
+    requirement.unestimated += Number(task.unestimated);
+    requirement.gap = Math.max(requirement.gap, task.gap);
+    if (pmhPressureLevelRank(task.level) < pmhPressureLevelRank(requirement.level)) requirement.level = task.level;
+    if (!requirement.targetDate || (task.targetDate && task.targetDate < requirement.targetDate)) {
+      requirement.targetDate = task.targetDate;
+      requirement.targetType = task.targetType;
+    }
+    for (const reason of task.reasons) {
+      if (reason !== `节点前产能充足`) requirement.reasons.add(reason);
+    }
     for (const owner of task.owners) requirement.owners.add(owner);
   }
   const requirementPressure = [...requirementMap.values()].map((requirement) => ({
     ...requirement,
     remaining: pmhRound(requirement.remaining),
+    developmentRemaining: pmhRound(requirement.developmentRemaining),
+    testingRemaining: pmhRound(requirement.testingRemaining),
+    availableDays: requirement.targetDate ? pmhWorkdaysBetween(pmhToday(), requirement.targetDate) : 0,
+    label: pmhPressureRiskLabel(requirement.level),
+    reasons: [...requirement.reasons].slice(0, 3),
     owners: [...requirement.owners],
-  })).sort((left, right) => right.blocked - left.blocked
+  })).sort((left, right) => pmhPressureLevelRank(left.level) - pmhPressureLevelRank(right.level)
+    || right.gap - left.gap
+    || right.blocked - left.blocked
     || right.overdue - left.overdue
+    || (left.targetDate || `9999-12-31`).localeCompare(right.targetDate || `9999-12-31`)
     || right.remaining - left.remaining
     || left.title.localeCompare(right.title, `zh-CN`));
 
@@ -932,6 +1127,12 @@ function pmhBuildPressure(workItems, unfinishedTasks, projectDates) {
     members: memberPressure,
     requirements: requirementPressure,
     tasks: taskPressure,
+    summary: {
+      dangerMembers: memberPressure.filter((member) => member.name !== `未分配` && member.level === `danger`).length,
+      dangerItems: requirementPressure.filter((requirement) => requirement.level === `danger`).length,
+      overdueTasks: taskPressure.filter((task) => task.overdue).length,
+      incompleteTasks: taskPressure.filter((task) => task.missingTarget || task.unassigned || task.unestimated).length,
+    },
   };
 }
 
@@ -1076,7 +1277,7 @@ function pmhBuildProjectHealth(
     const weight = estimate > 0 ? estimate : PMH_DEFAULT_ITEM_WEIGHT;
     return total + weight * pmhTaskActualProgress(task);
   }, 0);
-  const pressure = pmhBuildPressure(workItems, unfinishedTasks, projectDates);
+  const pressure = pmhBuildPressure(workItems, unfinishedTasks, projectDates, deliveryContext);
 
   return {
     project,
@@ -1348,6 +1549,38 @@ let e=require("obsidian");const t=globalThis.Temporal,n=(e,t)=>`Non-positive ${e
 `)}function vd(e){return od(e).toLowerCase().replace(/\s+/g,`-`).slice(0,60)}function yd(e,t){return`${t}/${vd(e)}.md`}function bd(e){return e.description!==void 0||e.archived!==void 0||e.subtasks!==void 0}function xd(e,t,n){let r=yd(e.title,t);if(!n)return r;let i=r.slice(r.lastIndexOf(`/`)+1).replace(/\.md$/,``),a=n.slice(0,n.lastIndexOf(`/`)),o=n.slice(n.lastIndexOf(`/`)+1).replace(/\.md$/,``);return a===t&&(o===`${i}-${e.id.slice(0,8)}`||o.length===40&&o===i.slice(0,40))?n:r}var Sd=class extends Error{path;constructor(e){super(`A note named "${Cd(e)}" already exists.`),this.path=e,this.name=`TaskFileNameConflictError`}get fileName(){return Cd(this.path)}};function Cd(e){return e.slice(e.lastIndexOf(`/`)+1).replace(/\.md$/,``)}function wd(e){return/\/00\.[^/]+\.md$/.test(e)?e.replace(/\/00\.[^/]+\.md$/,`/01.需求与任务`):e.replace(/\.md$/,`_tasks`)}var Td=class t{app;getSettings;saveQueues=new Map;dirtyTasks=new Map;hydratedBodies=new WeakSet;projectCache=new Map;changeHandlers=new Set;reloadTimers=new Map;static RELOAD_DEBOUNCE_MS=300;selfWrites=new Map;static SELF_WRITE_WINDOW_MS=5e3;constructor(e,t=()=>tu){this.app=e,this.getSettings=t}configFor(e){return Mu(e,this.getSettings())}statusesFor(e){return this.configFor(e).statuses}markDirty(e,t,n){let r=this.dirtyTasks.get(e.filePath);r||(r=new Map,this.dirtyTasks.set(e.filePath,r));for(let e of t)r.get(e)!==`full`&&r.set(e,n)}markSubtreeDirty(e,t,n){let r=J(e,t);if(r){this.markDirty(e,[t],n);for(let t of q(r.subtasks))this.markDirty(e,[t.task.id],n)}}markAllDirty(e,t){let n=[];for(let t of q(e.tasks))n.push(t.task.id);this.markDirty(e,n,t)}clearDirty(e){this.dirtyTasks.delete(e.filePath)}markSelfWrite(e){if(this.selfWrites.size>256){let e=Date.now()-t.SELF_WRITE_WINDOW_MS;for(let[t,n]of this.selfWrites)n<e&&this.selfWrites.delete(t)}this.selfWrites.set(e,Date.now())}peekSelfWrite(e){let n=this.selfWrites.get(e);return n!==void 0&&Date.now()-n<t.SELF_WRITE_WINDOW_MS}onProjectChanged(e){return this.changeHandlers.add(e),()=>this.changeHandlers.delete(e)}emitChange(e){for(let t of this.changeHandlers)t(e)}registerVaultSync(e){let t=e=>this.syncPath(e.path);e.registerEvent(this.app.vault.on(`create`,t)),e.registerEvent(this.app.vault.on(`modify`,t)),e.registerEvent(this.app.vault.on(`delete`,t)),e.registerEvent(this.app.vault.on(`rename`,(e,t)=>{this.syncPath(e.path),this.syncPath(t)})),e.register(()=>{for(let e of this.reloadTimers.values())window.clearTimeout(e);this.reloadTimers.clear()})}syncPath(e){if(this.projectCache.size!==0&&!this.peekSelfWrite(e)){for(let n of this.projectCache.keys())if(e===n||e.startsWith(wd(n)+`/`)){let e=this.reloadTimers.get(n);e!==void 0&&window.clearTimeout(e),this.reloadTimers.set(n,window.setTimeout(()=>{this.reloadTimers.delete(n),this.reloadProject(n)},t.RELOAD_DEBOUNCE_MS))}}}async reloadProject(t){let n=await this.projectCache.get(t);n&&await this.queue(t,async()=>{let r=this.app.vault.getAbstractFileByPath(t);if(!(r instanceof e.TFile)){this.projectCache.delete(t),this.emitChange(t);return}let i=await this.readProject(r);i&&(this.adopt(n,i),this.emitChange(t))})}adopt(e,t){let{taskIndex:n,...r}=t;Object.assign(e,r),vu(e),this.hydratedBodies.has(t)?this.hydratedBodies.add(e):this.hydratedBodies.delete(e)}queue(e,t){let n=this.saveQueues.get(e)??Promise.resolve(),r=(async()=>(await n,t()))();return this.saveQueues.set(e,(async()=>{try{await r}catch{}})()),r}async ensureFolder(e){await wu(this.app,e)}projectTaskFolder(e){return wd(e.filePath)}async loadAllProjects(t){await this.ensureFolder(t);let n=this.app.vault.getAbstractFileByPath(t),r=[],i=t=>{for(let n of t.children)n instanceof e.TFile&&n.extension===`md`?r.push(n):n instanceof e.TFolder&&i(n)};return n instanceof e.TFolder&&i(n),(await Promise.all(r.map(e=>this.loadProject(e)))).filter(e=>e!==null).sort((e,t)=>e.title.localeCompare(t.title))}async loadProject(e){let t=this.projectCache.get(e.path);if(t)return t;let n=this.readProject(e);this.projectCache.set(e.path,n);let r=await n;return r||this.projectCache.delete(e.path),r}async readProject(t){try{let e=this.app.metadataCache.getFileCache(t)?.frontmatter,n=e&&e[`pm-project`]===!0&&!Array.isArray(e.tasks)&&Array.isArray(e.taskIds),r=null,i=``,a=!1;if(n)r=e;else{let e=Ru(await this.app.vault.cachedRead(t));r=e.frontmatter,i=e.body,a=!0}if(!r||r[`pm-project`]!==!0)return null;let o=Array.isArray(r.tasks)&&r.tasks.length>0,s=Ku(r,i,t.path,t.basename);if(a&&this.hydratedBodies.add(s),o)s.tasks=Wu(r.tasks??[]),vu(s),this.markAllDirty(s,`full`);else{let e=this.projectTaskFolder(s),t=Array.isArray(r.taskIds)?r.taskIds:[];s.tasks=await this.loadTasksFromFolder(e,t),vu(s),this.clearDirty(s)}return s}catch(n){return console.error(`[PM] Failed to load project ${t.path}:`,n),new e.Notice(`Project Manager: Failed to load "${t.basename}". Check console for details.`),null}}async loadTasksFromFolder(t,n){let r=this.app.vault.getAbstractFileByPath(t);if(!(r instanceof e.TFolder))return[];let i=new Map,a=new Map,o=new Map,s=(0,e.normalizePath)(t+`/Archive`)+`/`,c=[],l=t=>{for(let n of t.children)n instanceof e.TFile&&n.extension===`md`?c.push(n):n instanceof e.TFolder&&l(n)};l(r);let u=await Promise.all(c.map(e=>this.loadTaskFile(e)));for(let e=0;e<c.length;e++){let{task:t,subtaskIds:n,parentId:r}=u[e];t&&(c[e].path.startsWith(s)&&(t.archived=!0),i.set(t.id,t),n.length&&a.set(t.id,n),r&&o.set(t.id,r))}for(let[e,t]of a){let n=i.get(e);if(n){n.subtasks=[];for(let e of t){let t=i.get(e);t&&n.subtasks.push(t)}}}let d=new Set;for(let e of i.values())for(let t of e.subtasks)d.add(t.id);for(let[e,t]of o){if(d.has(e))continue;let n=i.get(t);if(!n)continue;let r=i.get(e);if(!r)continue;n.subtasks.push(r),d.add(e),a.has(t)||a.set(t,[]);let o=a.get(t);o&&!o.includes(e)&&o.push(e),console.warn(`[PM] Self-healed orphan: re-parented task "${r.title}" (${e}) under "${n.title}" (${t})`)}let f=[],p=new Set;for(let e of n){if(p.has(e))continue;let t=i.get(e);t&&(f.push(t),p.add(e))}for(let e of i.values())p.has(e.id)||d.has(e.id)||f.push(e);return f}async loadTaskFile(t){try{let e=this.app.metadataCache.getFileCache(t)?.frontmatter;if(e&&e[`pm-task`]===!0)return Gu(e,``,t.path);let{frontmatter:n,body:r}=Ru(await this.app.vault.cachedRead(t));if(!n||n[`pm-task`]!==!0)return{task:null,subtaskIds:[],parentId:null};let i=Gu(n,r,t.path);return this.hydratedBodies.add(i.task),i}catch(n){return n instanceof Error&&n.message.includes(`ENOENT`)?console.warn(`[PM] Task file no longer exists, skipping: ${t.path}`):(console.error(`[PM] Failed to load task ${t.path}:`,n),new e.Notice(`Project Manager: Failed to load task "${t.basename}". Check console for details.`)),{task:null,subtaskIds:[],parentId:null}}}async loadTaskBody(t){if(this.hydratedBodies.has(t))return;if(!t.filePath){this.hydratedBodies.add(t);return}let n=this.app.vault.getAbstractFileByPath(t.filePath);if(!(n instanceof e.TFile)){this.hydratedBodies.add(t);return}let{body:r}=Ru(await this.app.vault.cachedRead(n));t.description=zu(r),this.hydratedBodies.add(t)}async loadProjectBody(t){if(this.hydratedBodies.has(t))return;let n=this.app.vault.getAbstractFileByPath(t.filePath);if(!(n instanceof e.TFile)){this.hydratedBodies.add(t);return}let{frontmatter:r,body:i}=Ru(await this.app.vault.cachedRead(n)),a=r?.description;t.description=typeof a==`string`?a:i.trim(),this.hydratedBodies.add(t)}async saveProject(e){return this.queue(e.filePath,()=>this.doSaveProject(e))}async updateProject(e,t){Object.assign(e,t),t.description!==void 0&&this.hydratedBodies.add(e),await this.saveProject(e)}async doSaveProject(t){let n=this.dirtyTasks.get(t.filePath)??new Map;this.dirtyTasks.delete(t.filePath);try{t.updatedAt=new Date().toISOString();let r=this.projectTaskFolder(t);await this.ensureFolder(r),await this.saveDirtyTasks(t,r,n);let i=this.app.vault.getAbstractFileByPath(t.filePath);if(i instanceof e.TFile)this.markSelfWrite(t.filePath),await this.app.vault.process(i,e=>{if(!this.hydratedBodies.has(t)){let{frontmatter:n,body:r}=Ru(e),i=n?.description;t.description=typeof i==`string`?i:r.trim()}return hd(t,this.statusesFor(t))}),this.hydratedBodies.add(t);else{let e=hd(t,this.statusesFor(t));this.markSelfWrite(t.filePath),await this.app.vault.create(t.filePath,e),this.hydratedBodies.add(t)}this.projectCache.has(t.filePath)||this.projectCache.set(t.filePath,Promise.resolve(t)),this.emitChange(t.filePath)}catch(r){for(let[e,r]of n)this.markDirty(t,[e],r);throw r instanceof Sd?r:(console.error(`[PM] Failed to save project "${t.title}":`,r),new e.Notice(`Project Manager: Failed to save "${t.title}". Check console for details.`),r)}}async saveDirtyTasks(t,n,r){for(let[e,n]of t.taskIndex)!n.task.filePath&&!r.has(e)&&r.set(e,`full`);if(r.size===0)return;let i=[],a=new Set,o=!1;for(let[s,c]of r){let r=t.taskIndex.get(s);if(!r)continue;let{task:l,parentId:u}=r,d=l.archived?(0,e.normalizePath)(n+`/Archive`):n;l.archived&&(o=!0);let f=(0,e.normalizePath)(xd(l,d,l.filePath));if(a.has(f))throw new Sd(f);a.add(f),i.push({task:l,parentTask:u?J(t,u):null,folder:d,kind:c})}o&&await this.ensureFolder((0,e.normalizePath)(n+`/Archive`));let s=[];for(let e=0;e<i.length;e+=16){let n=await Promise.allSettled(i.slice(e,e+16).map(e=>this.saveTaskFile(e.task,t,e.parentTask,e.folder,e.kind)));for(let e of n)e.status===`rejected`&&s.push(e.reason instanceof Error?e.reason:Error(String(e.reason)))}if(s.length)throw s.length===1&&s[0]instanceof Sd?s[0]:Error(`Failed to save ${s.length} task(s): ${s.map(e=>e.message).join(`; `)}`)}async saveTaskFile(t,n,r,i,a){let o=t.filePath,s=(0,e.normalizePath)(xd(t,i,o)),c=o!==void 0&&o!==s;try{if(a===`fm`&&o&&!c){let i=this.app.vault.getAbstractFileByPath(s);if(i instanceof e.TFile){this.markSelfWrite(s);let e=gd(t,n,r);await this.app.fileManager.processFrontMatter(i,t=>{for(let e of Object.keys(t))Reflect.deleteProperty(t,e);Object.assign(t,e)});return}}let i=this.app.vault.getAbstractFileByPath(s);if(i instanceof e.TFile&&i.path!==o)throw new Sd(s);if(i instanceof e.TFile)this.markSelfWrite(s),await this.app.vault.process(i,e=>(this.hydratedBodies.has(t)||(t.description=zu(Ru(e).body)),_d(t,n,r,this.statusesFor(n))));else{if(!this.hydratedBodies.has(t)&&o){let n=this.app.vault.getAbstractFileByPath(o);n instanceof e.TFile&&(t.description=zu(Ru(await this.app.vault.cachedRead(n)).body))}let i=_d(t,n,r,this.statusesFor(n));this.markSelfWrite(s),await this.app.vault.create(s,i)}if(t.filePath=s,this.hydratedBodies.add(t),c&&o){let t=this.app.vault.getAbstractFileByPath(o);t instanceof e.TFile&&(this.markSelfWrite(o),await this.app.fileManager.trashFile(t)),this.markSelfWrite(this.taskFolder(o)),this.markSelfWrite(this.taskFolder(s)),await Cu(this.app,o,s)}}catch(e){throw e instanceof Sd||console.error(`[PM] Failed to save task "${t.title}" (${t.id}):`,e),e}}findTaskFileConflict(t,n){let r=this.projectTaskFolder(t),i=n.archived?(0,e.normalizePath)(r+`/Archive`):r,a=(0,e.normalizePath)(xd(n,i,n.filePath));return a===n.filePath?null:this.app.vault.getAbstractFileByPath(a)instanceof e.TFile?new Sd(a):null}async createProject(t,n){let r=t.replace(/[\\/:*?"<>|]/g,`-`),i=iu(t,(0,e.normalizePath)(`${n}/${r}.md`));return await this.ensureFolder(this.projectTaskFolder(i)),await this.saveProject(i),i}async insertTask(e,t,n=null){this.hydratedBodies.add(t),lu(e.tasks,t,n),bu(e,t,n),this.markDirty(e,[t.id],`full`),n&&this.markDirty(e,[n],`full`),await this.saveProject(e)}async importNoteAsTask(t,n,r){let{frontmatter:i,body:a}=Ru(await this.app.vault.read(n));if(i?.[`pm-task`]===!0)return`skipped`;let o=ru({title:n.basename,description:a,status:r.status,priority:r.priority}),s=this.projectTaskFolder(t);await this.ensureFolder(s);let c=yd(o.title,s),l=_d(o,t,null,this.statusesFor(t));if(r.handling===`move`){await this.app.fileManager.renameFile(n,c);let t=this.app.vault.getAbstractFileByPath(c);t instanceof e.TFile&&await this.app.vault.process(t,()=>l)}else await this.app.vault.create(c,l);return`imported`}async importTaskForest(t,n,r,i){let a=this.projectTaskFolder(t);await this.ensureFolder(a);let o=0,s=async(n,c)=>{let l=n.archived?(0,e.normalizePath)(a+`/Archive`):a;n.archived&&await this.ensureFolder(l);let u=r.get(n.id);if(u){let{body:e}=Ru(await this.app.vault.read(u));n.description=e}let d=yd(n.title,l),f=this.uniqueChildPath(l,d.slice(d.lastIndexOf(`/`)+1)),p=_d(n,t,c,this.statusesFor(t));if(i===`move`&&u){await this.app.fileManager.renameFile(u,f);let t=this.app.vault.getAbstractFileByPath(f);t instanceof e.TFile&&await this.app.vault.process(t,()=>p)}else await this.app.vault.create(f,p);o++;for(let e of n.subtasks)await s(e,n)};for(let e of n)await s(e,null);return o}async duplicateTask(t,n,r){let i=J(t,n);if(!i)return null;let a=uu(i,r),o=this.projectTaskFolder(t),s=new Set,c=new Set(q(t.tasks).map(e=>e.task.title)),l=t=>{let n=t.archived?(0,e.normalizePath)(o+`/Archive`):o;this.assignCopyName(t,n,c,s)};l(a),this.hydratedBodies.add(a);for(let e of q(a.subtasks))l(e.task),this.hydratedBodies.add(e.task);let u=yu(t,n);return lu(t.tasks,a,u),pu(t.tasks,a.id,n,`after`),bu(t,a,u),this.markSubtreeDirty(t,a.id,`full`),u&&this.markDirty(t,[u],`full`),await this.saveProject(t),a}assignCopyName(t,n,r,i){let a=t.title.replace(/(?: \(copy(?: \d+)?\))+$/,``);for(let o=1;;o++){let s=o===1?` (copy)`:` (copy ${o})`,c=60-s.length,l=(a.length>c?a.slice(0,c).trimEnd():a)+s,u=(0,e.normalizePath)(yd(l,n));if(!r.has(l)&&!i.has(u)&&!(this.app.vault.getAbstractFileByPath(u)instanceof e.TFile)){r.add(l),i.add(u),t.title=l;return}}}async moveTask(e,t,n){let r=J(e,t);if(!r)return;let i=yu(e,t);cu(e.tasks,t),lu(e.tasks,r,n),Su(e,t,n),this.markDirty(e,[t],`full`),i&&this.markDirty(e,[i],`full`),n&&this.markDirty(e,[n],`full`),await this.saveProject(e)}async moveTasks(e,t,n){for(let r of t){let t=J(e,r);if(!t)continue;let i=yu(e,r);cu(e.tasks,r),lu(e.tasks,t,n),Su(e,r,n),this.markDirty(e,[r],`full`),i&&this.markDirty(e,[i],`full`)}n&&this.markDirty(e,[n],`full`),await this.saveProject(e)}stampCompletion(e,t,n){}completionMoved(e,t){return t.completed!==void 0&&t.completed!==e.completed}async scheduleAfterEarlyFinish(e,t){if(t.length!==0&&this.configFor(e).pullForwardOnEarlyFinish)for(let n of t)await this.scheduleAfterChange(e,n)}async updateTask(e,t,n){let r=J(e,t),i=r?.title;r&&this.stampCompletion(e,r,n);let a=r!==null&&this.completionMoved(r,n),o=r&&n.subtasks!==void 0?q(r.subtasks).map(e=>e.task):[];su(e.tasks,t,n);let s=r&&n.title!==void 0&&n.title!==i,c=bd(n)||s?`full`:`fm`;if(this.markDirty(e,[t],c),r&&n.description!==void 0&&this.hydratedBodies.add(r),r&&n.subtasks!==void 0)await this.reconcileSubtasks(e,r,o);else if(r&&s)for(let t of r.subtasks)this.markDirty(e,[t.id],`full`);await this.saveProject(e),a&&await this.scheduleAfterEarlyFinish(e,[t])}async reconcileSubtasks(e,t,n){bu(e,t,yu(e,t.id));let r=new Map(n.map(e=>[e.id,e])),i=new Set;for(let{task:n}of q(t.subtasks)){i.add(n.id);let t=r.get(n.id);t?t.title===n.title?(t.status!==n.status||t.completed!==n.completed||t.progress!==n.progress)&&this.markDirty(e,[n.id],`fm`):this.markDirty(e,[n.id],`full`):(this.hydratedBodies.add(n),this.markDirty(e,[n.id],`full`))}let a=this.projectTaskFolder(e);for(let t of n)i.has(t.id)||(e.taskIndex.delete(t.id),t.filePath&&await this.deleteTaskFiles({...t,subtasks:[]},a))}async updateTasks(e,t,n){let r=[];for(let i of t){let t=J(e,i);if(!t)continue;let a=typeof n==`function`?n(t):n;if(!a)continue;let o={...a};this.stampCompletion(e,t,o),this.completionMoved(t,o)&&r.push(i);let s=t.title;su(e.tasks,i,o);let c=o.title!==void 0&&o.title!==s,l=bd(o)||c?`full`:`fm`;if(this.markDirty(e,[i],l),o.description!==void 0&&this.hydratedBodies.add(t),c)for(let n of t.subtasks)this.markDirty(e,[n.id],`full`)}await this.saveProject(e),await this.scheduleAfterEarlyFinish(e,r)}async reorderTask(e,t,n,r){if(!pu(e.tasks,t,n,r))return;let i=yu(e,n);i&&this.markDirty(e,[i],`full`),await this.saveProject(e)}async deleteTasks(e,t){let n=this.projectTaskFolder(e),r=new Set;for(let i of t){let t=yu(e,i);t&&r.add(t);let a=J(e,i);a&&(await this.deleteTaskFiles(a,n),xu(e,a)),cu(e.tasks,i)}r.size&&this.markDirty(e,r,`full`),await this.saveProject(e)}async archiveTask(e,t){await ku(this.app,e,t,e=>this.markSelfWrite(e)),await this.saveProject(e)}async unarchiveTask(e,t){await Au(this.app,e,t,e=>this.markSelfWrite(e)),await this.saveProject(e)}async deleteTask(e,t){let n=yu(e,t),r=J(e,t);r&&(await this.deleteTaskFiles(r,this.projectTaskFolder(e)),xu(e,r)),cu(e.tasks,t),n&&this.markDirty(e,[n],`full`),await this.saveProject(e)}async deleteTaskFiles(t,n){for(let e of t.subtasks)await this.deleteTaskFiles(e,n);if(t.filePath){let n=this.app.vault.getAbstractFileByPath(t.filePath);n instanceof e.TFile&&(this.markSelfWrite(t.filePath),await this.app.fileManager.trashFile(n));let r=this.app.vault.getAbstractFileByPath(this.taskFolder(t.filePath));r instanceof e.TFolder&&await this.deleteFolderRecursive(r)}}taskFolder(e){return e.replace(/\.md$/,``)}async saveTaskAttachment(t,n,r,i){let a=n.filePath??yd(n.title,this.projectTaskFolder(t)),o=(0,e.normalizePath)(`${this.taskFolder(a)}/attachments`);this.markSelfWrite(this.taskFolder(a)),this.markSelfWrite(o),await this.ensureFolder(o);let s=this.uniqueChildPath(o,r);return this.markSelfWrite(s),this.app.vault.createBinary(s,i)}uniqueChildPath(t,n){let r=n.lastIndexOf(`.`),i=r>0?n.slice(0,r):n,a=r>0?n.slice(r):``,o=(0,e.normalizePath)(`${t}/${i}${a}`);for(let n=1;this.app.vault.getAbstractFileByPath(o);n++)o=(0,e.normalizePath)(`${t}/${i} ${n}${a}`);return o}async deleteProject(t){let n=this.projectTaskFolder(t),r=this.app.vault.getAbstractFileByPath(n);r instanceof e.TFolder&&await this.deleteFolderRecursive(r);let i=this.app.vault.getAbstractFileByPath(t.filePath);i instanceof e.TFile&&(this.markSelfWrite(t.filePath),await this.app.fileManager.trashFile(i)),this.clearDirty(t),this.saveQueues.delete(t.filePath),this.projectCache.delete(t.filePath),this.emitChange(t.filePath)}async deleteFolderRecursive(t){for(let n of t.children.slice())n instanceof e.TFile?(this.markSelfWrite(n.path),await this.app.fileManager.trashFile(n)):n instanceof e.TFolder&&await this.deleteFolderRecursive(n);await this.app.fileManager.trashFile(t)}async scheduleAfterChange(e,t){let n=this.configFor(e);if(!n.autoSchedule)return 0;let{patches:r}=Lu(e.tasks,t,n.statuses,n.pullForwardOnEarlyFinish);if(r.length===0)return 0;for(let t of r)su(e.tasks,t.taskId,{start:t.start,due:t.due}),this.markDirty(e,[t.taskId],`fm`);return await this.saveProject(e),r.length}};function projectSearchMatchesZentaoId(e,t){let n=String(e.customFields.zentaoId??``).trim().toLowerCase();if(!n)return!1;let r=t.trim().toLowerCase().replace(/^(?:需求|任务|里程碑|事项)\s*/u,``).replace(/^#\s*/,``).trim();return n===r}function quickSourceType(e){let t=String(e.customFields.zentaoSourceType??``);return t===`story`||e.tags.includes(`zentao-requirement`)?`requirement`:t===`task`||e.tags.includes(`zentao-task`)?`task`:t===`execution`||e.type===`milestone`?`milestone`:e.type===`task`||e.type===`subtask`?`task`:`local`}function quickCurrentUser(e){for(let t of [`zentao-my-work`,`zentao-my-participated`]){let n=e.savedViews.find(e=>e.id===t),r=n?.filter.participants?.[0]??n?.filter.assignees?.[0];if(r)return r}return``}function quickIsComplete(e,t=[]){let n=t.find(t=>t.id===e.status);return Boolean(e.completed)||n?.complete===!0||[`done`,`closed`,`finished`].includes(String(e.status))}function quickFilterActive(e){return(e.quickSource??`all`)!==`all`||(e.quickWorkType??`all`)!==`all`||(e.quickCompletion??`all`)!==`all`||(e.quickOwnership??`all`)!==`all`||(Array.isArray(e.quickAttention)&&e.quickAttention.length>0)}function detailedFilterCount(e){let t=0;return e.stages?.length&&t++,e.statuses.length&&t++,e.priorities.length&&t++,e.assignees.length&&t++,e.participants?.length&&t++,e.tags.length&&t++,e.dueDateFilter!==`any`&&t++,e.showArchived&&t++,t}function quickMatches(e,t,n=[]){let r=t.quickSource??`all`,i=quickSourceType(e);if(r!==`all`&&i!==r)return!1;let a=t.quickWorkType??`all`;if(a!==`all`&&(i!==`task`&&i!==`requirement`||e.stage!==a))return!1;let o=quickIsComplete(e,n),s=t.quickCompletion??`all`;if(s===`unfinished`&&o||s===`completed`&&!o)return!1;let c=t.quickOwnership??`all`,l=String(t.quickOwner??``),u=String(e.customFields.completedBy??``);if(c===`mine`&&(!l||!e.assignees.includes(l))||c===`participated`&&(!l||!e.assignees.includes(l)&&u!==l)||c===`unassigned`&&e.assignees.length>0)return!1;let d=Array.isArray(t.quickAttention)?t.quickAttention:[];for(let r of d){if(r===`high`&&![`critical`,`high`].includes(e.priority))return!1;if(r===`overdue`&&!jd(e,`overdue`,n))return!1;if(r===`blocked`&&![`blocked`,`pause`,`paused`,`suspended`].includes(String(e.status)))return!1}return!0}function quickStageOptions(e,t,n){let r=new Set(q(e.tasks).map(e=>e.task).filter(e=>quickSourceType(e)===n).map(e=>e.stage).filter(Boolean)),i=[];for(let e of t)r.has(e.id)&&(i.push({id:e.id,label:e.label}),r.delete(e.id));for(let e of r)i.push({id:e,label:e});return i}function quickPreferredStage(e,t,n,r=[]){let i=quickStageOptions(e,t,`task`);return i.find(e=>e.label.includes(n))?.id??i.find(e=>r.includes(e.id))?.id??r[0]??`all`}function Ed(e){return!!(quickFilterActive(e)||e.text||e.stages?.length||e.statuses.length||e.priorities.length||e.assignees.length||e.participants?.length||e.tags.length||e.dueDateFilter!==`any`)}function Dd(e){let t=0;return e.stages?.length&&t++,e.statuses.length&&t++,e.priorities.length&&t++,e.assignees.length&&t++,e.participants?.length&&t++,e.tags.length&&t++,e.dueDateFilter!==`any`&&t++,e.showArchived&&t++,t}function Od(e,t,n=[]){if(e.archived&&!t.showArchived||!quickMatches(e,t,n))return!1;let r=t.text.trim().toLowerCase(),i=String(e.customFields.completedBy??``);return!(r&&!(e.id.toLowerCase()===r||projectSearchMatchesZentaoId(e,r)||e.title.toLowerCase().includes(r)||e.stage.includes(r)||e.status.includes(r)||e.priority.includes(r)||e.assignees.some(e=>e.toLowerCase().includes(r))||i.toLowerCase().includes(r)||e.tags.some(e=>e.toLowerCase().includes(r)))||t.stages?.length&&!t.stages.includes(e.stage)||t.statuses.length&&!t.statuses.includes(e.status)||t.priorities.length&&!t.priorities.includes(e.priority)||t.assignees.length&&!e.assignees.some(e=>t.assignees.includes(e))||t.participants?.length&&!e.assignees.some(e=>t.participants.includes(e))&&!t.participants.includes(i)||t.tags.length&&!e.tags.some(e=>t.tags.includes(e))||t.dueDateFilter!==`any`&&!jd(e,t.dueDateFilter,n))}function kd(e,t,n=[]){let r=[];for(let i of e){let e=i.subtasks.length?kd(i.subtasks,t,n):[];Od(i,t,n)?r.push({...i,subtasks:e}):r.push(...e)}return r}function Ad(e,t,n=[]){return e.filter(({task:e})=>Od(e,t,n))}function jd(e,t,n){if(t===`no-date`)return!e.due;let r=K(e.due);if(!r)return!1;let i=Zl();switch(t){case`overdue`:return G.PlainDate.compare(r,i)<0&&!e.completed;case`this-week`:{let e=7-i.dayOfWeek%7,t=i.add({days:e});return G.PlainDate.compare(r,i)>=0&&G.PlainDate.compare(r,t)<=0}case`this-month`:return r.year===i.year&&r.month===i.month&&G.PlainDate.compare(r,i)>=0;default:return!0}}function Md(e){let t=e.plugins?.getPlugin?.(`tasknotes`);return t&&typeof t==`object`?t:null}function Nd(e){return Md(e)!==null}function Pd(e){let t=Md(e)?.api;return!t||t.apiVersion!==1||!t.hasCapability(`catalog.read`)?null:t}function Fd(e,t){let n=0,r=0,i=-1;for(let a of t){let t=e.findIndex(e=>e.id===a.id);t>=0?(i=t,a.differs(e[t])&&(a.apply(e[t]),r++)):(i+=1,e.splice(i,0,a.make()),n++)}return{added:n,updated:r}}function Id(e,t){let n=0,r=0;for(let i of t){let t=e.find(e=>e.id===i.id);t?i.differs(t)&&r++:n++}return{added:n,updated:r}}function Ld(e,t,n){let r=t.replace(/^\[\[/,``).replace(/\]\]$/,``).split(`|`)[0].split(`#`)[0].trim();return r?e.vault.getFileByPath(r)?r:e.metadataCache.getFirstLinkpathDest(r,n)?.path??null:null}function Rd(e,t,n,r){let i=0;for(let r of e.getStatuses())n.has(r.value)&&!t.statuses.some(e=>e.id===r.value)&&(t.statuses.push({id:r.value,label:r.label,color:r.color,icon:``,complete:r.isCompleted}),i++);for(let n of e.getPriorities())r.has(n.value)&&!t.priorities.some(e=>e.id===n.value)&&(t.priorities.push({id:n.value,label:n.label,color:n.color,icon:``}),i++);return i}function zd(e){return[...e.getStatuses()].sort((e,t)=>e.order-t.order).map(e=>({id:e.value,make:()=>({id:e.value,label:e.label,color:e.color,icon:``,complete:e.isCompleted}),differs:t=>t.label!==e.label||t.color!==e.color||t.complete!==e.isCompleted,apply:t=>{t.label=e.label,t.color=e.color,t.complete=e.isCompleted}}))}function Bd(e){return[...e.getPriorities()].sort((e,t)=>t.weight-e.weight).map(e=>({id:e.value,make:()=>({id:e.value,label:e.label,color:e.color,icon:``}),differs:t=>t.label!==e.label||t.color!==e.color,apply:t=>{t.label=e.label,t.color=e.color}}))}function Vd(e,t){let n=Fd(t.statuses,zd(e)),r=Fd(t.priorities,Bd(e));return{added:n.added+r.added,updated:n.updated+r.updated}}function Hd(e,t){let n=Id(t.statuses,zd(e)),r=Id(t.priorities,Bd(e));return{added:n.added+r.added,updated:n.updated+r.updated}}var Ud=class{el;button;constructor(t){this.button=new e.ExtraButtonComponent(t),this.el=this.button.extraSettingsEl,this.el.addClass(`pm-icon-btn`)}setIcon(e){return this.button.setIcon(e),this}setTooltip(e){return this.button.setTooltip(e),this}setRevealOnHover(e){return this.el.toggleClass(`pm-icon-btn--hover-only`,e),this}onClick(e){return this.el.addEventListener(`click`,e),this}},Wd=class extends e.AbstractInputSuggest{getSuggestions(t){let n=t.trim().toLowerCase();return n?(0,e.getIconIds)().filter(e=>e.includes(n)).slice(0,24):[]}renderSuggestion(t,n){n.addClass(`pm-icon-suggestion`),(0,e.setIcon)(n.createSpan({cls:`pm-icon-suggestion-glyph`}),t),n.createSpan({text:t})}};function Gd(e,t){let n=new Wd(e,t);n.onSelect(e=>{n.setValue(e),t.dispatchEvent(new Event(`change`)),n.close()})}function Kd(e,t,n,r){e.createSpan({text:`⠿`,cls:`pm-settings-drag-handle`}),e.draggable=!0,e.addEventListener(`dragstart`,n=>{n.dataTransfer?.setData(`text/plain`,String(t)),e.addClass(`pm-settings-row--dragging`)}),e.addEventListener(`dragend`,()=>{e.removeClass(`pm-settings-row--dragging`)}),e.addEventListener(`dragover`,e=>{e.preventDefault()}),e.addEventListener(`drop`,e=>{e.preventDefault();let i=parseInt(e.dataTransfer?.getData(`text/plain`)??``,10);if(isNaN(i)||i===t)return;let[a]=n.splice(i,1);n.splice(t,0,a),r()})}function qd(e,t,n,r){let i=e.createEl(`input`,{type:`text`,value:n.icon});i.addClass(`pm-settings-status-icon`),i.placeholder=`图标`,Gd(t,i),i.addEventListener(`change`,()=>{n.icon=i.value,r()});let a=e.createEl(`input`,{type:`text`,value:n.label});a.addClass(`pm-settings-status-label`),a.addEventListener(`change`,()=>{n.label=a.value,r()});let o=e.createEl(`input`,{type:`color`,value:n.color});o.addEventListener(`change`,()=>{n.color=o.value,r()})}function Jd(t,n){let r=()=>Jd(t,n);t.empty(),n.items.forEach((i,a)=>{let o=t.createDiv(`pm-settings-status-row`);Kd(o,a,n.items,()=>{n.onChanged(),r()}),qd(o,n.app,i,n.onChanged),n.renderExtra?.(o,i),new Ud(o).setIcon(`x`).setTooltip(`移除`).onClick(()=>{if(n.items.length<=1){new e.Notice(n.minOneMessage);return}n.items.splice(a,1),n.onChanged(),r(),n.onDeleted?.(i)})})}function Yd(e,t){Jd(e,{app:t.app,items:t.statuses,onChanged:t.onChanged,onDeleted:t.onDeleted,minOneMessage:`至少需要保留一个状态。`})}function Xd(e,t){Jd(e,{app:t.app,items:t.priorities,onChanged:t.onChanged,onDeleted:t.onDeleted,minOneMessage:`至少需要保留一个优先级。`})}function Zd(e,t){return`${e} 个${t}`}var Qd=class extends e.PluginSettingTab{plugin;constructor(e,t){super(e,t),this.plugin=t,this.icon=`chart-gantt`}getSettingDefinitions(){return[{type:`group`,heading:`常规`,items:[{name:`项目目录`,desc:`保存项目文件的库内目录。`,control:{type:`folder`,key:`projectsFolder`,defaultValue:`04.项目`,placeholder:`04.项目`,validate:e=>e.trim()?void 0:`请输入目录名称。`}},{name:`默认视图`,desc:`打开项目时默认显示的视图。`,control:{type:`dropdown`,key:`defaultView`,options:{table:`表格`,gantt:`甘特图`,kanban:`看板`}}},{name:`关闭时保存任务`,desc:`关闭任务编辑器时自动保存改动。`,control:{type:`toggle`,key:`saveTaskOnClose`}}]},{type:`group`,heading:`样式`,items:[{name:`显示标签颜色`,desc:`根据标签名称显示不同颜色。`,aliases:[`appearance`],control:{type:`toggle`,key:`showTagColors`}}]},{type:`group`,heading:`甘特图`,items:[{name:`默认时间粒度`,desc:`时间轴每列使用的时间单位。`,aliases:[`timeline`,`zoom`],control:{type:`dropdown`,key:`ganttGranularity`,options:{day:`日`,week:`周`,month:`月`,quarter:`季度`}}},{name:`周标签`,desc:`周视图表头显示的内容。`,aliases:[`timeline`],control:{type:`dropdown`,key:`ganttWeekLabel`,options:{weekNumber:`周数（第15周）`,dateRange:`日期范围（4月7日至13日）`,both:`周数和日期范围`}}}]},{type:`group`,heading:`看板`,items:[{name:`显示子任务`,desc:`将子任务作为独立卡片显示。`,aliases:[`kanban`],control:{type:`toggle`,key:`kanbanShowSubtasks`}},{name:`显示描述预览`,desc:`在卡片中显示任务描述的前几行。`,aliases:[`kanban`],control:{type:`toggle`,key:`kanbanShowDescriptionPreview`}}]},{type:`group`,heading:`排期`,items:[{name:`自动排期`,desc:`任务日期变化时自动调整依赖任务。`,aliases:[`dependencies`],control:{type:`toggle`,key:`autoSchedule`}},{name:`提前后续任务`,desc:`任务提前完成时，将依赖任务相应提前。`,aliases:[`dependencies`],control:{type:`toggle`,key:`pullForwardOnEarlyFinish`,disabled:()=>!this.plugin.settings.autoSchedule}}]},{type:`group`,heading:`通知`,items:[{name:`截止日期提醒`,desc:`任务临近截止日期时显示提醒。`,aliases:[`notifications`,`banner`],control:{type:`toggle`,key:`notificationsEnabled`}},{name:`提前天数`,desc:`在截止日期前多少天提醒。`,aliases:[`notifications`,`reminders`,`lead time`],control:{type:`slider`,key:`notificationLeadDays`,min:1,max:14,step:1,disabled:()=>!this.plugin.settings.notificationsEnabled}}]},{type:`group`,heading:`任务字段`,items:[this.stagesPage(),this.statusesPage(),this.prioritiesPage(),this.teamMembersPage()]},{type:`group`,heading:`集成`,visible:()=>Nd(this.app),items:[this.taskNotesPage()]}]}async setControlValue(e,t){await super.setControlValue(e,t),e===`kanbanShowDescriptionPreview`&&this.plugin.refreshProjectViews(),this.refreshDomState()}stagesPage(){let e=this.plugin.settings.stages;return{type:`page`,name:`阶段`,desc:`阶段原始值的中文名称、颜色和显示顺序。`,displayValue:()=>Zd(e.length,`阶段`),items:[{type:`list`,heading:`阶段`,emptyState:`暂无阶段。`,items:e.map(e=>({name:e.label,render:t=>{t.setClass(`pm-palette-row`),qd(t.controlEl,this.app,e,()=>this.persist())}})),onReorder:(t,n)=>this.reorder(e,t,n),onDelete:e=>this.deleteEntry(`stage`,e),addItem:{name:`添加阶段`,action:()=>{e.push({id:`stage-`+nu().slice(0,6),label:`新阶段`,color:`#8a94a0`,icon:``}),this.persist(),this.update()}}}]}}statusesPage(){let e=this.plugin.settings.statuses;return{type:`page`,name:`状态`,desc:`状态原始值的中文名称、颜色和显示顺序。完成判断不再依赖状态。`,displayValue:()=>Zd(this.plugin.settings.statuses.length,`状态`),items:[{type:`list`,heading:`状态`,emptyState:`暂无状态。`,items:e.map(e=>({name:e.label,render:t=>{t.setClass(`pm-palette-row`),qd(t.controlEl,this.app,e,()=>this.persist())}})),onReorder:(t,n)=>this.reorder(e,t,n),onDelete:e=>this.deleteEntry(`status`,e),addItem:{name:`添加状态`,action:()=>{e.push({id:`status-`+nu().slice(0,6),label:`新状态`,color:`#8a94a0`,icon:``,complete:!1}),this.persist(),this.update()}}}]}}prioritiesPage(){let e=this.plugin.settings.priorities;return{type:`page`,name:`优先级`,desc:`优先级的中文名称、颜色和显示顺序。`,displayValue:()=>Zd(this.plugin.settings.priorities.length,`优先级`),items:[{type:`list`,heading:`优先级`,emptyState:`暂无优先级。`,items:e.map(e=>({name:e.label,render:t=>{t.setClass(`pm-palette-row`),qd(t.controlEl,this.app,e,()=>this.persist())}})),onReorder:(t,n)=>this.reorder(e,t,n),onDelete:e=>this.deleteEntry(`priority`,e),addItem:{name:`添加优先级`,action:()=>{e.push({id:`priority-`+nu().slice(0,6),label:`新优先级`,color:`#8a94a0`,icon:``}),this.persist(),this.update()}}}]}}taskNotesPage(){let e=()=>Pd(this.app)!==null;return{type:`page`,name:`TaskNotes`,desc:`与 TaskNotes 插件共享状态和优先级。`,displayValue:()=>this.taskNotesStatus(),status:()=>e()?null:`warning`,items:[{type:`list`,extraButtons:[t=>t.setIcon(`refresh-cw`).setTooltip(`从 TaskNotes 导入`).setDisabled(!e()).onClick(()=>this.importFromTaskNotes())],items:[{name:`状态和优先级`,desc:`从 TaskNotes 4.10 或更高版本复制标签、颜色和完成配置。`,render:e=>{e.controlEl.createDiv({cls:`setting-item-value`,text:this.taskNotesStatus()})}}]}]}}taskNotesStatus(){let e=Pd(this.app);if(!e)return`需要更新`;let{added:t,updated:n}=Hd(e,this.plugin.settings),r=t+n;return r===0?`已是最新`:Zd(r,`改动`)}teamMembersPage(){let e=this.plugin.settings.globalTeamMembers;return{type:`page`,name:`团队成员`,desc:`所有项目中可以选择的负责人。`,displayValue:()=>Zd(this.plugin.settings.globalTeamMembers.length,`成员`),items:[{type:`list`,heading:`团队成员`,emptyState:`暂无团队成员。`,items:e.map((e,t)=>({name:e||`未命名成员`,render:n=>{n.setClass(`pm-palette-row`),n.addText(n=>n.setPlaceholder(`姓名`).setValue(e).onChange(e=>{this.plugin.settings.globalTeamMembers[t]=e,this.persist()}))}})),onReorder:(t,n)=>this.reorder(e,t,n),onDelete:t=>{e.splice(t,1),this.persist(),this.update()},addItem:{name:`添加成员`,action:()=>{e.push(``),this.persist(),this.update()}}}]}}persist(){this.plugin.saveSettings()}reorder(e,t,n){let[r]=e.splice(t,1);e.splice(n,0,r),this.persist(),this.update()}deleteEntry(t,n){let r=t===`stage`?this.plugin.settings.stages:t===`status`?this.plugin.settings.statuses:this.plugin.settings.priorities;if(r.length<=1){new e.Notice(`至少需要保留一个选项。`);return}let[i]=r.splice(n,1);this.persist(),this.update(),this.remapOrphanTasks(t,i.id,i.label)}importFromTaskNotes(){let t=Pd(this.app);if(!t){new e.Notice(`需要安装 TaskNotes 4.10 或更高版本。`);return}let{added:n,updated:r}=Vd(t,this.plugin.settings);this.persist(),this.update(),new e.Notice(n||r?`已从 TaskNotes 导入：新增 ${n} 项，更新 ${r} 项。`:`状态和优先级已与 TaskNotes 一致。`)}async remapOrphanTasks(t,n,r){let i=t===`stage`?this.plugin.settings.stages:t===`status`?this.plugin.settings.statuses:this.plugin.settings.priorities;if(i.length===0)return;let a=i[0],o=this.plugin.settings.projectsFolder,s=await this.plugin.store.loadAllProjects(o),c=0;for(let e of s){if((t===`stage`?e.config?.stages:t===`status`?e.config?.statuses:e.config?.priorities)?.some(e=>e.id===n))continue;let r=q(e.tasks).filter(({task:e})=>e[t]===n).map(({task:e})=>e.id);r.length&&(await this.plugin.store.updateTasks(e,r,{[t]:a.id}),c+=r.length)}c>0&&new e.Notice(`已将 ${c} 个事项从“${r}”调整为“${a.label}”。`)}},Z=class{el;labelEl;dotEl=null;iconEl=null;constructor(e){this.el=e.createSpan({cls:`pm-chip`}),this.labelEl=this.el.createSpan({cls:`pm-chip-label`})}setLeadingIcon(t){return this.iconEl||(this.iconEl=this.el.createSpan({cls:`pm-chip-icon`}),this.el.prepend(this.iconEl)),(0,e.setIcon)(this.iconEl,t),this}setLabel(e){return this.labelEl.setText(e),this}setColor(e){return this.el.style.setProperty(`--pm-chip-color`,e),this}setVariant(e){return this.el.toggleClass(`pm-chip--solid`,e===`solid`),this.el.toggleClass(`pm-chip--outline`,e===`outline`),this.el.toggleClass(`pm-chip--plain`,e===`plain`),this}setDot(e=!0){return e&&!this.dotEl?(this.dotEl=this.el.createSpan({cls:`pm-chip-dot`}),this.el.prepend(this.dotEl)):!e&&this.dotEl&&(this.dotEl.remove(),this.dotEl=null),this}setTag(e=!0){return this.el.toggleClass(`pm-chip--tag`,e),this}setStrong(e=!0){return this.el.toggleClass(`pm-chip--strong`,e),this}setShape(e){return this.el.toggleClass(`pm-chip--pill`,e===`pill`),this}setSize(e){return this.el.toggleClass(`pm-chip--sm`,e===`sm`),this}setTooltip(t){return(0,e.setTooltip)(this.el,t),this}setRemovable(t){let n=this.el.createEl(`button`,{cls:`pm-chip-rm`});return(0,e.setIcon)(n,`x`),n.onclick=e=>{e.preventDefault(),e.stopPropagation(),t()},this}onClick(e){return this.el.addClass(`pm-chip--interactive`),this.el.addEventListener(`click`,e),this}};function $d(t,n,r,i){let a=t.createDiv(`pm-prop-row`),o=a.createSpan({cls:`pm-prop-label`});if(i){o.addClass(`pm-prop-label--with-icon`);let t=o.createSpan({cls:`pm-prop-label-icon`});(0,e.setIcon)(t,i),o.createSpan({text:n})}else o.setText(n);let s=r();return a.appendChild(s),a}function ef(t,n,r){t.empty();let i=r.variant??`default`,a=r.shape??`pill`;for(let e of n){let n=new Z(t).setLabel(r.labelFn?r.labelFn(e):e).setShape(a).setRemovable(()=>r.onRemove(e));i===`accent`?n.setVariant(`solid`).setColor(`var(--interactive-accent)`):n.setVariant(`outline`)}if(r.renderAdd)r.renderAdd(t);else if(r.onAdd){let n=r.onAdd;new e.ButtonComponent(t).setButtonText(r.addLabel??`+ Add`).onClick(e=>n(e))}}function tf(e){return e?.icon&&fd(e.icon)?e.icon:null}function nf(t,n,r,i){let a=sd(r,n.status),o=new Z(t).setLabel(pd(a?.icon,a?.label??n.status)).setColor(a?.color??`var(--text-muted)`).setVariant(`solid`).setDot(!a?.icon).onClick(t=>{let a=new e.Menu;for(let e of r)a.addItem(t=>{t.setTitle(pd(e.icon,e.label)).setChecked(e.id===n.status).onClick(()=>i(e.id));let r=tf(e);r&&t.setIcon(r)});a.showAtMouseEvent(t)}),s=tf(a);return s&&o.setLeadingIcon(s),o.el}function rf(t,n,r,i){let a=cd(r,n.stage),o=new Z(t).setLabel(pd(a?.icon,a?.label??(n.stage||`未设置`))).setColor(a?.color??`var(--text-muted)`).setVariant(`solid`).setDot(!a?.icon).onClick(t=>{let a=new e.Menu;for(let e of r)a.addItem(t=>{t.setTitle(pd(e.icon,e.label)).setChecked(e.id===n.stage).onClick(()=>i(e.id));let r=tf(e);r&&t.setIcon(r)});a.showAtMouseEvent(t)}),s=tf(a);return s&&o.setLeadingIcon(s),o.el}function af(e,t,n){let r=new Z(e).setLabel(pd(n?.icon,n?.label??(t||`未设置`))).setColor(n?.color??`var(--text-muted)`).setVariant(`solid`).setDot(!n?.icon),i=tf(n);return i&&r.setLeadingIcon(i),r.el}const of={critical:`chevrons-up`,high:`chevron-up`,medium:`equal`,low:`chevron-down`};function sf(t,n,r,i){let a=ud(r,n.priority),o=new Z(t).setLabel(pd(a?.icon,a?.label??n.priority)).setColor(a?.color??`var(--text-muted)`).setVariant(`plain`),s=tf(a);return s?o.setLeadingIcon(s):a?.icon||o.setLeadingIcon(of[n.priority]??`equal`),o.onClick(t=>{let a=new e.Menu;for(let e of r)a.addItem(t=>{t.setTitle(pd(e.icon,e.label)).setChecked(e.id===n.priority).onClick(()=>i(e.id));let r=tf(e);r&&t.setIcon(r)});a.showAtMouseEvent(t)}),o.el}function cf(e,t,n,r=`pm-subtask-dot`){let i=sd(n,t),a=e.createSpan({cls:r});return a.style.background=i?.color??`var(--text-muted)`,a}function lf(t,n,r,i){let a=n.customFields[t.id],o=createDiv(`pm-prop-value`);switch(t.type){case`text`:case`url`:{let e=o.createEl(`input`,{type:t.type===`url`?`url`:`text`,cls:`pm-prop-text`});e.value=id(a),e.placeholder=t.name,e.addEventListener(`change`,()=>{n.customFields[t.id]=e.value});break}case`number`:{let e=o.createEl(`input`,{type:`number`,cls:`pm-prop-text`});e.value=id(a),e.addEventListener(`change`,()=>{n.customFields[t.id]=parseFloat(e.value)});break}case`date`:{let e=o.createEl(`input`,{type:`date`,cls:`pm-prop-date`});e.value=id(a),e.addEventListener(`change`,()=>{n.customFields[t.id]=e.value});break}case`checkbox`:{let e=o.createEl(`input`,{type:`checkbox`,cls:`pm-prop-checkbox`});e.checked=!!a,e.addEventListener(`change`,()=>{n.customFields[t.id]=e.checked});break}case`select`:{let e=o.createEl(`select`,{cls:`pm-prop-select`});e.createEl(`option`,{value:``,text:`—`});for(let n of t.options??[]){let t=e.createEl(`option`,{value:n,text:n});n===a&&(t.selected=!0)}e.addEventListener(`change`,()=>{n.customFields[t.id]=e.value});break}case`multiselect`:{let r=Array.isArray(a)?a:[],i=()=>{ef(o,r,{shape:`pill`,onRemove:e=>{let a=r.indexOf(e);a>-1&&r.splice(a,1),n.customFields[t.id]=[...r],i()},onAdd:a=>{let o=new e.Menu;for(let e of t.options??[])r.includes(e)||o.addItem(a=>a.setTitle(e).onClick(()=>{r.push(e),n.customFields[t.id]=[...r],i()}));o.showAtMouseEvent(a)}})};i();break}case`person`:{let e=o.createEl(`input`,{type:`text`,cls:`pm-prop-text`});e.value=id(a),e.placeholder=`人员姓名`;let s=[...new Set([...r.teamMembers,...i.settings.globalTeamMembers])];e.setAttribute(`list`,`pm-persons-${t.id}`);let c=o.createEl(`datalist`,{attr:{id:`pm-persons-${t.id}`}});for(let e of s)c.createEl(`option`,{value:e});e.addEventListener(`change`,()=>{n.customFields[t.id]=e.value});break}}return o}var uf=class{contentEl;el;anchor;host;win;doc;align;width;onCloseCb;opened=!1;constructor(t){this.anchor=t.anchor,this.win=activeWindow,this.doc=activeDocument,this.host=t.host??this.anchor.closest(`.modal`)??this.doc.body,this.align=t.align??`left`,this.width=t.width,this.onCloseCb=t.onClose,this.el=createDiv(`pm-pop`),e.Platform.isPhone&&this.el.addClass(`pm-pop--sheet`),this.width!=null&&this.el.setCssProps({"--pop-width":`${this.width}px`}),this.contentEl=this.el.createDiv(`pm-pop-body`)}get isOpen(){return this.opened}open(){this.opened||(this.opened=!0,this.anchor.setAttribute(`aria-expanded`,`true`),this.host.appendChild(this.el),this.reposition(),this.doc.addEventListener(`mousedown`,this.onOutsideDown,!0),this.doc.addEventListener(`keydown`,this.onKeyDown,!0),this.win.addEventListener(`scroll`,this.reposition,!0),this.win.addEventListener(`resize`,this.reposition))}close(){this.opened&&(this.opened=!1,this.anchor.setAttribute(`aria-expanded`,`false`),this.doc.removeEventListener(`mousedown`,this.onOutsideDown,!0),this.doc.removeEventListener(`keydown`,this.onKeyDown,!0),this.win.removeEventListener(`scroll`,this.reposition,!0),this.win.removeEventListener(`resize`,this.reposition),this.el.remove(),this.onCloseCb?.())}reposition=()=>{if(!this.opened||e.Platform.isPhone)return;let t=this.anchor.getBoundingClientRect(),n=this.win.innerWidth,r=this.win.innerHeight,i=this.el.offsetWidth||this.width||200,a=this.el.offsetHeight||200,o=t.bottom+4;o+a>r-12&&(o=Math.max(12,t.top-a-4));let s=this.align===`right`?t.right-i:t.left;s=Math.max(12,Math.min(s,n-i-12)),this.el.setCssProps({"--pop-top":`${o}px`,"--pop-left":`${s}px`})};onOutsideDown=e=>{let t=e.target;this.el.contains(t)||this.anchor.contains(t)||this.close()};onKeyDown=e=>{e.key===`Escape`&&(e.stopPropagation(),this.close())}};function df(t){let n=t.trim(),r=n.match(/^\[\[([^\]]+)\]\]$/);if(!r)return n;let i=r[1],a=i.indexOf(`|`);if(a>=0){let e=i.slice(a+1).trim();if(e)return e}let o=a>=0?i.slice(0,a):i,{path:s}=(0,e.parseLinktext)(o),c=s.split(`/`).pop()??s;return(c.endsWith(`.md`)?c.slice(0,-3):c).trim()}function ff(e){let t=e.trim().split(/\s+/).filter(Boolean);return(t.length>=2?t[0][0]+t[1][0]:e.slice(0,2)).toUpperCase()}var pf=class{el;constructor(e){this.el=e.createSpan({cls:`pm-avatar`})}setName(t){let n=df(t);return this.el.setText(ff(n)),this.el.style.background=Zu(n),(0,e.setTooltip)(this.el,n),this}setSize(e){return this.el.toggleClass(`pm-avatar--sm`,e===`sm`),this}};function mf(t,n){if(n.icon&&fd(n.icon)){let r=t.createSpan({cls:`pm-glyph-icon`});(0,e.setIcon)(r,n.icon),n.color&&r.setCssProps({"--pm-glyph-color":n.color})}else n.icon?t.createSpan({cls:`pm-glyph-icon pm-glyph-text`,text:n.icon}):n.color&&t.createSpan({cls:`pm-glyph-dot`}).setCssProps({"--pm-glyph-color":n.color})}function hf(t,n){let r=t.createEl(`button`,{cls:`pm-pop-item`});n.accent&&r.addClass(`pm-pop-item--accent`),n.avatar?new pf(r).setName(n.avatar).setSize(`sm`):mf(r,n),r.createSpan({cls:`pm-pop-item-label`,text:n.label});let i=r.createSpan({cls:`pm-pop-check`});return(0,e.setIcon)(i,`check`),n.selected||i.addClass(`pm-pop-check--hidden`),r.addEventListener(`click`,n.onPick),r}function gf(t){let n=t.options.find(e=>e.id===t.value)??null,r=t.container.createEl(`button`,{cls:`pm-prop-inline`});n||r.addClass(`pm-prop-inline--empty`),mf(r,{color:n?.color,icon:n?.icon}),r.createSpan({cls:`pm-prop-inline-label`,text:n?.label??t.placeholder??`请选择`});let i=r.createSpan({cls:`pm-prop-chevron`});(0,e.setIcon)(i,`chevron-down`);let a=null;r.addEventListener(`click`,()=>{if(a?.isOpen){a.close();return}a=new uf({anchor:r,width:t.width??r.offsetWidth,onClose:()=>a=null});let e=t.search?a.contentEl.createEl(`input`,{cls:`pm-pop-field`,attr:{placeholder:t.searchPlaceholder??`搜索……`,spellcheck:`false`}}):null,n=a.contentEl.createDiv(`pm-pop-list`),i=()=>{n.empty();let r=e?.value.trim().toLowerCase()??``;for(let e of t.options.filter(e=>!r||e.label.toLowerCase().includes(r)))hf(n,{label:e.label,color:e.color,icon:e.icon,selected:e.id===t.value,onPick:()=>{a?.close(),t.onChange(e.id)}})};e?.addEventListener(`input`,()=>i()),i(),a.open(),e?.focus()})}function _f(t){let n=!!t.value,r=t.container.createEl(`button`,{cls:`pm-prop-inline`});n||r.addClass(`pm-prop-inline--empty`);let i=r.createSpan({cls:`pm-glyph-icon`});(0,e.setIcon)(i,`calendar`),r.createSpan({cls:`pm-prop-inline-label`,text:n?Ql(t.value):t.emptyLabel??`Set date`}),t.hint&&r.createSpan({cls:`pm-due pm-due--${t.hint.tone}`,text:t.hint.text});let a=null;r.addEventListener(`click`,()=>{if(a?.isOpen){a.close();return}let e=null;a=new uf({anchor:r,width:160,onClose:()=>{a=null;let n=e??i.value;n!==t.value&&t.onChange(n)}});let i=a.contentEl.createEl(`input`,{type:`date`,cls:`pm-pop-field`});i.value=t.value,i.addEventListener(`keydown`,e=>{e.key===`Enter`&&(e.preventDefault(),a?.close())});let o=a.contentEl.createDiv(`pm-pop-actions`);o.createEl(`button`,{cls:`pm-pop-item pm-pop-item--center`,text:`今天`}).addEventListener(`click`,()=>{e=Zl().toString(),a?.close()}),n&&o.createEl(`button`,{cls:`pm-pop-item pm-pop-item--center pm-pop-item--danger`,text:`清除`}).addEventListener(`click`,()=>{e=``,a?.close()}),a.open(),i.focus()})}function vf(e){let{container:t,display:n,inputType:r,value:i,onSave:a}=e,o=t.createEl(`input`,{type:r,cls:`pm-inline-edit`,value:i});n.replaceWith(o),o.focus(),r!==`date`&&o.select();let s=!1,c=Y(async()=>{if(s)return;s=!0;let e=o.value.trim();e===i?o.replaceWith(n):await a(e)});o.addEventListener(`blur`,c),r===`date`?o.addEventListener(`change`,c):o.addEventListener(`keydown`,e=>{e.key===`Enter`&&c(),e.key===`Escape`&&o.replaceWith(n)})}function yf(e){let t=e.inputType??`text`,n=e.value!==``,r=e.container.createEl(`button`,{cls:`pm-prop-inline`});n||r.addClass(`pm-prop-inline--empty`),r.createSpan({cls:`pm-prop-inline-label`,text:n?`${e.value}${e.suffix??``}`:e.placeholder??`设置值`}),r.addEventListener(`click`,()=>{vf({container:e.container,display:r,inputType:t,value:e.value,onSave:async n=>{e.onChange(t===`number`&&e.number?bf(n,e.number):n)}})})}function bf(e,t){let n=Math.round(parseFloat(e)||0);return String(Math.min(t.max??1/0,Math.max(t.min??-1/0,n)))}function xf(t){let n=e=>t.labelFor?t.labelFor(e):e,r=!!t.avatarStack,i=!!t.depsList,a=r||i?null:t.container.createDiv(`pm-prop-chips`),o=i?t.container.createDiv(`pm-prop-deps`):null,s=r?t.container.createEl(`button`):t.container.createEl(`button`,{cls:`pm-prop-add`}),c=null;r||((0,e.setIcon)(s.createSpan({cls:`pm-glyph-icon`}),`plus`),c=s.createSpan({cls:`pm-prop-add-label`,text:t.addLabel}));let l=()=>{s.empty();let r=t.selected();if(r.length===0){s.className=`pm-prop-add`,(0,e.setIcon)(s.createSpan({cls:`pm-glyph-icon`}),`plus`),s.createSpan({cls:`pm-prop-add-label`,text:t.addLabel});return}s.className=`pm-prop-inline pm-assignees-trigger`;let i=s.createSpan({cls:`pm-avatar-stack`});for(let e of r)new pf(i).setName(n(e)).setSize(`sm`);r.length===1&&s.createSpan({cls:`pm-assignees-label`,text:n(r[0])})},u=()=>{if(a){a.empty();for(let e of t.selected()){let r=new Z(a).setLabel(n(e)).setVariant(`outline`).setRemovable(()=>{t.remove(e),f()});t.tag?r.setTag():r.setShape(`pill`);let i=t.colorFor?.(e);i&&r.setDot(!0).setColor(i)}}},d=()=>{if(o){o.empty();for(let r of t.selected()){let i=o.createDiv(`pm-dep-row`);(0,e.setIcon)(i.createSpan({cls:`pm-dep-icon`}),`link-2`),i.createSpan({cls:`pm-dep-id`,text:r}),i.createSpan({cls:`pm-dep-title`,text:n(r)}),new Ud(i).setIcon(`x`).setTooltip(`移除依赖`).onClick(()=>{t.remove(r),f()})}}},f=()=>{r?l():i?d():u(),c&&c.setText(t.selected().length&&t.addLabelMore?t.addLabelMore:t.addLabel)};f();let p=null;s.addEventListener(`click`,()=>{if(p?.isOpen){p.close();return}let e=new uf({anchor:s,width:230,onClose:()=>p=null});p=e;let n=``,i=t.search?e.contentEl.createEl(`input`,{cls:`pm-pop-field`,attr:{placeholder:t.placeholder??`搜索……`,spellcheck:`false`}}):null,a=e.contentEl.createDiv(`pm-pop-list`),o=()=>{a.empty();let e=n.trim().toLowerCase(),s=new Set(t.selected()),c=t.options().filter(t=>!e||t.label.toLowerCase().includes(e));for(let e of c)hf(a,{label:e.label,color:e.color??t.colorFor?.(e.id),icon:e.icon,avatar:r?e.label:void 0,selected:s.has(e.id),onPick:()=>{s.has(e.id)?t.remove(e.id):t.add(e.id),f(),o()}});let l=t.create;if(l&&e&&!t.options().some(t=>t.label.toLowerCase()===e)){let e=n.trim();hf(a,{label:`Create "${e}"`,icon:`plus`,accent:!0,onPick:()=>{l(e),n=``,i&&(i.value=``),f(),o()}})}};i&&i.addEventListener(`input`,()=>{n=i.value,o()}),o(),e.open(),i?.focus()})}function Sf(t,n,r){let i=t.createEl(`button`,{cls:`pm-prop-add`});return(0,e.setIcon)(i.createSpan({cls:`pm-glyph-icon`}),`plus`),i.createSpan({cls:`pm-prop-add-label`,text:n}),i.addEventListener(`click`,r),i}function Cf(t,n,r){if(n.length===0)return;let i=null,a=Sf(t,`Add property`,()=>{if(i?.isOpen){i.close();return}i=new uf({anchor:a,width:190,onClose:()=>i=null});let t=i.contentEl.createDiv(`pm-pop-list`);for(let a of n){let n=t.createEl(`button`,{cls:`pm-pop-item`}),o=n.createSpan({cls:`pm-glyph-icon`});(0,e.setIcon)(o,a.icon),n.createSpan({cls:`pm-pop-item-label`,text:a.label}),n.addEventListener(`click`,()=>{i?.close(),r(a.id)})}i.open()})}const wf=[{id:`task`,label:`任务`,icon:`square-check-big`},{id:`subtask`,label:`子任务`,icon:`git-branch`},{id:`milestone`,label:`里程碑`,icon:`diamond`}],Tf=[{id:`none`,label:`不重复`,icon:`repeat`},{id:`daily`,label:`每天`,icon:`repeat`},{id:`weekly`,label:`每周`,icon:`repeat`},{id:`monthly`,label:`每月`,icon:`repeat`},{id:`yearly`,label:`每年`,icon:`repeat`}];function Ef(e,t){let{task:n,project:r,plugin:i,rerender:a,shownExtras:o}=t,{stages:s,statuses:c,priorities:l}=i.store.configFor(r),u=!!n.customFields.zentaoSourceType,d=e.createDiv(`pm-prop-grid`);if($d(d,`类型`,()=>{let e=createDiv(`pm-prop-value`);return gf({container:e,value:n.type,options:wf,onChange:e=>{n.type=e,e===`milestone`&&(n.start=``,n.progress=0),e!==`subtask`&&t.setParentId(null),a()}}),e},`shapes`),n.type===`subtask`?$d(d,`父任务`,()=>{let e=createDiv(`pm-prop-value`),i=q(r.tasks).map(e=>e.task).filter(e=>e.id!==n.id);return gf({container:e,value:t.parentId,options:[{id:``,label:`无父任务`},...i.map(e=>({id:e.id,label:e.title}))],placeholder:`选择父任务`,search:!0,searchPlaceholder:`搜索任务…`,width:230,onChange:e=>{t.setParentId(e||null),a()}}),e},`corner-up-right`):d.createDiv(),$d(d,`阶段`,()=>{let e=createDiv(`pm-prop-value`),t=cd(s,n.stage);return u?e.createSpan({text:(t?.label??n.stage)||`未设置`,cls:`pm-source-value`}):gf({container:e,value:n.stage,options:s.map(e=>({id:e.id,label:e.label,color:e.color,icon:e.icon||void 0})),onChange:e=>{n.stage=e,a()}}),e},`git-branch`),$d(d,`状态`,()=>{let e=createDiv(`pm-prop-value`),t=sd(c,n.status);return u?e.createSpan({text:(t?.label??n.status)||`未设置`,cls:`pm-source-value`}):gf({container:e,value:n.status,options:c.map(e=>({id:e.id,label:e.label,color:e.color,icon:e.icon||void 0})),onChange:e=>{n.status=e,a()}}),e},`circle-dot`),$d(d,`优先级`,()=>{let e=createDiv(`pm-prop-value`);return gf({container:e,value:n.priority,options:l.map(e=>({id:e.id,label:e.label,color:e.color,icon:e.icon||of[e.id]})),onChange:e=>{n.priority=e,a()}}),e},`flag`),$d(d,n.type===`milestone`?`日期`:`截止日期`,()=>{let e=createDiv(`pm-prop-value`);return _f({container:e,value:n.due,emptyLabel:`设置截止日期`,hint:n.completed?null:$l(n.due),onChange:e=>{n.due=e,a()}}),e},`calendar-clock`),n.type===`milestone`?d.createDiv():$d(d,`开始日期`,()=>{let e=createDiv(`pm-prop-value`);return _f({container:e,value:n.start,emptyLabel:`设置开始日期`,onChange:e=>{n.start=e,a()}}),e},`play`),$d(d,`负责人`,()=>{let e=createDiv(`pm-prop-value`),t=()=>[...new Set([...r.teamMembers,...i.settings.globalTeamMembers])];return xf({container:e,avatarStack:!0,search:!0,addLabel:`分配负责人`,placeholder:`搜索人员…`,selected:()=>n.assignees,options:()=>t().map(e=>({id:e,label:e})),add:e=>{n.assignees.includes(e)||n.assignees.push(e)},remove:e=>{n.assignees=n.assignees.filter(t=>t!==e)},create:e=>{n.assignees.includes(e)||n.assignees.push(e)}}),e},`users`),(n.completed||o.has(`completed`))&&$d(d,`完成日期`,()=>{let e=createDiv(`pm-prop-value`);return u?e.createSpan({text:n.completed||`未设置`,cls:`pm-source-value`}):_f({container:e,value:n.completed,emptyLabel:`设置日期`,hint:eu(n.due,n.completed),onChange:e=>{n.completed=e,a()}}),e},`circle-check-big`),n.type!==`milestone`&&(n.progress>0||o.has(`progress`))&&$d(d,`进度`,()=>{let e=createDiv(`pm-prop-value`);return yf({container:e,value:String(n.progress),inputType:`number`,suffix:`%`,number:{min:0,max:100},onChange:e=>{n.progress=Number(e),a()}}),e},`percent`),(n.recurrence||o.has(`repeat`))&&$d(d,`重复`,()=>{let e=createDiv(`pm-prop-value`);return gf({container:e,value:n.recurrence?.interval??`none`,options:Tf,onChange:e=>{e===`none`?n.recurrence=void 0:n.recurrence={interval:e,every:n.recurrence?.every??1,endDate:n.recurrence?.endDate},a()}}),e},`repeat`),$d(d,`标签`,()=>{let e=createDiv(`pm-prop-value`),t=[...new Set(q(r.tasks).flatMap(e=>e.task.tags))];return xf({container:e,search:!0,addLabel:`添加标签`,placeholder:`查找或创建…`,tag:!0,colorFor:i.settings.showTagColors?e=>Zu(e):void 0,selected:()=>n.tags,options:()=>t.map(e=>({id:e,label:e})),add:e=>{n.tags.includes(e)||n.tags.push(e)},remove:e=>{n.tags=n.tags.filter(t=>t!==e)},create:e=>{n.tags.includes(e)||n.tags.push(e)}}),e},`tag`).addClass(`pm-prop-row--wide`),n.dependencies.length>0||o.has(`depends`)){let e=q(r.tasks).map(e=>e.task).filter(e=>e.id!==n.id),t=t=>e.find(e=>e.id===t)?.title??t;$d(d,`依赖项`,()=>{let i=createDiv(`pm-prop-value`);return xf({container:i,search:!0,addLabel:`添加依赖`,addLabelMore:`继续添加`,placeholder:`搜索任务…`,depsList:!0,labelFor:t,selected:()=>n.dependencies.filter(t=>e.some(e=>e.id===t)),options:()=>e.filter(e=>n.dependencies.includes(e.id)||!Iu(r.tasks,n.id,e.id)).map(e=>({id:e.id,label:e.title})),add:e=>{n.dependencies.includes(e)||n.dependencies.push(e)},remove:e=>{n.dependencies=n.dependencies.filter(t=>t!==e)}}),i},`link-2`).addClass(`pm-prop-row--wide`)}let f=[];if(!u&&!n.completed&&!o.has(`completed`)&&f.push({id:`completed`,label:`完成日期`,icon:`circle-check-big`}),n.type!==`milestone`&&n.progress===0&&!o.has(`progress`)&&f.push({id:`progress`,label:`进度`,icon:`percent`}),!n.recurrence&&!o.has(`repeat`)&&f.push({id:`repeat`,label:`重复`,icon:`repeat`}),n.dependencies.length===0&&!o.has(`depends`)&&f.push({id:`depends`,label:`依赖项`,icon:`link-2`}),f.length>0&&Cf(d.createDiv(`pm-prop-add-cell`),f,e=>{o.add(e),a()}),r.customFields.length>0){let t=e.createDiv(`pm-modal-section`);t.createEl(`h4`,{text:`自定义字段`,cls:`pm-modal-section-title`});let a=t.createDiv(`pm-prop-grid`);for(let e of r.customFields)$d(a,e.name,()=>lf(e,n,r,i))}}function Df(e,t){if(t.type===`milestone`)return;let n=e.createDiv(`pm-modal-section`),r=n.createDiv(`pm-modal-section-header`),i=gu(t),a=projectEstimateHours(t),o=a>0?`工时记录（${i}h / ${a}h）`:`工时记录（已登记 ${i}h）`;r.createEl(`h4`,{text:o,cls:`pm-modal-section-title`});let s=n.createDiv(`pm-time-est-row`);s.createSpan({text:`预计：`,cls:`pm-time-label`});let c=s.createEl(`input`,{type:`number`,cls:`pm-prop-text pm-time-est-input`});c.value=a>0?String(a):``,c.placeholder=`小时`,c.min=`0`,c.step=`0.5`,c.addEventListener(`change`,()=>{let e=parseFloat(c.value);t.timeEstimate=isNaN(e)||e<=0?void 0:e});let l=n.createDiv(`pm-time-log-list`),u=()=>{l.empty(),t.timeLogs||=[];let e=t.timeLogs;for(let t=0;t<e.length;t++){let n=e[t],r=l.createDiv(`pm-time-log-row`),i=r.createEl(`input`,{type:`date`,cls:`pm-prop-date pm-time-log-date`});i.value=n.date,i.addEventListener(`change`,()=>{n.date=i.value});let a=r.createEl(`input`,{type:`number`,cls:`pm-prop-text pm-time-log-hours`});a.value=String(n.hours),a.min=`0`,a.step=`0.25`,a.placeholder=`小时`,a.addEventListener(`change`,()=>{n.hours=parseFloat(a.value)||0});let o=r.createEl(`input`,{type:`text`,cls:`pm-prop-text pm-time-log-note`});o.value=n.note,o.placeholder=`备注…`,o.addEventListener(`change`,()=>{n.note=o.value}),new Ud(r).setIcon(`x`).setTooltip(`移除记录`).onClick(()=>{e.splice(t,1),u()})}};u(),Sf(n,`登记工时`,()=>{t.timeLogs||=[],t.timeLogs.push({date:Zl().toString(),hours:0,note:``}),u()})}function Of(e,t,n,r){let i=e.createDiv(`pm-modal-section`),a=i.createDiv(`pm-subtasks-header`).createEl(`h4`,{text:`子任务 `,cls:`pm-modal-section-title`}).createSpan({cls:`pm-subtasks-count`}),o=i.createDiv(`pm-modal-subtask-list`),s=()=>{let e=t.subtasks.length;if(e===0){a.setText(``);return}let n=t.subtasks.filter(e=>!!e.completed).length;a.setText(`${n}/${e}`)},c=()=>{o.empty();for(let e of t.subtasks){let n=o.createDiv(`pm-modal-subtask-row`),r=!!e.completed,i=n.createEl(`input`,{type:`checkbox`,cls:`pm-subtask-checkbox`});i.checked=r,i.addEventListener(`change`,()=>{e.completed=i.checked?Zl().toString():``,e.progress=i.checked?100:0,c(),d(),s()});let a=n.createSpan({text:e.title,cls:r?`pm-subtask-title pm-subtask-title--done`:`pm-subtask-title`});a.contentEditable=`true`,a.addEventListener(`blur`,()=>{e.title=a.textContent?.trim()??e.title}),new Ud(n).setIcon(`x`).setTooltip(`删除子任务`).setRevealOnHover(!0).onClick(()=>{t.subtasks=t.subtasks.filter(t=>t.id!==e.id),c(),d(),s()})}},d=()=>{window.setTimeout(()=>{try{let e=o.querySelectorAll(`.pm-modal-subtask-row:not(.pm-subtask-add-row)`);e.forEach((e,n)=>{if(e.querySelector(`.pm-subtask-role-meta`))return;let r=t.subtasks[n],i=Array.isArray(r?.assignees)?r.assignees.filter(e=>typeof e===`string`&&e.trim()).join(`、`):``,a=typeof r?.customFields?.completedBy===`string`?r.customFields.completedBy.trim():``;if(!i&&!a)return;let o=e.createDiv(`pm-subtask-role-meta`);i&&o.createSpan({text:`负责人 · ${i}`,cls:`pm-subtask-role pm-subtask-role--assignee`}),a&&o.createSpan({text:`完成者 · ${a}`,cls:`pm-subtask-role pm-subtask-role--completed`})})}catch(e){console.warn(`[PM] Failed to render subtask role metadata`,e)}},0)};c(),d(),s();let l=i.createDiv(`pm-modal-subtask-row pm-subtask-add-row`);l.createSpan({cls:`pm-subtask-checkbox-ghost`,attr:{"aria-hidden":`true`}});let u=l.createEl(`input`,{cls:`pm-subtask-add-input`,attr:{placeholder:`添加子任务…`}});u.addEventListener(`keydown`,e=>{if(e.key!==`Enter`)return;let n=u.value.trim();n&&(t.subtasks.push(ru({title:n,type:`subtask`})),u.value=``,c(),d(),s())})}const kf={canvas:`Canvas`,base:`Database`};var Af=class{app;textarea;onInsert;container;mirror;items=[];activeIndex=0;open=!1;query=``;triggerStart=-1;constructor(e,t,n){this.app=e,this.textarea=t,this.onInsert=n,this.container=createDiv(`pm-note-suggest`),this.mirror=createDiv(`pm-note-suggest-mirror`),activeDocument.body.appendChild(this.mirror),this.textarea.addEventListener(`input`,this.onInput),this.textarea.addEventListener(`keydown`,this.onKeydown),this.textarea.addEventListener(`blur`,this.onBlur),this.textarea.addEventListener(`scroll`,this.onScroll)}attach(e){e.appendChild(this.container)}destroy(){this.textarea.removeEventListener(`input`,this.onInput),this.textarea.removeEventListener(`keydown`,this.onKeydown),this.textarea.removeEventListener(`blur`,this.onBlur),this.textarea.removeEventListener(`scroll`,this.onScroll),this.container.remove(),this.mirror.remove()}onInput=()=>{let e=this.textarea.selectionStart,t=this.textarea.value.slice(0,e).match(/\[\[([^\]]{0,80})$/);t?(this.triggerStart=e-t[0].length,this.query=t[1],this.updateItems(),this.items.length>0?this.show():this.hide()):this.hide()};onKeydown=e=>{if(this.open)switch(e.key){case`ArrowDown`:e.preventDefault(),e.stopPropagation(),this.activeIndex=(this.activeIndex+1)%this.items.length,this.renderItems();break;case`ArrowUp`:e.preventDefault(),e.stopPropagation(),this.activeIndex=(this.activeIndex-1+this.items.length)%this.items.length,this.renderItems();break;case`Enter`:case`Tab`:e.preventDefault(),e.stopPropagation(),this.accept(this.items[this.activeIndex]);break;case`Escape`:e.preventDefault(),e.stopPropagation(),this.hide()}};onBlur=()=>{window.setTimeout(()=>this.hide(),150)};onScroll=()=>{this.open&&this.position()};updateItems(){let t=this.app.vault.getFiles().filter(e=>/\.(md|canvas|base)$/.test(e.extension?`.${e.extension}`:e.path));if(!this.query)this.items=t.sort((e,t)=>t.stat.mtime-e.stat.mtime).slice(0,8);else{let n=(0,e.prepareFuzzySearch)(this.query),r=this.query.toLowerCase(),i=[];for(let e of t){let t=n(e.basename);if(!t)continue;let a=t.score,o=e.basename.toLowerCase();o.startsWith(r)?a-=10:o.includes(r)&&(a-=5),a+=e.basename.length*.01,i.push({file:e,score:a})}i.sort((e,t)=>e.score-t.score),this.items=i.slice(0,8).map(e=>e.file)}this.activeIndex=0}accept(e){if(!e)return;let t=this.textarea.value.slice(0,this.triggerStart),n=this.textarea.value.slice(this.textarea.selectionStart),r=`[[${e.extension===`md`?e.basename:`${e.basename}.${e.extension}`}]]`,i=t+r+n;this.textarea.value=i;let a=t.length+r.length;this.textarea.setSelectionRange(a,a),this.onInsert(i),this.hide(),this.textarea.focus()}show(){this.open=!0,this.container.addClass(`pm-note-suggest--visible`),this.position(),this.renderItems()}hide(){this.open&&(this.open=!1,this.container.removeClass(`pm-note-suggest--visible`),this.triggerStart=-1)}position(){let e=activeWindow.getComputedStyle(this.textarea);for(let t of[`fontFamily`,`fontSize`,`fontWeight`,`lineHeight`,`letterSpacing`,`paddingTop`,`paddingRight`,`paddingBottom`,`paddingLeft`,`borderTopWidth`,`borderRightWidth`,`borderBottomWidth`,`borderLeftWidth`,`boxSizing`,`wordWrap`,`whiteSpace`,`overflowWrap`])this.mirror.style.setProperty(t.replace(/[A-Z]/g,e=>`-`+e.toLowerCase()),e.getPropertyValue(t.replace(/[A-Z]/g,e=>`-`+e.toLowerCase())));this.mirror.style.width=this.textarea.clientWidth+`px`;let t=this.textarea.value.slice(0,this.textarea.selectionStart);this.mirror.textContent=``;let n=activeDocument.createTextNode(t);this.mirror.appendChild(n);let r=activeDocument.createSpan();r.textContent=`​`,this.mirror.appendChild(r);let i=r.offsetTop,a=r.offsetLeft,o=parseFloat(e.lineHeight)||parseFloat(e.fontSize)*1.4,s=this.textarea.getBoundingClientRect(),c=this.container.offsetParent?this.container.offsetParent.getBoundingClientRect():s,l=s.top-c.top+i-this.textarea.scrollTop+o+4,u=s.left-c.left+a;this.container.style.top=l+`px`,this.container.style.left=u+`px`;let d=(this.container.offsetParent?.clientWidth??600)-280;u>d&&(this.container.style.left=Math.max(0,d)+`px`)}renderItems(){this.container.empty(),this.items.forEach((e,t)=>{let n=this.container.createDiv({cls:`pm-note-suggest-item`+(t===this.activeIndex?` pm-note-suggest-item--active`:``)}),r=n.createDiv({cls:`pm-note-suggest-name-row`});r.createSpan({cls:`pm-note-suggest-name`,text:e.basename});let i=kf[e.extension];i&&r.createSpan({cls:`pm-note-suggest-type`,text:i}),e.parent&&e.parent.path!==`/`&&n.createDiv({cls:`pm-note-suggest-path`,text:e.parent.path}),n.addEventListener(`mousedown`,t=>{t.preventDefault(),this.accept(e)}),n.addEventListener(`mouseenter`,()=>{this.activeIndex=t,this.renderItems()})});let e=this.container.querySelector(`.pm-note-suggest-item--active`);e&&e.scrollIntoView({block:`nearest`})}},jf=class extends e.Modal{plugin;project;parentId;onSave;task;original;isNew;originalParentId;cancelled=!1;saved=!1;persistPromise=null;noteSuggest=null;shownExtras=new Set;saveKeyHandler=null;constructor(e,t,n,r,i,a,o){if(super(e),this.plugin=t,this.project=n,this.parentId=i,this.onSave=a,r){if(this.task=JSON.parse(JSON.stringify(r)),this.isNew=!1,i==null){let e=q(n.tasks).find(e=>e.task.id===r.id);this.parentId=e?.parentId??null}}else{let e=t.store.configFor(n);this.task=ru({status:ed(e.statuses),priority:td(e.priorities),type:i?`subtask`:`task`,...o}),this.isNew=!0}this.original=JSON.parse(JSON.stringify(this.task)),this.originalParentId=this.parentId}onOpen(){let{contentEl:e}=this;e.empty(),e.addClass(`pm-task-modal`),this.modalEl.addClass(`pm-modal`,`pm-modal--task`),this.render()}onClose(){if(this.plugin.settings.saveTaskOnClose&&!this.isNew&&!this.cancelled&&!this.saved&&this.task.title.trim()){let t=this.plugin.store.findTaskFileConflict(this.project,this.task);t?new e.Notice(`任务未保存：已存在名为“${t.fileName}”的笔记。`):this.persistTask()}this.saveKeyHandler&&=(this.modalEl.removeEventListener(`keydown`,this.saveKeyHandler),null),this.noteSuggest?.destroy(),this.noteSuggest=null,this.contentEl.empty()}persistTask(){if(this.persistPromise)return this.persistPromise;let e=(async()=>{try{await this.runPersist()}catch(e){throw this.persistPromise=null,e}})();return this.persistPromise=e,e}async insertAttachments(t,n,r){for(let{blob:i,name:a}of n)try{let e=await i.arrayBuffer(),n=`![[${(await this.plugin.store.saveTaskAttachment(this.project,this.task,a,e)).name}]]`;t.setRangeText(n,t.selectionStart,t.selectionEnd,`end`),this.task.description=t.value,r()}catch(t){console.error(`附件保存失败`,t),new e.Notice(`附件保存失败`)}}changedFields(){let e={};for(let t of Object.keys(this.task))JSON.stringify(this.task[t])!==JSON.stringify(this.original[t])&&Object.assign(e,{[t]:this.task[t]});return e}async runPersist(){if(this.isNew)await this.plugin.store.insertTask(this.project,this.task,this.parentId);else{let e=this.changedFields(),t=this.parentId!==this.originalParentId;if(Object.keys(e).length===0&&!t)return;await this.plugin.store.updateTask(this.project,this.task.id,e),t&&await this.plugin.store.moveTask(this.project,this.task.id,this.parentId)}await this.plugin.store.scheduleAfterChange(this.project,this.task.id),await this.onSave(this.task)}openOverflowMenu(t){let n=new e.Menu;if(this.task.filePath){let e=this.task.filePath;n.addItem(t=>t.setTitle(`作为笔记打开`).setIcon(`file-text`).onClick(()=>{this.saved=!1,this.cancelled=!1,this.close(),this.app.workspace.openLinkText(e,``,!0)})),n.addSeparator()}this.task.archived?n.addItem(t=>t.setTitle(`取消归档`).setIcon(`archive-restore`).onClick(Y(async()=>{await this.plugin.store.unarchiveTask(this.project,this.task.id),new e.Notice(`任务已取消归档`),await this.onSave(this.task),this.cancelled=!0,this.close()}))):n.addItem(t=>t.setTitle(`归档`).setIcon(`archive`).onClick(Y(async()=>{await this.plugin.store.archiveTask(this.project,this.task.id),new e.Notice(`任务已归档`),await this.onSave(this.task),this.cancelled=!0,this.close()}))),n.addItem(e=>e.setTitle(`删除`).setIcon(`trash-2`).setWarning(!0).onClick(Y(async()=>{await Wf(this.app,`确定删除“${this.task.title}”吗？`)&&(await this.plugin.store.deleteTask(this.project,this.task.id),await this.onSave(this.task),this.cancelled=!0,this.close())})));let r=t.getBoundingClientRect();n.showAtPosition({x:r.left,y:r.bottom+4})}render(){let{contentEl:t}=this;t.empty();let n=t.createDiv(`pm-te-header`),r=ud(this.plugin.store.configFor(this.project).priorities,this.task.priority);r?.color&&n.setCssProps({"--pm-accent-strip":r.color});let i=n.createDiv(`pm-te-crumb`);if(this.project.icon){let t=i.createSpan({cls:`pm-te-crumb-icon`});/^[a-z0-9-]+$/.test(this.project.icon)?(0,e.setIcon)(t,this.project.icon):t.setText(this.project.icon)}i.createSpan({cls:`pm-te-crumb-name`,text:this.project.title});let a=i.createSpan({cls:`pm-te-crumb-sep`});(0,e.setIcon)(a,`chevron-right`);let o=i.createSpan({cls:`pm-te-crumb-id pm-te-copyable`,text:this.task.id});if((0,e.setTooltip)(o,`复制任务 ID`),o.addEventListener(`click`,Y(async()=>{await navigator.clipboard.writeText(this.task.id),new e.Notice(`任务 ID 已复制`)})),n.createDiv(`pm-te-header-spacer`),!this.isNew){let t=new e.ExtraButtonComponent(n).setIcon(`more-horizontal`).setTooltip(`更多操作`);t.extraSettingsEl.addClass(`pm-te-header-btn`),t.onClick(()=>this.openOverflowMenu(t.extraSettingsEl))}let s=new e.ExtraButtonComponent(n).setIcon(`x`).setTooltip(`关闭`);s.extraSettingsEl.addClass(`pm-te-header-btn`),s.onClick(()=>{this.cancelled=!0,this.close()});let c=t.createDiv(`pm-te-body`),l=c.createDiv(`pm-te-title-wrap`),u=l.createEl(`textarea`,{cls:`pm-te-title`});u.rows=1,u.value=this.task.title,u.placeholder=`任务标题`,u.spellcheck=!1;let d=()=>{u.setCssProps({"--te-title-height":`auto`}),u.setCssProps({"--te-title-height":u.scrollHeight+`px`})},f=l.createDiv({cls:`pm-modal-title-error`,attr:{hidden:``}}),p=()=>{f.hasAttribute(`hidden`)||(f.setAttribute(`hidden`,``),f.setText(``),u.classList.remove(`pm-input-error`))},m=e=>{f.setText(e),f.removeAttribute(`hidden`),u.classList.add(`pm-input-error`),u.focus(),u.select()};u.addEventListener(`input`,()=>{this.task.title=u.value,p(),d()}),u.addEventListener(`keydown`,e=>{e.key===`Enter`&&!e.shiftKey&&e.preventDefault()}),window.setTimeout(d,0),u.focus(),this.isNew&&u.select(),Ef(c.createDiv(`pm-te-props`),{task:this.task,project:this.project,plugin:this.plugin,parentId:this.parentId,setParentId:e=>{this.parentId=e},rerender:()=>this.render(),shownExtras:this.shownExtras}),c.createEl(`hr`,{cls:`pm-te-divider`});let h=c.createDiv(`pm-modal-section pm-modal-desc-section`);h.createEl(`h4`,{text:`描述`,cls:`pm-modal-section-title`});let g=h.createDiv(`pm-modal-desc-preview`),_=h.createEl(`textarea`,{cls:`pm-modal-description`});_.placeholder=`添加描述…`,_.value=this.task.description;let v=()=>{let e=[],t=_.parentElement;for(;t;)t.scrollTop>0&&e.push([t,t.scrollTop]),t=t.parentElement;_.setCssProps({"--desc-height":`auto`}),_.setCssProps({"--desc-height":_.scrollHeight+`px`});for(let[t,n]of e)t.scrollTop=n},y=()=>this.task.description.trim().length>0,b=this.task.filePath||this.project.filePath||``,x=new e.Component;x.load();let ee=e=>{let t=0;this.task.description=this.task.description.replace(/^([ \t]*[-*+] \[)([ x])(\])/gm,(n,r,i,a)=>t++===e?r+(i===` `?`x`:` `)+a:n),_.value=this.task.description,re()},te=()=>{g.querySelectorAll(`input[type="checkbox"]`).forEach((e,t)=>{let n=e;n.removeAttribute(`disabled`),n.addEventListener(`click`,e=>{e.preventDefault(),ee(t)})})},ne=()=>{g.querySelectorAll(`a.external-link`).forEach(e=>{e.href.startsWith(`file://`)&&e.addEventListener(`click`,t=>{t.preventDefault(),activeWindow.open(e.href)})})},re=async()=>{x.unload(),x=new e.Component,x.load(),g.empty(),await e.MarkdownRenderer.render(this.app,this.task.description,g,b,x),te(),ne()},ie=e=>{g.classList.add(`pm-hidden`),_.classList.remove(`pm-hidden`),_.value=this.task.description,window.setTimeout(()=>{v(),_.focus(),e!==void 0&&_.setSelectionRange(e,e)},0)},ae=()=>{y()&&(re(),_.classList.add(`pm-hidden`),g.classList.remove(`pm-hidden`))};_.addEventListener(`input`,()=>{this.task.description=_.value,v()}),_.addEventListener(`blur`,()=>ae()),_.addEventListener(`paste`,e=>{let t=e.clipboardData?.items;if(!t)return;let n=[];for(let e of Array.from(t))if(e.kind===`file`&&e.type.startsWith(`image/`)){let t=e.getAsFile();if(t){let r=new Date().toISOString().replace(/[:.]/g,`-`),i=(e.type.split(`/`)[1]||`png`).split(`+`)[0],a=i===`jpeg`?`jpg`:i;n.push({blob:t,name:`Pasted-${r}.${a}`})}}n.length!==0&&(e.preventDefault(),this.insertAttachments(_,n,v))}),h.addEventListener(`dragover`,e=>{e.dataTransfer&&Array.from(e.dataTransfer.types).includes(`Files`)&&e.preventDefault()}),h.addEventListener(`drop`,e=>{let t=e.dataTransfer?.files;if(!t||t.length===0)return;e.preventDefault(),_.classList.contains(`pm-hidden`)&&(ie(),_.selectionStart=_.selectionEnd=_.value.length);let n=Array.from(t).map(e=>({blob:e,name:e.name}));this.insertAttachments(_,n,v)}),this.noteSuggest?.destroy(),this.noteSuggest=new Af(this.app,_,e=>{this.task.description=e,v()}),this.noteSuggest.attach(h);let S=e=>{let t=g.textContent||``,n=this.task.description,r=e=>/\s/.test(e)?` `:e,i=0;for(let a=0;a<e&&a<t.length;a++){let e=r(t[a]);for(;i<n.length&&r(n[i])!==e;)i++;i++}return Math.min(i,n.length)},C=e=>{let t=g.ownerDocument,n=t.caretPositionFromPoint?.(e.clientX,e.clientY),r=n?.offsetNode;if(!r||r.nodeType!==Node.TEXT_NODE||!g.contains(r))return;let i=t.createTreeWalker(g,NodeFilter.SHOW_TEXT),a=0,o=i.nextNode();for(;o&&o!==r;)a+=(o.textContent||``).length,o=i.nextNode();return o?S(a+n.offset):void 0};g.addEventListener(`click`,e=>{let t=e.target;if(t.instanceOf(HTMLInputElement)&&t.type===`checkbox`)return;let n=t.closest(`a`);if(n){if(n.classList.contains(`internal-link`)){e.preventDefault(),e.stopPropagation();let t=n.getAttribute(`data-href`)||n.getAttribute(`href`)||``;this.saved=!1,this.cancelled=!1,this.close(),this.app.workspace.openLinkText(t,b);return}return}if(t.instanceOf(HTMLImageElement))return;let r=activeWindow.getSelection();r&&!r.isCollapsed&&g.contains(r.anchorNode)||ie(C(e))}),y()?(_.classList.add(`pm-hidden`),re()):(g.classList.add(`pm-hidden`),window.setTimeout(v,0)),Of(c,this.task,this.plugin,this.plugin.store.configFor(this.project).statuses),Df(c,this.task);let oe=t.createDiv(`pm-te-footer`);if(!this.isNew&&this.task.filePath){let t=this.task.filePath,n=oe.createSpan({cls:`pm-te-footer-path pm-te-copyable`}),r=n.createSpan({cls:`pm-te-footer-icon`});(0,e.setIcon)(r,`file-text`),n.createSpan({text:t}),(0,e.setTooltip)(n,`复制文件路径`),n.addEventListener(`click`,Y(async()=>{await navigator.clipboard.writeText(t),new e.Notice(`文件路径已复制`)}))}oe.createDiv(`pm-footer-spacer`),new e.ButtonComponent(oe).setButtonText(`取消`).onClick(()=>{this.cancelled=!0,this.close()});let se=new e.ButtonComponent(oe).setButtonText(this.isNew?`创建（Shift+Enter）`:`保存（Shift+Enter）`).setCta(),ce=!1,le=async()=>{if(!ce){ce=!0;try{if(!this.task.title.trim()){u.focus(),u.classList.add(`pm-input-error`);return}p(),await this.persistTask(),this.saved=!0,this.close()}catch(t){if(t instanceof Sd){m(`已存在名为“${t.fileName}”的笔记，请使用其他标题。`);return}console.error(`[PM]`,t),new e.Notice(`操作失败，请查看控制台了解详情。`)}finally{ce=!1}}};se.onClick(()=>{le()}),this.saveKeyHandler&&this.modalEl.removeEventListener(`keydown`,this.saveKeyHandler),this.saveKeyHandler=e=>{e.key===`Enter`&&e.shiftKey&&(e.preventDefault(),le())},this.modalEl.addEventListener(`keydown`,this.saveKeyHandler)}};const Mf=[`#8b72be`,`#7c6b9a`,`#b07d9e`,`#c47070`,`#b8a06b`,`#79b58d`,`#6ba8a0`,`#7a9ec4`,`#767491`,`#8aab6b`],Nf=[`📋`,`🚀`,`💡`,`🎯`,`🔬`,`🏗`,`📊`,`🎨`,`📱`,`🛠`,`📝`,`⚡`];function Pf(e){let{title:t,description:n,color:r,icon:i,customFields:a,teamMembers:o,config:s}=e;return JSON.parse(JSON.stringify({title:t,description:n,color:r,icon:i,customFields:a,teamMembers:o,config:s}))}var Ff=class extends e.Modal{plugin;existingProject;onSave;draft;original;isNew;constructor(e,t,n,r){super(e),this.plugin=t,this.existingProject=n,this.onSave=r,this.isNew=n===null;let i=n??iu(`新项目`,``);this.draft=Pf(i),this.original=Pf(i)}changedFields(){let e={};for(let t of Object.keys(this.draft))JSON.stringify(this.draft[t])!==JSON.stringify(this.original[t])&&Object.assign(e,{[t]:this.draft[t]});return e}onOpen(){this.modalEl.addClass(`pm-modal`,`pm-modal--project`);let e=this.contentEl;e.empty(),e.addClass(`pm-project-modal`),this.buildForm(e)}onClose(){this.contentEl.empty()}buildForm(t){let n=t.createDiv(`pm-project-modal-header`);n.createSpan({text:`✦`,cls:`pm-project-modal-header-icon`}),n.createEl(`h2`,{text:this.isNew?`新建项目`:`项目设置`,cls:`pm-modal-heading`});let r=t.createDiv(`pm-project-top-row`),i=r.createDiv(`pm-icon-picker`),a=i.createEl(`button`,{text:this.draft.icon,cls:`pm-icon-picker-btn`}),o=i.createDiv(`pm-icon-grid`);o.addClass(`pm-hidden`);for(let e of Nf)o.createEl(`button`,{text:e,cls:`pm-icon-option`}).addEventListener(`click`,()=>{this.draft.icon=e,a.textContent=e,o.addClass(`pm-hidden`)});a.addEventListener(`click`,()=>{o.toggleClass(`pm-hidden`,!o.hasClass(`pm-hidden`))});let s=r.createDiv(`pm-project-title-wrap`);s.createEl(`label`,{text:`项目名称`,cls:`pm-label`});let c=s.createEl(`input`,{type:`text`,value:this.draft.title,cls:`pm-input pm-input--lg`});c.placeholder=`请输入项目名称`,c.addEventListener(`input`,()=>{this.draft.title=c.value}),window.setTimeout(()=>{c.focus(),c.select()},50);let l=t.createDiv(`pm-project-modal-section`);l.createEl(`label`,{text:`颜色`,cls:`pm-label`});let u=l.createDiv(`pm-color-palette`);for(let e of Mf){let t=u.createEl(`button`,{cls:`pm-color-swatch`});t.setCssStyles({background:e}),e===this.draft.color&&t.addClass(`pm-color-swatch--selected`),t.addEventListener(`click`,()=>{this.draft.color=e,u.querySelectorAll(`.pm-color-swatch`).forEach(e=>e.removeClass(`pm-color-swatch--selected`)),t.addClass(`pm-color-swatch--selected`)})}let d=u.createEl(`input`,{type:`color`,cls:`pm-color-custom`});d.value=this.draft.color,d.title=`自定义颜色`,d.addEventListener(`change`,()=>{this.draft.color=d.value,u.querySelectorAll(`.pm-color-swatch`).forEach(e=>e.removeClass(`pm-color-swatch--selected`))});let f=t.createDiv(`pm-project-modal-section`);f.createEl(`label`,{text:`描述`,cls:`pm-label`});let p=f.createEl(`textarea`,{cls:`pm-input pm-project-desc`});p.placeholder=`请输入项目说明`,p.value=this.draft.description,p.addEventListener(`input`,()=>{this.draft.description=p.value});let m=t.createDiv(`pm-modal-section`);m.createEl(`label`,{text:`团队成员`,cls:`pm-label`});let h=m.createDiv(`pm-member-list`),g=()=>{h.empty();for(let e=0;e<this.draft.teamMembers.length;e++){let t=h.createDiv(`pm-member-row`),n=this.draft.teamMembers[e]||`?`;new pf(t).setName(n);let r=t.createEl(`input`,{type:`text`,value:this.draft.teamMembers[e],cls:`pm-input pm-member-input`});r.placeholder=`姓名`,r.addEventListener(`change`,()=>{this.draft.teamMembers[e]=r.value,g()}),new Ud(t).setIcon(`x`).setTooltip(`删除成员`).onClick(()=>{this.draft.teamMembers.splice(e,1),g()})}Sf(h,`添加成员`,()=>{this.draft.teamMembers.push(``),g(),window.setTimeout(()=>{let e=h.querySelectorAll(`input`);e[e.length-1]?.focus()},50)})};g();let _=t.createDiv(`pm-modal-section`),v=_.createDiv(`pm-modal-section-header`);v.createSpan({text:`自定义字段`,cls:`pm-modal-subheading`}),v.createSpan({text:`任务的额外属性`,cls:`pm-modal-hint`});let y=_.createDiv(`pm-cf-list`),b=()=>{y.empty();for(let e=0;e<this.draft.customFields.length;e++)this.renderCustomFieldEditor(y,this.draft.customFields[e],e,b);Sf(y,`添加自定义字段`,()=>{this.draft.customFields.push({id:nu(),name:`新字段`,type:`text`,options:[]}),b()})};b(),this.renderPaletteOverride(t,{heading:`阶段`,hint:`项目的阶段显示目录`,toggleLabel:`使用项目自己的阶段目录`,addLabel:`添加阶段`,get:()=>this.draft.config?.stages,set:e=>this.patchConfig(`stages`,e),copyGlobal:()=>this.plugin.settings.stages.map(e=>({...e})),makeEntry:()=>({id:`stage-`+nu().slice(0,6),label:`新阶段`,color:`#8a94a0`,icon:``}),renderEditor:(e,t)=>Xd(e,{app:this.app,priorities:t,onChanged:()=>{}})}),this.renderPaletteOverride(t,{heading:`状态`,hint:`项目的状态显示目录`,toggleLabel:`使用项目自己的状态目录`,addLabel:`添加状态`,get:()=>this.draft.config?.statuses,set:e=>this.patchConfig(`statuses`,e),copyGlobal:()=>this.plugin.settings.statuses.map(e=>({...e})),makeEntry:()=>({id:`status-`+nu().slice(0,6),label:`新状态`,color:`#8a94a0`,icon:``,complete:!1}),renderEditor:(e,t)=>Yd(e,{app:this.app,statuses:t,onChanged:()=>{}})}),this.renderPaletteOverride(t,{heading:`优先级`,hint:`项目的优先级目录`,toggleLabel:`使用项目自己的优先级目录`,addLabel:`添加优先级`,get:()=>this.draft.config?.priorities,set:e=>this.patchConfig(`priorities`,e),copyGlobal:()=>this.plugin.settings.priorities.map(e=>({...e})),makeEntry:()=>({id:`priority-`+nu().slice(0,6),label:`新优先级`,color:`#8a94a0`,icon:``}),renderEditor:(e,t)=>Xd(e,{app:this.app,priorities:t,onChanged:()=>{}})});let x=t.createDiv(`pm-modal-section`),ee=x.createDiv(`pm-modal-section-header`);ee.createSpan({text:`视图与排期`,cls:`pm-modal-subheading`}),ee.createSpan({text:`仅覆盖当前项目的全局设置`,cls:`pm-modal-hint`});let te=x.createDiv(`pm-config-override-grid`);this.renderOverrideSelect(te,`默认视图`,`defaultView`,[{value:`table`,label:`表格`},{value:`gantt`,label:`甘特图`},{value:`kanban`,label:`看板`}]),this.renderOverrideSelect(te,`自动排期`,`autoSchedule`,[{value:!0,label:`开启`},{value:!1,label:`关闭`}]),this.renderOverrideSelect(te,`提前完成时前移后续事项`,`pullForwardOnEarlyFinish`,[{value:!0,label:`开启`},{value:!1,label:`关闭`}]),this.renderOverrideSelect(te,`看板显示子任务`,`kanbanShowSubtasks`,[{value:!0,label:`显示`},{value:!1,label:`隐藏`}]),this.renderOverrideSelect(te,`看板显示描述预览`,`kanbanShowDescriptionPreview`,[{value:!0,label:`显示`},{value:!1,label:`隐藏`}]);let ne=t.createDiv(`pm-modal-footer`);ne.createDiv(`pm-footer-spacer`),new e.ButtonComponent(ne).setButtonText(`取消`).onClick(()=>this.close()),new e.ButtonComponent(ne).setButtonText(this.isNew?`+ 创建项目`:`保存`).setCta().onClick(Y(async()=>{let e=c.value.trim();if(!e){c.addClass(`pm-input-error`),c.focus();return}this.draft.title=e;let t=this.plugin.settings.projectsFolder;if(this.existingProject)await this.plugin.store.updateProject(this.existingProject,this.changedFields()),await this.onSave(this.existingProject);else{let n=iu(e,`${t}/${e.replace(/[\\/:*?"<>|]/g,`-`)}.md`);Object.assign(n,this.draft),await this.plugin.store.ensureFolder(t),await this.plugin.store.saveProject(n),await this.onSave(n)}this.close()}))}patchConfig(e,t){let n=Object.entries({...this.draft.config,[e]:t}).filter(([,e])=>e!==void 0);this.draft.config=n.length?Object.fromEntries(n):void 0}renderPaletteOverride(e,t){let n=e.createDiv(`pm-modal-section`),r=n.createDiv(`pm-modal-section-header`);r.createSpan({text:t.heading,cls:`pm-modal-subheading`}),r.createSpan({text:t.hint,cls:`pm-modal-hint`});let i=n.createEl(`label`,{cls:`pm-status-toggle`}),a=i.createEl(`input`,{type:`checkbox`});a.checked=!!t.get()?.length,i.createSpan({text:t.toggleLabel});let o=n.createDiv(`pm-settings-statuses`),s=n.createDiv(),c=()=>{o.empty(),s.empty();let e=t.get();e?.length&&(t.renderEditor(o,e),Sf(s,t.addLabel,()=>{e.push(t.makeEntry()),c()}))};a.addEventListener(`change`,()=>{t.set(a.checked?t.copyGlobal():void 0),c()}),c()}renderOverrideSelect(e,t,n,r){let i=e.createDiv(`pm-config-override-row`);i.createEl(`label`,{text:t,cls:`pm-label`});let a=i.createEl(`select`,{cls:`pm-input pm-select`}),o=this.draft.config?.[n],s=a.createEl(`option`,{value:``,text:`使用全局设置`});s.selected=o===void 0,r.forEach((e,t)=>{let n=a.createEl(`option`,{value:String(t),text:e.label});o===e.value&&(n.selected=!0)}),a.addEventListener(`change`,()=>{this.patchConfig(n,a.value===``?void 0:r[Number(a.value)].value)})}renderCustomFieldEditor(e,t,n,r){let i=e.createDiv(`pm-cf-row`),a=i.createEl(`input`,{type:`text`,value:t.name,cls:`pm-input pm-cf-name`});a.placeholder=`字段名称`,a.addEventListener(`change`,()=>{this.draft.customFields[n].name=a.value});let o=i.createEl(`select`,{cls:`pm-input pm-select pm-cf-type`});for(let[e,n]of[[`text`,`文本`],[`number`,`数字`],[`date`,`日期`],[`select`,`单选`],[`multiselect`,`多选`],[`person`,`人员`],[`checkbox`,`复选框`],[`url`,`链接`]]){let r=o.createEl(`option`,{value:e,text:n});e===t.type&&(r.selected=!0)}if(o.addEventListener(`change`,()=>{this.draft.customFields[n].type=o.value,r()}),new Ud(i).setIcon(`x`).setTooltip(`移除字段`).onClick(()=>{this.draft.customFields.splice(n,1),r()}),t.type===`select`||t.type===`multiselect`){let e=i.createDiv(`pm-cf-options`),n=t.options??[],r=()=>{e.empty();for(let i=0;i<n.length;i++){let a=e.createDiv(`pm-cf-opt-row`),o=a.createEl(`input`,{type:`text`,value:n[i],cls:`pm-input pm-cf-opt-input`});o.placeholder=`选项 ${i+1}`,o.addEventListener(`change`,()=>{n[i]=o.value,t.options=n}),new Ud(a).setIcon(`x`).setTooltip(`移除选项`).onClick(()=>{n.splice(i,1),t.options=n,r()})}Sf(e,`添加选项`,()=>{n.push(``),t.options=n,r()})};r()}}},If=class extends e.SuggestModal{projects;onChoose;constructor(e,t,n){super(e),this.projects=t,this.onChoose=n,this.setPlaceholder(`选择项目…`)}getSuggestions(e){let t=e.toLowerCase();return this.projects.filter(e=>e.title.toLowerCase().includes(t))}renderSuggestion(e,t){t.createSpan({text:`${e.icon} ${e.title}`})}onChooseSuggestion(e){this.onChoose(e)}},Lf=class extends e.SuggestModal{tasks;onChoose;constructor(e,t,n,r=`选择父任务…`){super(e),this.tasks=t,this.onChoose=n,this.setPlaceholder(r)}getSuggestions(e){let t=e.toLowerCase();return this.tasks.filter(e=>e.title.toLowerCase().includes(t))}renderSuggestion(e,t){t.createSpan({text:e.title})}onChooseSuggestion(e){this.onChoose(e)}};const Rf={DAILY:`daily`,WEEKLY:`weekly`,MONTHLY:`monthly`,YEARLY:`yearly`};function zf(e){let t=e?.match(/FREQ=(DAILY|WEEKLY|MONTHLY|YEARLY)/);if(!t)return;let n=e?.match(/INTERVAL=(\d+)/);return{interval:Rf[t[1]],every:n?parseInt(n[1],10):1}}function Bf(e){return e?e.slice(0,10):``}function Vf(e,t){let n=e.info,r=ru({title:n.title||e.path.slice(e.path.lastIndexOf(`/`)+1).replace(/\.md$/,``),status:n.status||t.defaultStatus,priority:n.priority||t.defaultPriority,start:Bf(n.scheduled),due:Bf(n.due),completed:Bf(n.completedDate),tags:(n.tags??[]).filter(e=>e!==t.taskTag&&e!==t.archiveTag),recurrence:zf(n.recurrence)});return n.timeEstimate&&n.timeEstimate>0&&(r.timeEstimate=Math.round(n.timeEstimate/60*100)/100),n.dateCreated&&(r.createdAt=n.dateCreated),n.dateModified&&(r.updatedAt=n.dateModified),n.archived&&(r.archived=!0),r}function Hf(e,t){let n=new Map;for(let r of e)n.set(r.path,Vf(r,t));let r=new Map;for(let t of e){let e=t.parentPaths.find(e=>e!==t.path&&n.has(e));if(!e)continue;let i=e,a=!1;for(;i;){if(i===t.path){a=!0;break}i=r.get(i)}a||r.set(t.path,e)}let i=[];for(let t of e){let e=n.get(t.path);if(!e)continue;let a=r.get(t.path);if(a){let t=n.get(a);if(t){e.type=`subtask`,t.subtasks.push(e);continue}}i.push(e)}for(let t of e){let e=n.get(t.path);e&&(e.dependencies=t.blockedByPaths.filter(e=>e!==t.path&&n.has(e)).map(e=>n.get(e)?.id).filter(e=>!!e))}return{roots:i,byPath:n}}var Uf=class extends e.Modal{plugin;files=[];filteredFiles=[];selectedCount=0;searchInput=null;selectAllCheckbox=null;nextButton=null;fileListContainer=null;counterLabel=null;phase=1;defaultStatus;defaultPriority;fileHandling=`move`;project=null;onImportComplete=null;constructor(e,t){super(e),this.plugin=t,this.defaultStatus=ed(t.settings.statuses),this.defaultPriority=td(t.settings.priorities)}get palettes(){return this.project?this.plugin.store.configFor(this.project):this.plugin.settings}onOpen(){let e=this.palettes;this.defaultStatus=ed(e.statuses),this.defaultPriority=td(e.priorities);let{contentEl:t}=this;t.empty(),t.addClass(`import-modal`),this.modalEl.addClass(`import-modal-container`),this.loadVaultFiles(),this.render()}onClose(){this.contentEl.empty()}loadVaultFiles(){let e=this.app.vault.getFiles().filter(e=>e.extension===`md`);this.files=e.map(e=>{let t=e.parent?.path||`/`;return{file:e,folder:t===`/`?`/`:t,selected:!1}}),this.filteredFiles=[...this.files]}render(){this.phase===1?this.renderPhase1():this.renderPhase2()}renderPhase1(){let{contentEl:t}=this;t.empty();let n=t.createDiv(`import-modal-header`);n.createEl(`h2`,{text:`选择要导入的笔记`}),this.counterLabel=n.createDiv(`import-counter`),this.updateCounter();let r=t.createDiv(`import-search-container`);this.searchInput=r.createEl(`input`,{type:`text`,cls:`prompt-input import-search-input`,placeholder:`搜索文件…`}),this.searchInput.addEventListener(`input`,()=>this.handleSearch());let i=t.createDiv(`import-list-wrapper`);this.fileListContainer=i;let a=i.createDiv(`import-select-all-row`);this.selectAllCheckbox=a.createEl(`input`,{type:`checkbox`}),this.selectAllCheckbox.addEventListener(`change`,()=>this.handleSelectAll()),a.createEl(`label`,{text:`全选`}).addEventListener(`click`,()=>{this.selectAllCheckbox&&(this.selectAllCheckbox.checked=!this.selectAllCheckbox.checked,this.handleSelectAll())}),this.renderFileList();let o=t.createDiv(`import-modal-footer`);new e.ButtonComponent(o).setButtonText(`取消`).onClick(()=>this.close()),this.nextButton=new e.ButtonComponent(o).setButtonText(`下一步`).setCta().setDisabled(this.selectedCount===0).onClick(()=>this.handleNext())}renderPhase2(){let{contentEl:t}=this;t.empty(),t.createDiv(`import-options-header`).createEl(`h2`,{text:`导入选项`});let n=t.createDiv(`import-options-content`),r=n.createDiv(`import-option-group`);r.createEl(`label`,{text:`默认状态`});let i=r.createEl(`select`);this.palettes.statuses.forEach(e=>{let t=i.createEl(`option`,{text:e.label});t.value=e.id,e.id===this.defaultStatus&&(t.selected=!0)}),i.addEventListener(`change`,e=>{this.defaultStatus=e.target.value});let a=n.createDiv(`import-option-group`);a.createEl(`label`,{text:`默认优先级`});let o=a.createEl(`select`);this.palettes.priorities.forEach(e=>{let t=o.createEl(`option`,{text:e.label});t.value=e.id,e.id===this.defaultPriority&&(t.selected=!0)}),o.addEventListener(`change`,e=>{this.defaultPriority=e.target.value});let s=n.createDiv(`import-option-group`);s.createEl(`label`,{text:`文件处理方式`});let c=s.createDiv(`import-radio-group`),l=c.createEl(`label`),u=l.createEl(`input`,{type:`radio`});u.name=`file-handling`,u.value=`move`,u.checked=this.fileHandling===`move`,u.addEventListener(`change`,()=>{this.fileHandling=`move`}),l.createSpan({text:`移动到任务目录（默认）`});let d=c.createEl(`label`),f=d.createEl(`input`,{type:`radio`});f.name=`file-handling`,f.value=`copy`,f.checked=this.fileHandling===`copy`,f.addEventListener(`change`,()=>{this.fileHandling=`copy`}),d.createSpan({text:`复制（保留原文件）`});let p=t.createDiv(`import-modal-footer`);new e.ButtonComponent(p).setButtonText(`上一步`).onClick(()=>this.handleBack()),new e.ButtonComponent(p).setButtonText(`导入（${this.selectedCount}）`).setCta().onClick(()=>{this.handleImport()})}applyRowStyles(e,t){e.toggleClass(`import-file-item--selected`,t)}renderFileList(){let e=this.fileListContainer;e&&(e.querySelectorAll(`.import-file-item`).forEach(e=>e.remove()),this.filteredFiles.forEach(t=>{let n=e.createDiv(`import-file-item suggestion-item`);this.applyRowStyles(n,t.selected);let r=n.createEl(`input`,{type:`checkbox`});r.checked=t.selected,r.addEventListener(`change`,e=>{e.stopPropagation(),t.selected=r.checked,this.updateCounter(),this.updateSelectAllCheckbox(),this.updateNextButton(),this.applyRowStyles(n,t.selected)}),n.createSpan({text:t.file.basename,cls:`import-file-name`}),n.createSpan({text:t.folder,cls:`import-file-folder`}),n.addEventListener(`click`,e=>{e.target!==r&&(r.checked=!r.checked,r.dispatchEvent(new Event(`change`,{bubbles:!0})))})}))}handleSearch(){let e=this.searchInput?.value.toLowerCase()||``;this.filteredFiles=this.files.filter(t=>t.file.basename.toLowerCase().includes(e)||t.folder.toLowerCase().includes(e)),this.renderFileList()}handleSelectAll(){let e=this.selectAllCheckbox?.checked||!1;this.filteredFiles.forEach(t=>{t.selected=e}),this.updateCounter(),this.updateNextButton(),this.renderFileList()}updateCounter(){if(!this.counterLabel)return;let e=this.files.filter(e=>e.selected).length;this.selectedCount=e,this.counterLabel.setText(`${e} selected`)}updateSelectAllCheckbox(){if(!this.selectAllCheckbox)return;let e=this.filteredFiles.length>0&&this.filteredFiles.every(e=>e.selected);this.selectAllCheckbox.checked=e}updateNextButton(){this.nextButton?.setDisabled(this.selectedCount===0)}handleNext(){this.selectedCount!==0&&(this.phase=2,this.render())}handleBack(){this.phase=1,this.render()}async handleImport(){if(!this.project){new e.Notice(`导入失败：尚未设置目标项目`,5e3);return}let t=this.files.filter(e=>e.selected).map(e=>e.file),n=0,r=0,i=Pd(this.app),a=i?.hasCapability(`tasks.read`)?i:null,o=[];for(let e of t){let t=this.app.metadataCache.getFileCache(e)?.frontmatter?.[`pm-task`]===!0;if(a&&!t){let t=await a.getTask(e.path).catch(()=>null);if(t){o.push({file:e,info:t});continue}}try{await this.plugin.store.importNoteAsTask(this.project,e,{status:this.defaultStatus,priority:this.defaultPriority,handling:this.fileHandling})===`imported`?r++:n++}catch(t){console.error(`导入 ${e.basename} 失败：`,t),n++}}if(a&&o.length)try{r+=await this.importTaskNotesTasks(a,this.project,o)}catch(e){console.error(`导入 TaskNotes 任务失败：`,e),n+=o.length}this.onImportComplete&&this.onImportComplete();let s=`已导入 ${r} 个任务`;n>0&&(s+=`（跳过 ${n} 个）`),new e.Notice(s,3e3),this.close()}async importTaskNotesTasks(e,t,n){let r=e.hasCapability(`settings.snapshot`)?e.getSettingsSnapshot():{},i=r.taskTag||`task`,a=r.fieldMapping?.archiveTag||`archived`,o=(e,t)=>(e??[]).map(e=>Ld(this.app,e,t)).filter(e=>e!==null),s=n.map(({file:e,info:t})=>({path:e.path,info:t,parentPaths:o(t.projects,e.path),blockedByPaths:o((t.blockedBy??[]).map(e=>typeof e==`string`?e:e.uid),e.path)})),{roots:c,byPath:l}=Hf(s,{defaultStatus:this.defaultStatus,defaultPriority:this.defaultPriority,taskTag:i,archiveTag:a}),u=new Set(s.map(e=>e.info.status).filter(Boolean)),d=new Set(s.map(e=>e.info.priority).filter(Boolean));Rd(e,this.plugin.settings,u,d)>0&&await this.plugin.saveSettings();let f=new Map;for(let{file:e}of n){let t=l.get(e.path);t&&f.set(t.id,e)}return this.plugin.store.importTaskForest(t,c,f,this.fileHandling)}setProject(e){this.project=e}setOnImportComplete(e){this.onImportComplete=e}};function Wf(e,t,n=`删除`){return new Promise(r=>{new Jf(e,t,n,r).open()})}function Gf(e,t){return new Promise(n=>{new Yf(e,t,n).open()})}function Kf(e,t,n=``){return new Promise(r=>{new qf(e,t,n,r).open()})}var qf=class extends e.Modal{label;placeholder;resolve;resolved=!1;constructor(e,t,n,r){super(e),this.label=t,this.placeholder=n,this.resolve=r}finish(e){this.resolved||(this.resolved=!0,this.resolve(e))}onOpen(){let{contentEl:t}=this;this.modalEl.addClass(`pm-prompt-modal`),t.createEl(`p`,{text:this.label,cls:`pm-prompt-text`});let n=t.createEl(`input`,{type:`text`,placeholder:this.placeholder,cls:`pm-prompt-input`}),r=t.createDiv(`pm-modal-btn-row`);new e.ButtonComponent(r).setButtonText(`取消`).onClick(()=>{this.finish(null),this.close()});let i=()=>{let e=n.value.trim();this.finish(e||null),this.close()};new e.ButtonComponent(r).setButtonText(`确定`).setCta().onClick(i),n.addEventListener(`keydown`,e=>{e.key===`Enter`&&(e.preventDefault(),i()),e.key===`Escape`&&(e.preventDefault(),this.finish(null),this.close())}),window.setTimeout(()=>n.focus(),10)}onClose(){this.finish(null),this.contentEl.empty()}},Jf=class extends e.Modal{message;confirmLabel;resolve;resolved=!1;constructor(e,t,n,r){super(e),this.message=t,this.confirmLabel=n,this.resolve=r}finish(e){this.resolved||(this.resolved=!0,this.resolve(e))}onOpen(){let{contentEl:t}=this;this.modalEl.addClass(`pm-confirm-modal`),t.createEl(`p`,{text:this.message,cls:`pm-confirm-text`});let n=t.createDiv(`pm-modal-btn-row`);new e.ButtonComponent(n).setButtonText(`取消`).onClick(()=>{this.finish(!1),this.close()}),new e.ButtonComponent(n).setButtonText(this.confirmLabel).setDestructive().onClick(()=>{this.finish(!0),this.close()})}onClose(){this.finish(!1),this.contentEl.empty()}},Yf=class extends e.Modal{taskTitle;resolve;resolved=!1;constructor(e,t,n){super(e),this.taskTitle=t,this.resolve=n}finish(e){this.resolved||(this.resolved=!0,this.resolve(e))}onOpen(){let{contentEl:t}=this;this.modalEl.addClass(`pm-confirm-modal`),t.createEl(`p`,{text:`是否同时复制“${this.taskTitle}”的子任务？`,cls:`pm-confirm-text`});let n=t.createDiv(`pm-modal-btn-row`);new e.ButtonComponent(n).setButtonText(`取消`).onClick(()=>{this.finish(null),this.close()}),new e.ButtonComponent(n).setButtonText(`仅复制任务`).onClick(()=>{this.finish(`task-only`),this.close()}),new e.ButtonComponent(n).setButtonText(`包含子任务`).setCta().onClick(()=>{this.finish(`with-subtasks`),this.close()})}onClose(){this.finish(null),this.contentEl.empty()}};function Q(e,t,n){let r=()=>{new jf(e.app,e,t,n.task??null,n.parentId??null,n.onSave,n.defaults).open()};if(n.task){let t=n.task;(async()=>{await e.store.loadTaskBody(t),r()})()}else r()}function Xf(e,t){let n=()=>{new Ff(e.app,e,t.project??null,t.onSave??(()=>{})).open()};if(t.project){let r=t.project;(async()=>{await e.store.loadProjectBody(r),n()})()}else n()}function Zf(e,t,n){new If(e.app,t,n).open()}function Qf(e,t,n){new Lf(e.app,t,n).open()}function $f(e,t,n){let r=new Uf(e.app,e);r.setProject(t),n&&r.setOnImportComplete(()=>{n()}),r.open()}function ep(e,t,n,r=[],i=[],a=[]){let o=n.sortDir===`asc`?1:-1;switch(n.sortKey){case`title`:return o*e.title.localeCompare(t.title);case`stage`:return o*(ld(e.stage,r)-ld(t.stage,r));case`status`:return o*(nd(e.status,i)-nd(t.status,i));case`priority`:return o*(tp(e.priority,a)-tp(t.priority,a));case`due`:return o*(e.due||`zzz`).localeCompare(t.due||`zzz`);case`assignees`:return o*(e.assignees[0]??``).localeCompare(t.assignees[0]??``);case`progress`:return o*(e.progress-t.progress);default:return 0}}function tp(e,t){let n=t.findIndex(t=>t.id===e);return n>=0?n:999}function np(t,n,r){return t.addItem(e=>e.setTitle(`编辑任务`).setIcon(`pencil`).onClick(()=>{Q(r.plugin,r.project,{task:n,onSave:async()=>{await r.onRefresh()}})})),t.addItem(e=>e.setTitle(`添加子任务`).setIcon(`plus`).onClick(()=>{Q(r.plugin,r.project,{parentId:n.id,onSave:async()=>{await r.onRefresh()}})})),t.addItem(e=>e.setTitle(`复制任务`).setIcon(`copy`).onClick(Y(async()=>{let e=!1;if(n.subtasks.length>0){let t=await Gf(r.plugin.app,n.title);if(t===null)return;e=t===`with-subtasks`}await r.plugin.store.duplicateTask(r.project,n.id,e),await r.onRefresh()}))),t.addSeparator(),n.archived?t.addItem(t=>t.setTitle(`取消归档`).setIcon(`archive-restore`).onClick(Y(async()=>{await r.plugin.store.unarchiveTask(r.project,n.id),new e.Notice(`任务已取消归档`),await r.onRefresh()}))):t.addItem(t=>t.setTitle(`归档`).setIcon(`archive`).onClick(Y(async()=>{await r.plugin.store.archiveTask(r.project,n.id),new e.Notice(`任务已归档`),await r.onRefresh()}))),t.addItem(e=>e.setTitle(`删除任务`).setIcon(`trash`).onClick(Y(async()=>{await Wf(r.plugin.app,`确定删除“${n.title}”吗？`)&&(await r.plugin.store.deleteTask(r.project,n.id),await r.onRefresh())}))),t}var rp=class{el;constructor(e,t){this.el=e.createEl(`tr`,{cls:`pm-table-row`}),this.el.dataset.taskId=t.taskId,t.isDone&&this.el.addClass(`pm-table-row--done`),t.isArchived&&this.el.addClass(`pm-table-row--archived`),t.isSelected&&this.el.addClass(`pm-table-row--selected`),this.el.style.setProperty(`--depth`,String(t.depth)),this.el.addEventListener(`click`,e=>{e.target.closest(`button, input, .pm-chip--interactive, .pm-task-title-text, .pm-table-cell-select, .pm-icon-btn`)||t.onRowClick()})}},ip=class{el;constructor(e,t){this.el=e.createEl(`td`,{cls:`pm-table-cell pm-table-cell-actions`}),new Ud(this.el).setIcon(`more-horizontal`).setTooltip(`任务操作`).setRevealOnHover(!0).onClick(t.onClick)}},ap=class{el;names=[];max=3;size=`md`;constructor(e){this.el=e.createDiv(`pm-avatar-stack`)}setNames(e){return this.names=e,this.render(),this}setMax(e){return this.max=e,this.render(),this}setSize(e){return this.size=e,this.render(),this}render(){this.el.empty();let e=this.names.slice(0,this.max);for(let t of e)new pf(this.el).setName(t).setSize(this.size);let t=this.names.length-e.length;if(t>0){let e=this.el.createSpan({cls:`pm-avatar pm-avatar--more`});e.setText(`+${t}`),this.size===`sm`&&e.addClass(`pm-avatar--sm`)}}},op=class{el;constructor(e,t){this.el=e.createEl(`td`,{cls:`pm-table-cell pm-table-cell-assignees`}),new ap(this.el).setNames(t).setMax(3)}},sp=class{el;constructor(e,t){this.el=e.createEl(`td`,{cls:`pm-table-cell`}),this.el.createSpan({text:t||`—`,cls:`pm-cf-value`})}};function cp(e,t,n,r=`md`){let i=new Z(e).setLabel(t).setSize(r);return n===`near`?i.setVariant(`solid`).setColor(`var(--color-orange)`):n===`overdue`&&i.setVariant(`solid`).setColor(`var(--color-red)`).setStrong(),i}var lp=class{el;constructor(e,t){let{task:n}=t;this.el=e.createEl(`td`,{cls:`pm-table-cell`});let r=e=>{vf({container:this.el,display:e,inputType:`date`,value:n.due,onSave:t.onSave})};if(!n.due){let e=new Z(this.el).setLabel(`—`).setColor(`var(--text-faint)`).onClick(t=>{t.stopPropagation(),r(e.el)});return}let i=cp(this.el,$u(n.due),t.urgency);i.onClick(e=>{e.stopPropagation(),r(i.el)})}},up=class{el;constructor(t,n){this.el=t.createDiv({cls:`tree-item-icon collapse-icon pm-collapse-toggle`}),(0,e.setIcon)(this.el,`right-triangle`),this.el.toggleClass(`is-collapsed`,n.collapsed),this.el.setAttr(`aria-label`,n.collapsed?`展开子任务`:`折叠子任务`),this.el.addEventListener(`click`,n.onToggle)}},dp=class{el;constructor(e,t){this.el=e.createEl(`td`,{cls:`pm-table-cell-expand`}),t.hasSubtasks&&new up(this.el,{collapsed:t.collapsed,onToggle:t.onToggle})}},fp=class{el;constructor(e,t){this.el=e.createEl(`td`,{cls:`pm-table-cell`}),ud(t.priorities,t.task.priority)&&sf(this.el,t.task,t.priorities,t.onChange)}},pp=class{el;fill;labelEl=null;value=0;constructor(e){this.el=e.createDiv(`pm-progress`);let t=this.el.createDiv(`pm-progress-track`);this.fill=t.createDiv(`pm-progress-fill`)}setValue(e){return this.value=Math.max(0,Math.min(100,e)),this.fill.style.width=`${this.value}%`,this.labelEl&&this.labelEl.setText(`${Math.round(this.value)}%`),this}setColor(e){return this.el.style.setProperty(`--pm-progress-color`,e),this}setSize(e){return this.el.toggleClass(`pm-progress--sm`,e===`sm`),this}setShowLabel(e){return e&&!this.labelEl?this.labelEl=this.el.createSpan({cls:`pm-progress-label`,text:`${Math.round(this.value)}%`}):!e&&this.labelEl&&(this.labelEl.remove(),this.labelEl=null),this}},mp=class{el;constructor(e,t){this.el=e.createEl(`td`,{cls:`pm-table-cell pm-table-cell-progress`});let n=new pp(this.el).setValue(t.value).setColor(t.color).setShowLabel(!0);n.el.addEventListener(`click`,e=>{e.stopPropagation(),vf({container:this.el,display:n.el,inputType:`number`,value:String(t.value),onSave:e=>t.onSave(Math.max(0,Math.min(100,Math.round(parseFloat(e)||0))))})})}},hp=class{el;constructor(e,t){this.el=e.createEl(`td`,{cls:`pm-table-cell-select`});let n=this.el.createEl(`input`,{type:`checkbox`,cls:`pm-select-checkbox`});n.checked=t.checked,n.addEventListener(`click`,e=>{e.stopPropagation(),t.onClick(e)})}},gp=class{el;constructor(e,t){this.el=e.createEl(`td`,{cls:`pm-table-cell`}),t.readonly?af(this.el,t.task.status,sd(t.statuses,t.task.status)):sd(t.statuses,t.task.status)?nf(this.el,t.task,t.statuses,t.onChange):af(this.el,t.task.status,void 0)}},_p=class{el;constructor(e,t){this.el=e.createEl(`td`,{cls:`pm-table-cell`}),t.readonly?af(this.el,t.task.stage,cd(t.stages,t.task.stage)):cd(t.stages,t.task.stage)?rf(this.el,t.task,t.stages,t.onChange):af(this.el,t.task.stage,void 0)}};function vp(e,t,n,r=`md`){if(t<=0&&n<=0)return null;let i=n>0?`${t}/${n}h`:`${t}h`,a=new Z(e).setLabel(i).setSize(r);return n>0&&t>n&&a.setVariant(`solid`).setColor(`var(--color-red)`).setStrong(),a}var yp=class{el;constructor(e,t){this.el=e.createEl(`td`,{cls:`pm-table-cell pm-table-cell-time`}),vp(this.el,t.logged,t.estimate)}};function bp(e,t,n){if(t===`zentao`)return null;let r=t===`zentao-requirement`?`需求`:t===`zentao-task`?`任务`:t,i=new Z(e).setLabel(r).setVariant(`outline`).setTag();return t.startsWith(`超时`)?i.setDot(!0).setColor(`var(--color-red)`):n&&i.setDot(!0).setColor(Zu(t)),i}function xp(e){let t=String(e.customFields.zentaoSourceType??``),n=t===`story`?`需求`:t===`task`?`任务`:e.type===`milestone`?`里程碑`:`事项`,r=String(e.customFields.zentaoId??``);return{displayTitle:e.title.replace(/^需求\s*-?\s*#?\d+\s*[·｜|:-]\s*/u,``).replace(/^迭代\s*-?\s*#?\d+\s*[·｜|:-]\s*/u,``).trim()||e.title,typeLabel:n,zentaoId:r}}var Sp=class{el;constructor(e,t){let{task:n}=t,r=xp(n);this.el=e.createEl(`td`,{cls:`pm-table-cell-title`}),this.el.setCssStyles({paddingLeft:`${t.depth*20+8}px`});let i=this.el.createSpan({text:r.displayTitle,cls:`pm-task-title-text`});if(i.addEventListener(`click`,()=>t.onTitleClick()),i.addEventListener(`dblclick`,e=>{t.readonly||(e.stopPropagation(),vf({container:this.el,display:i,inputType:`text`,value:n.title,onSave:t.onTitleSave}))}),t.readonly||new Ud(this.el).setIcon(`plus`).setTooltip(`添加子任务`).setRevealOnHover(!0).onClick(e=>{e.stopPropagation(),t.onAddSubtask()}),n.type===`milestone`&&new Z(this.el).setLabel(`里程碑`).setVariant(`solid`).setSize(`sm`).setColor(`var(--color-purple)`).setTooltip(`里程碑`),n.recurrence&&new Z(this.el).setLabel(`重复`).setVariant(`solid`).setSize(`sm`).setColor(`var(--color-blue)`).setTooltip(`重复任务`),n.archived&&new Z(this.el).setLabel(`已归档`).setVariant(`solid`).setSize(`sm`).setColor(`var(--text-muted)`).setTooltip(`已归档`),n.tags.length){let e=this.el.createDiv(`pm-table-tags`);for(let r of n.tags)bp(e,r,t.showTagColors)}}};function Cp(t,n,r,i,u=`a`){let a=!!n.completed,o=sd(i.statuses,n.status),s=!!n.customFields.zentaoSourceType,{el:c}=new rp(t,{taskId:n.id,depth:r,isDone:a,isArchived:!!n.archived,isSelected:i.state.selectedTaskId===n.id,onRowClick:()=>{i.state.selectedTaskId=n.id,kp(i.state)}});c.addClass(`pm-zentao-type-${Dp(String(n.customFields.zentaoSourceType??`local`))}`),c.addClass(`pm-requirement-group-${u}`),c.addClass(`pm-zentao-stage-${Dp(n.stage||`unset`)}`),c.addClass(`pm-zentao-status-${Dp(n.status||`unset`)}`),new hp(c,{checked:i.state.selectedTaskIds.has(n.id),onClick:e=>{let t=e.target.checked;if(e.shiftKey&&i.state.lastCheckedTaskId){let e=Up(i.state),r=e.indexOf(n.id),a=e.indexOf(i.state.lastCheckedTaskId);if(r!==-1&&a!==-1){let[n,o]=r<a?[r,a]:[a,r];for(let r=n;r<=o;r++)t?i.state.selectedTaskIds.add(e[r]):i.state.selectedTaskIds.delete(e[r]);Vp(i.state)}}else t?i.state.selectedTaskIds.add(n.id):i.state.selectedTaskIds.delete(n.id);i.state.lastCheckedTaskId=n.id,i.onSelectionChange()}}),new dp(c,{hasSubtasks:n.subtasks.length>0,collapsed:n.collapsed,onToggle:Y(async()=>{await i.plugin.toggleTaskCollapsed(i.project,n.id),await i.onRefresh()})}),Tp(c,n),new Sp(c,{task:n,depth:r,showTagColors:i.plugin.settings.showTagColors,onTitleClick:()=>{Q(i.plugin,i.project,{task:n,onSave:async()=>{await i.onRefresh()}})},onTitleSave:async e=>{await i.plugin.store.updateTask(i.project,n.id,{title:e}),await i.onRefresh()},onAddSubtask:()=>{Q(i.plugin,i.project,{parentId:n.id,onSave:async()=>{await i.onRefresh()}})},readonly:s}),new sp(c,id(n.customFields.zentaoModule)),new _p(c,{task:n,stages:i.stages,readonly:s,onChange:Y(async e=>{await i.plugin.store.updateTask(i.project,n.id,{stage:e}),await i.onRefresh()})}),new gp(c,{task:n,statuses:i.statuses,readonly:s,onChange:Y(async e=>{await i.plugin.store.updateTask(i.project,n.id,{status:e}),await i.onRefresh()})}),new fp(c,{task:n,priorities:i.priorities,onChange:Y(async e=>{await i.plugin.store.updateTask(i.project,n.id,{priority:e}),await i.onRefresh()})}),new op(c,n.assignees),new op(c,id(n.customFields.completedBy)?[id(n.customFields.completedBy)]:[]),new lp(c,{task:n,urgency:rd(n,i.statuses),onSave:async e=>{await i.plugin.store.updateTask(i.project,n.id,{due:e}),await i.plugin.store.scheduleAfterChange(i.project,n.id),await i.onRefresh()}}),new mp(c,{value:n.progress,color:o?.color??`var(--interactive-accent)`,onSave:async e=>{await i.plugin.store.updateTask(i.project,n.id,{progress:e}),await i.onRefresh()}}),new yp(c,{logged:gu(n),estimate:projectEstimateHours(n)});for(let e of i.project.customFields.filter(e=>!wp.has(e.id))){let t=n.customFields[e.id];new sp(c,e.id===`storyId`?Ep(i,t):id(t))}new ip(c,{onClick:t=>{let r=new e.Menu;np(r,n,{plugin:i.plugin,project:i.project,onRefresh:i.onRefresh}),r.showAtMouseEvent(t)}})}const wp=new Set([`zentaoType`,`zentaoSourceType`,`zentaoTaskType`,`zentaoId`,`zentaoUrl`,`zentaoStatus`,`zentaoStage`,`zentaoModule`,`executionId`,`storyId`,`sourceUpdatedAt`,`completedBy`]);function Tp(e,t){let n=e.createEl(`td`,{cls:`pm-table-cell pm-table-cell-zentao-id`}),r=xp(t);if(!r.zentaoId)return;let i=id(t.customFields.zentaoUrl),a=i?n.createEl(`a`,{cls:`external-link`,attr:{href:i,target:`_blank`,rel:`noopener noreferrer`}}):n;i&&a.addEventListener(`click`,e=>e.stopPropagation()),new Z(a).setLabel(`${r.typeLabel} #${r.zentaoId}`).setVariant(`plain`).setSize(`sm`).setColor(`var(--text-muted)`)}function Ep(e,t){let n=id(t);if(!n)return``;let r=q(e.project.tasks).find(({task:e})=>String(e.customFields.zentaoSourceType??``)===`story`&&String(e.customFields.zentaoId??``)===n)?.task;return r?`需求 #${n} · ${xp(r).displayTitle}`:`需求 #${n}`}function Dp(e){return e.toLowerCase().replace(/[^a-z0-9_-]+/g,`-`)}function Op(e){if(!e.tableBody)return;let t=e.tableBody.closest(`.pm-table-wrapper`);if(!t)return;let n=t.querySelector(`.pm-select-all-checkbox`);if(!n)return;let r=Up(e);r.length===0?(n.checked=!1,n.indeterminate=!1):r.every(t=>e.selectedTaskIds.has(t))?(n.checked=!0,n.indeterminate=!1):r.some(t=>e.selectedTaskIds.has(t))?(n.checked=!1,n.indeterminate=!0):(n.checked=!1,n.indeterminate=!1)}function kp(e){if(!e.tableBody||(e.tableBody.querySelectorAll(`.pm-table-row--selected`).forEach(e=>e.removeClass(`pm-table-row--selected`)),!e.selectedTaskId))return;let t=e.tableBody.querySelector(`tr[data-task-id="${e.selectedTaskId}"]`);if(!t&&e.wrapper&&e.renderWindow){let n=e.visibleRows.findIndex(t=>t.task.id===e.selectedTaskId);if(n===-1)return;let r=e.wrapper.querySelector(`thead`),i=r instanceof HTMLElement?r.offsetHeight:0;e.wrapper.scrollTop=Math.max(0,n*e.rowHeight+i-e.wrapper.clientHeight/2),e.renderWindow(),t=e.tableBody.querySelector(`tr[data-task-id="${e.selectedTaskId}"]`)}t&&(t.addClass(`pm-table-row--selected`),t.scrollIntoView({block:`nearest`}))}function Ap(e){let t=e.container.createDiv(`pm-table-wrapper`);e.state.wrapper=t;let n=!1;t.addEventListener(`scroll`,()=>{n||(n=!0,window.requestAnimationFrame(()=>{n=!1;let{start:t,end:r}=Np(e.state);(t!==e.state.windowStart||r!==e.state.windowEnd)&&e.state.renderWindow?.()}))});let r=t.createEl(`table`,{cls:`pm-table`}),i=r.createEl(`thead`).createEl(`tr`),a=i.createEl(`th`,{cls:`pm-table-cell-select`}).createEl(`input`,{type:`checkbox`,cls:`pm-select-all-checkbox`});a.addEventListener(`change`,()=>{let t=Up(e.state);if(a.checked)for(let n of t)e.state.selectedTaskIds.add(n);else e.state.selectedTaskIds.clear();Vp(e.state),e.onSelectionChange()});let o=[{id:`expand`,key:null,label:``,width:32},{id:`zentaoId`,key:null,label:`事项 ID`,width:96},{id:`title`,key:`title`,label:`事项`,width:397},{id:`module`,key:null,label:`模块`,width:120},{id:`stage`,key:`stage`,label:`阶段`,width:130},{id:`status`,key:`status`,label:`状态`,width:120},{id:`priority`,key:`priority`,label:`优先级`,width:100},{id:`assignees`,key:`assignees`,label:`负责人`,width:94},{id:`completedBy`,key:null,label:`完成者`,width:102},{id:`due`,key:`due`,label:`截止日期`,width:110},{id:`progress`,key:`progress`,label:`进度`,width:120},{id:`time`,key:null,label:`工时`,width:90}],s=[],c=()=>{for(let{key:t,th:n}of s)n.querySelector(`.pm-sort-indicator`)?.remove(),e.state.sortKey===t&&n.createSpan({text:e.state.sortDir===`asc`?` ↑`:` ↓`,cls:`pm-sort-indicator`})};for(let t of o){let n=i.createEl(`th`);Rp(e,n,t.id,t.width),t.key?(n.addClass(`pm-table-th-sortable`),n.setAttribute(`role`,`button`),n.setAttribute(`aria-label`,`按${t.label}排序`),n.createSpan({text:t.label}),s.push({key:t.key,th:n}),n.addEventListener(`click`,()=>{e.state.sortKey===t.key?e.state.sortDir=e.state.sortDir===`asc`?`desc`:`asc`:(e.state.sortKey=t.key,e.state.sortDir=`asc`),c(),jp(e)})):n.setText(t.label),zp(e,n,t.id)}e.state.updateSortIndicators=c,c();for(let t of Ip(e.project)){let n=i.createEl(`th`,{text:t.name}),r=`custom-${t.id}`;Rp(e,n,r,120),zp(e,n,r)}i.createEl(`th`).setCssStyles({width:`40px`}),e.state.tableBody=r.createEl(`tbody`),Mp(e)}function jp(e){e.state.tableBody&&Mp(e)}function Mp(e){if(!e.state.tableBody)return;let t=q(e.project.tasks),n=Ed(e.state.filter);t=Lp(t,Ad(t,e.state.filter,e.statuses),n);let r=new Set(t.map(e=>e.task.id)),i=new Map;for(let e of t){let t;t=e.parentId===null||n&&!r.has(e.parentId)?null:e.parentId;let a=i.get(t);a||(a=[],i.set(t,a)),a.push(e)}for(let t of i.values())t.sort((t,n)=>ep(t.task,n.task,e.state,e.stages,e.statuses,e.priorities));let a=[],o=e=>{let t=i.get(e);if(t)for(let e of t)a.push(e),o(e.task.id)};o(null);let s=`a`,c=0;for(let e of a){if(e.depth===0&&String(e.task.customFields.zentaoSourceType??``)===`story`)s=c++%2===0?`a`:`b`;e.groupTone=s}e.state.visibleRows=n?a:a.filter(e=>e.visible),e.state.renderWindow=()=>Pp(e),e.state.windowStart=-1,e.state.windowEnd=-1,Pp(e)}function Np(e){if(e.visibleRows.length<=120)return{start:0,end:e.visibleRows.length};let t=e.wrapper;if(!t)return{start:0,end:e.visibleRows.length};let n=t.querySelector(`thead`),r=n instanceof HTMLElement?n.offsetHeight:0,i=Math.max(0,t.scrollTop-r),a=t.clientHeight||600,o=Math.floor(i/e.rowHeight)-8;o<0&&(o=0);let s=Math.ceil((i+a)/e.rowHeight)+8;return s>e.visibleRows.length&&(s=e.visibleRows.length),{start:o,end:s}}function Pp(e){let{state:t}=e,n=t.tableBody;if(!n)return;let r=t.visibleRows,i=14+Ip(e.project).length,{start:a,end:o}=Np(t);t.windowStart=a,t.windowEnd=o,n.empty(),a>0&&Bp(n,i,a*t.rowHeight);for(let t=a;t<o;t++)Cp(n,r[t].task,r[t].depth,e,r[t].groupTone??`a`);if(o<r.length&&Bp(n,i,(r.length-o)*t.rowHeight),Sf(n.createEl(`tr`,{cls:`pm-table-add-row`}).createEl(`td`,{attr:{colspan:String(i)}}),`添加任务`,()=>{Q(e.plugin,e.project,{onSave:()=>e.onRefresh()})}),!t.heightCalibrated){let r=n.querySelector(`tr[data-task-id]`);r instanceof HTMLElement&&r.offsetHeight>0&&(t.heightCalibrated=!0,Math.abs(r.offsetHeight-t.rowHeight)>.5&&(t.rowHeight=r.offsetHeight,Pp(e)))}}const Fp=new Set([`zentaoType`,`zentaoSourceType`,`zentaoTaskType`,`zentaoId`,`zentaoUrl`,`zentaoStatus`,`zentaoStage`,`zentaoModule`,`executionId`,`storyId`,`sourceUpdatedAt`,`completedBy`]);function Ip(e){return e.customFields.filter(e=>!Fp.has(e.id))}function Lp(e,t,n){if(!n)return t;let r=new Map(e.map(e=>[e.task.id,e.parentId])),i=new Set(t.map(e=>e.task.id));for(let e of t){let t=e.parentId;for(;t;)i.add(t),t=r.get(t)??null}return e.filter(e=>i.has(e.task.id))}function Rp(e,t,n,r){let i=e.plugin.settings.tableColumnWidths[n]??r;t.setCssStyles({width:`${i}px`,minWidth:`${i}px`})}function zp(e,t,n){let r=t.createSpan({cls:`pm-table-column-resizer`});r.addEventListener(`pointerdown`,i=>{i.preventDefault(),i.stopPropagation();let a=i.clientX,o=t.getBoundingClientRect().width;r.setPointerCapture(i.pointerId);let s=r=>{let i=Math.max(56,Math.round(o+r.clientX-a));t.setCssStyles({width:`${i}px`,minWidth:`${i}px`}),e.plugin.settings.tableColumnWidths[n]=i},c=()=>{r.removeEventListener(`pointermove`,s),r.removeEventListener(`pointerup`,c),e.plugin.saveSettings()};r.addEventListener(`pointermove`,s),r.addEventListener(`pointerup`,c)})}function Bp(e,t,n){e.createEl(`tr`,{cls:`pm-table-spacer`}).createEl(`td`,{attr:{colspan:String(t)}}).setCssStyles({height:`${n}px`})}function Vp(e){if(!e.tableBody)return;let t=e.tableBody.querySelectorAll(`tr[data-task-id]`);for(let n of Array.from(t)){let t=n.dataset.taskId;if(t===void 0)continue;let r=n.querySelector(`.pm-select-checkbox`);r&&(r.checked=e.selectedTaskIds.has(t))}Op(e)}function Hp(e,t){let n=activeDocument.activeElement,r=n instanceof HTMLInputElement||n instanceof HTMLTextAreaElement||n instanceof HTMLElement&&n.contentEditable===`true`;if(e.key===`Escape`){if(r){n.blur();return}if(t.state.selectedTaskIds.size>0){t.state.selectedTaskIds.clear(),Vp(t.state),t.onSelectionChange();return}t.state.selectedTaskId=null,kp(t.state);return}if(r)return;let i=Up(t.state);if(i.length)switch(e.key){case`ArrowDown`:case`j`:{e.preventDefault();let n=t.state.selectedTaskId?i.indexOf(t.state.selectedTaskId):-1,r=Math.min(n+1,i.length-1);t.state.selectedTaskId=i[r],kp(t.state);break}case`ArrowUp`:case`k`:{e.preventDefault();let n=t.state.selectedTaskId?i.indexOf(t.state.selectedTaskId):i.length,r=Math.max(n-1,0);t.state.selectedTaskId=i[r],kp(t.state);break}case`Enter`:case`e`:{if(!t.state.selectedTaskId)return;e.preventDefault();let n=J(t.project,t.state.selectedTaskId);n&&Q(t.plugin,t.project,{task:n,onSave:async()=>{await t.onRefresh()}});break}case`Delete`:case`Backspace`:{if(e.preventDefault(),t.state.selectedTaskIds.size>0){t.onBulkDelete();break}if(!t.state.selectedTaskId)return;let n=t.state.selectedTaskId,r=i.indexOf(n),a=r<i.length-1?r+1:r-1;t.state.selectedTaskId=a>=0?i[a]:null,Wp(n,t);break}}}function Up(e){return e.visibleRows.map(e=>e.task.id)}async function Wp(e,t){await t.plugin.store.deleteTask(t.project,e),await t.onRefresh()}function Gp(e){let{ctx:t,onAction:n}=e,r=t.container.querySelector(`.pm-bulk-bar`);if(t.state.selectedTaskIds.size===0){r?.remove();return}qp(r??Kp(t.container),t,n)}function Kp(e){let t=createDiv({cls:`pm-bulk-bar`});return e.prepend(t),t}function qp(t,n,r){t.empty();let i=n.state.selectedTaskIds.size,a=t.createDiv(`pm-bulk-bar-left`);a.createSpan({text:`已选择 ${i} 项`,cls:`pm-bulk-bar-count`}),new e.ButtonComponent(a).setButtonText(`设置阶段`).onClick(t=>{let i=new e.Menu;for(let e of n.stages)i.addItem(t=>t.setTitle(pd(e.icon,e.label)).onClick(()=>r({type:`set-stage`,stage:e.id})));i.showAtMouseEvent(t)}),new e.ButtonComponent(a).setButtonText(`设置状态`).onClick(t=>{let i=new e.Menu;for(let e of n.statuses)i.addItem(t=>t.setTitle(pd(e.icon,e.label)).onClick(()=>r({type:`set-status`,status:e.id})));i.showAtMouseEvent(t)}),new e.ButtonComponent(a).setButtonText(`设置优先级`).onClick(t=>{let i=new e.Menu;for(let e of n.priorities)i.addItem(t=>t.setTitle(pd(e.icon,e.label)).onClick(()=>r({type:`set-priority`,priority:e.id})));i.showAtMouseEvent(t)}),new e.ButtonComponent(a).setButtonText(`设置负责人`).onClick(t=>{let i=new e.Menu,a=mu(n.project.tasks,[...n.project.teamMembers,...n.plugin.settings.globalTeamMembers]);for(let e of a)i.addItem(t=>t.setTitle(e).onClick(()=>r({type:`set-assignee`,assignee:e})));i.addSeparator(),i.addItem(e=>e.setTitle(`+ 新负责人…`).onClick(async()=>{let e=await Kf(n.plugin.app,`请输入负责人姓名：`,`姓名`);e&&r({type:`set-assignee`,assignee:e})})),i.addSeparator(),i.addItem(e=>e.setTitle(`清空负责人`).onClick(()=>r({type:`set-assignee`,assignee:``}))),i.showAtMouseEvent(t)}),new e.ButtonComponent(a).setButtonText(`设置标签`).onClick(t=>{let i=new e.Menu,a=hu(n.project.tasks);for(let e of a)i.addItem(t=>t.setTitle(e).onClick(()=>r({type:`set-tag`,tag:e})));i.addSeparator(),i.addItem(e=>e.setTitle(`+ 新标签…`).onClick(async()=>{let e=await Kf(n.plugin.app,`请输入标签：`,`标签`);e&&r({type:`set-tag`,tag:e})})),i.addSeparator(),i.addItem(e=>e.setTitle(`清空标签`).onClick(()=>r({type:`set-tag`,tag:``}))),i.showAtMouseEvent(t)}),new e.ButtonComponent(a).setButtonText(`设置截止日期`).onClick(t=>{let n=new e.Menu,i=Zl(),a=e=>i.add({days:e}).toString();n.addItem(e=>e.setTitle(`今天（${a(0)}）`).onClick(()=>r({type:`set-due-date`,due:a(0)}))),n.addItem(e=>e.setTitle(`明天（${a(1)}）`).onClick(()=>r({type:`set-due-date`,due:a(1)}))),n.addItem(e=>e.setTitle(`一周后（${a(7)}）`).onClick(()=>r({type:`set-due-date`,due:a(7)}))),n.addItem(e=>e.setTitle(`两周后（${a(14)}）`).onClick(()=>r({type:`set-due-date`,due:a(14)}))),n.addSeparator(),n.addItem(e=>e.setTitle(`选择日期…`).onClick(()=>{let e=activeDocument.createEl(`input`);e.type=`date`,e.addClass(`pm-offscreen`),activeDocument.body.appendChild(e),e.addEventListener(`change`,()=>{e.value&&r({type:`set-due-date`,due:e.value}),e.remove()}),e.addEventListener(`blur`,()=>window.setTimeout(()=>e.remove(),200)),e.showPicker()})),n.addSeparator(),n.addItem(e=>e.setTitle(`清空截止日期`).onClick(()=>r({type:`set-due-date`,due:``}))),n.showAtMouseEvent(t)}),new e.ButtonComponent(a).setButtonText(`设置进度`).onClick(t=>{let n=new e.Menu;for(let e of[0,25,50,75,100])n.addItem(t=>t.setTitle(`${e}%`).onClick(()=>r({type:`set-progress`,progress:e})));n.showAtMouseEvent(t)}),new e.ButtonComponent(a).setButtonText(`设置父事项`).onClick(()=>{let e=new Set(n.state.selectedTaskIds),t=new Set(e);for(let r of e){let e=J(n.project,r);if(e)for(let n of q(e.subtasks))t.add(n.task.id)}let i=q(n.project.tasks).filter(e=>!t.has(e.task.id)).map(e=>e.task);new Lf(n.plugin.app,i,e=>{r({type:`set-parent`,parentId:e.id})}).open()}),new e.ButtonComponent(a).setButtonText(`移除父事项`).onClick(()=>r({type:`remove-parent`}));let o=[...n.state.selectedTaskIds].map(e=>J(n.project,e)).filter(Boolean),s=o.some(e=>e.archived);o.some(e=>!e.archived)&&new e.ButtonComponent(a).setButtonText(`归档`).onClick(()=>r({type:`archive`})),s&&new e.ButtonComponent(a).setButtonText(`取消归档`).onClick(()=>r({type:`unarchive`})),new e.ButtonComponent(a).setButtonText(`删除`).setDestructive().onClick(()=>r({type:`delete`}));let c=t.createDiv(`pm-bulk-bar-right`);new e.ExtraButtonComponent(c).setIcon(`x`).setTooltip(`清空选择`).onClick(()=>{n.state.selectedTaskIds.clear(),n.state.tableBody&&n.state.tableBody.querySelectorAll(`.pm-select-checkbox`).forEach(e=>{e.checked=!1}),Op(n.state),Gp({ctx:n,onAction:r})})}const Jp=e=>`${e} 个事项`;var Yp=class{container;project;plugin;onRefresh;state;pendingScrollTop=null;constructor(e,t,n,r,i,a){this.container=e,this.project=t,this.plugin=n,this.onRefresh=r,this.state={sortKey:a?.sortKey??`stage`,sortDir:a?.sortDir??`asc`,filter:i,selectedTaskId:null,selectedTaskIds:new Set,lastCheckedTaskId:null,tableBody:null,wrapper:null,visibleRows:[],rowHeight:36,heightCalibrated:!1,windowStart:-1,windowEnd:-1,renderWindow:null,updateSortIndicators:null}}getScrollTop(){return this.container.querySelector(`.pm-table-wrapper`)?.scrollTop??0}setPendingScrollTop(e){this.pendingScrollTop=e}getViewState(){return{sortKey:this.state.sortKey,sortDir:this.state.sortDir}}updateFilter(e,t){this.state.filter=e,t&&(this.state.sortKey=t.sortKey??this.state.sortKey,this.state.sortDir=t.sortDir??this.state.sortDir),this.state.selectedTaskId=null,this.state.selectedTaskIds.clear(),this.state.lastCheckedTaskId=null,this.state.updateSortIndicators?.();let n=this.getScrollTop();this.doRefreshTable();let r=this.state.wrapper;r&&(r.scrollTop=Math.min(n,Math.max(0,r.scrollHeight-r.clientHeight)),this.state.renderWindow?.()),this.updateBulkBar()}render(){this.state.tableBody=null,this.container.empty(),this.container.addClass(`pm-table-view`);let e=this.makeTableContext();if(Ap(e),Gp({ctx:e,onAction:Y(e=>this.handleBulkAction(e))}),this.pendingScrollTop!==null){let e=this.container.querySelector(`.pm-table-wrapper`);e&&(e.scrollTop=this.pendingScrollTop,this.state.renderWindow?.()),this.pendingScrollTop=null}}handleKeyDown(e){Hp(e,this.makeTableContext())}refresh(){this.doRefreshTable(),this.updateBulkBar()}doRefreshTable(){this.state.tableBody?jp(this.makeTableContext()):this.render()}async handleBulkAction(t){let n=[...this.state.selectedTaskIds];if(n.length)try{switch(t.type){case`set-stage`:await this.plugin.store.updateTasks(this.project,this.localEditableIds(n),{stage:t.stage});break;case`set-status`:await this.plugin.store.updateTasks(this.project,this.localEditableIds(n),{status:t.status});break;case`set-priority`:await this.plugin.store.updateTasks(this.project,n,{priority:t.priority});break;case`set-assignee`:t.assignee===``?await this.plugin.store.updateTasks(this.project,n,{assignees:[]}):await this.bulkAddToArray(n,`assignees`,t.assignee);break;case`set-tag`:t.tag===``?await this.plugin.store.updateTasks(this.project,n,{tags:[]}):await this.bulkAddToArray(n,`tags`,t.tag);break;case`set-due-date`:if(await this.plugin.store.updateTasks(this.project,n,{due:t.due}),this.plugin.store.configFor(this.project).autoSchedule)for(let e of n)await this.plugin.store.scheduleAfterChange(this.project,e);break;case`set-progress`:await this.plugin.store.updateTasks(this.project,n,{progress:t.progress});break;case`set-parent`:await this.plugin.store.moveTasks(this.project,n,t.parentId),new e.Notice(`已将 ${Jp(n.length)}移动到新的父事项下`);break;case`remove-parent`:await this.plugin.store.moveTasks(this.project,n,null),new e.Notice(`已将 ${Jp(n.length)}移动到顶层`);break;case`archive`:for(let e of n)await this.plugin.store.archiveTask(this.project,e);new e.Notice(`已归档 ${Jp(n.length)}`);break;case`unarchive`:for(let e of n)await this.plugin.store.unarchiveTask(this.project,e);new e.Notice(`已取消归档 ${Jp(n.length)}`);break;case`delete`:if(!await Wf(this.plugin.app,`确定删除 ${Jp(n.length)}吗？此操作无法撤销。`))return;await this.plugin.store.deleteTasks(this.project,n)}this.state.selectedTaskIds.clear(),await this.onRefresh()}catch(t){console.error(`批量操作失败`,t),new e.Notice(`批量操作失败，请重试。`),await this.onRefresh()}}async bulkAddToArray(e,t,n){await this.plugin.store.updateTasks(this.project,e,e=>e[t].includes(n)?null:{[t]:[...e[t],n]})}localEditableIds(e){return e.filter(e=>{let t=J(this.project,e);return t&&!t.customFields.zentaoSourceType})}updateBulkBar(){Gp({ctx:this.makeTableContext(),onAction:Y(e=>this.handleBulkAction(e))})}makeTableContext(){let e=this.plugin.store.configFor(this.project);return{container:this.container,project:this.project,plugin:this.plugin,stages:e.stages,statuses:e.statuses,priorities:e.priorities,state:this.state,onRefresh:this.onRefresh,onSelectionChange:()=>{Op(this.state),this.updateBulkBar()},onBulkDelete:Y(()=>this.handleBulkAction({type:`delete`}))}}},Xp=class{el;constructor(t,n){this.el=t.createDiv(`pm-segmented`);let r=new Map;for(let t of n.options){let i=new e.ButtonComponent(this.el).setButtonText(t.label).onClick(()=>{for(let[e,n]of r)e===t.id?n.setCta():n.removeCta();n.onChange(t.id)});t.id===n.active&&i.setCta(),r.set(t.id,i)}}};const Zp={day:44,week:22,month:9,quarter:5},Qp={day:30,week:90,month:365,quarter:365};function $p(e,t){let n=q(e).map(e=>e.task),r=[];for(let e of n){let t=K(e.start),n=K(e.due);t&&r.push(t),n&&r.push(n)}let i=Zl();r.push(i);let a=r.reduce((e,t)=>G.PlainDate.compare(t,e)<0?t:e,r[0]),o=r.reduce((e,t)=>G.PlainDate.compare(t,e)>0?t:e,r[0]);a=a.subtract({days:7}),o=o.add({days:14});let s=o.since(a,{largestUnit:`days`}).days;if(s<Qp[t]){let e=Math.ceil((Qp[t]-s)/2);a=a.subtract({days:e}),o=o.add({days:e})}(t===`week`||t===`month`||t===`quarter`)&&(a=a.with({day:1}));let c=Zp[t],l=o.since(a,{largestUnit:`days`}).days;return{startDate:a,endDate:o,dayWidth:c,granularity:t,totalDays:l,totalWidth:l*c}}function $(e,t){return t.since(e.startDate,{largestUnit:`days`}).days*e.dayWidth}function em(e,t){return e.startDate.add({days:Math.round(t/e.dayWidth)})}function tm(e){let t=[],{startDate:n,totalDays:r,dayWidth:i,granularity:a}=e;for(let e=0;e<=r;e++){let r=n.add({days:e}),o=e*i;a===`day`?t.push(o):a===`week`?(r.dayOfWeek===1||r.dayOfWeek===4)&&t.push(o):a===`month`?(r.day===1||r.day===8||r.day===15||r.day===22)&&t.push(o):a===`quarter`&&r.day===1&&t.push(o)}return t}function nm(e,t,n){let r=e,i=1/0;for(let a of t){let t=Math.abs(e-a);if(t<i&&(i=t,r=a),a>e+n)break}return i<=n?r:e}function rm(e){return e.weekOfYear??0}function im(){return{isDragging:!1,dragSide:null,dragTask:null,dragStartX:0,dragBarEl:null,dragInitialX:0,dragInitialW:0,dragMoved:!1}}function am(t,n,r,i,a,o,s,c,l,u,d,f){let p=null;return t.addEventListener(`mousedown`,t=>{t.stopPropagation(),t.preventDefault(),l.isDragging=!0,l.dragMoved=!1,l.dragSide=n,l.dragTask=r,l.dragStartX=t.clientX,l.dragBarEl=i,l.dragInitialX=o,l.dragInitialW=s;let m=tm(c),h=c.dayWidth*.4,g=e=>{if(!l.isDragging||!l.dragBarEl)return;let t=e.clientX-l.dragStartX;Math.abs(t)>3&&(l.dragMoved=!0);let n=l.dragInitialX,r;l.dragSide===`left`?(n=Math.max(0,l.dragInitialX+t),n=nm(n,m,h),r=l.dragInitialX+l.dragInitialW-n):(r=l.dragInitialW+t,r=nm(n+r,m,h)-n),r=Math.max(c.dayWidth,r),l.dragBarEl.setAttribute(`x`,String(n)),l.dragBarEl.setAttribute(`width`,String(r)),sm(a,n,r)},_=Y(async()=>{if(activeDocument.removeEventListener(`mousemove`,g),activeDocument.removeEventListener(`mouseup`,_),p=null,!l.isDragging||!l.dragTask||!l.dragBarEl||(l.isDragging=!1,!l.dragMoved))return;let t=parseFloat(l.dragBarEl.getAttribute(`x`)??`0`),n=parseFloat(l.dragBarEl.getAttribute(`width`)??`0`),r=nm(t,m,h),i=nm(t+n,m,h),o=l.dragTask.id,s=l.dragTask.start,v=l.dragTask.due,y={};l.dragSide===`left`?y.start=em(c,r).toString():y.due=em(c,i).subtract({days:1}).toString();try{await u.store.updateTask(d,o,y)}catch(t){l.dragBarEl.setAttribute(`x`,String(l.dragInitialX)),l.dragBarEl.setAttribute(`width`,String(l.dragInitialW)),sm(a,l.dragInitialX,l.dragInitialW),new e.Notice(`保存日期变更失败，请重试。`),console.error(`GanttDragHandler: save failed`,t);return}let b={...y};u.pushUndo({undo:async()=>{await u.store.updateTask(d,o,{start:s,due:v}),u.store.configFor(d).autoSchedule&&new e.Notice(`日期已恢复，相关依赖事项的日期可能需要重新调整。`),await f()},redo:async()=>{await u.store.updateTask(d,o,b),await u.store.scheduleAfterChange(d,o),await f()}}),await u.store.scheduleAfterChange(d,l.dragTask.id),await f()});activeDocument.addEventListener(`mousemove`,g),activeDocument.addEventListener(`mouseup`,_),p=()=>{activeDocument.removeEventListener(`mousemove`,g),activeDocument.removeEventListener(`mouseup`,_)}}),()=>{p&&(p(),p=null,l.isDragging=!1,l.dragBarEl=null)}}function om(t,n,r,i,a,o,s,c,l,u){let d=null;return t.addEventListener(`mousedown`,f=>{if(f.button!==0)return;f.preventDefault(),s.isDragging=!0,s.dragMoved=!1,s.dragSide=`move`,s.dragTask=r,s.dragStartX=f.clientX,s.dragBarEl=t,s.dragInitialX=i,s.dragInitialW=a;let p=tm(o),m=o.dayWidth*.4,h=i,g=e=>{if(!s.isDragging||!s.dragBarEl)return;let t=e.clientX-s.dragStartX;Math.abs(t)>3&&(s.dragMoved=!0),h=Math.max(0,s.dragInitialX+t),h=nm(h,p,m);let r=h-s.dragInitialX;n.setAttribute(`transform`,`translate(${r}, 0)`)},_=Y(async()=>{if(activeDocument.removeEventListener(`mousemove`,g),activeDocument.removeEventListener(`mouseup`,_),t.classList.remove(`pm-gantt-bar-grabbing`),d=null,!s.isDragging||!s.dragTask||!s.dragBarEl)return;if(s.isDragging=!1,!s.dragMoved){n.removeAttribute(`transform`);return}let r=s.dragTask.id,i=s.dragTask.start,a=s.dragTask.due,f=nm(h,p,m),v=nm(f+s.dragInitialW,p,m),y=em(o,f),b=em(o,v).subtract({days:1}),x={start:y.toString(),due:b.toString()};try{await c.store.updateTask(l,r,x)}catch(t){n.removeAttribute(`transform`),new e.Notice(`保存日期变更失败，请重试。`),console.error(`GanttDragHandler: move save failed`,t);return}let ee={...x};c.pushUndo({undo:async()=>{await c.store.updateTask(l,r,{start:i,due:a}),c.store.configFor(l).autoSchedule&&new e.Notice(`日期已恢复，相关依赖事项的日期可能需要重新调整。`),await u()},redo:async()=>{await c.store.updateTask(l,r,ee),await c.store.scheduleAfterChange(l,r),await u()}}),await c.store.scheduleAfterChange(l,s.dragTask.id),await u()});t.classList.add(`pm-gantt-bar-grabbing`),activeDocument.addEventListener(`mousemove`,g),activeDocument.addEventListener(`mouseup`,_),d=()=>{activeDocument.removeEventListener(`mousemove`,g),activeDocument.removeEventListener(`mouseup`,_)}}),()=>{d&&(d(),d=null,s.isDragging=!1,s.dragBarEl=null)}}function sm(e,t,n){let r=e.querySelector(`.pm-gantt-bar-label`);r&&(r.setAttribute(`x`,String(t+8)),n<=55?r.setAttribute(`visibility`,`hidden`):r.removeAttribute(`visibility`));let i=e.querySelectorAll(`.pm-gantt-drag-handle`);i.length===2&&(i[0].setAttribute(`x`,String(t)),i[1].setAttribute(`x`,String(t+n-8)));let a=e.querySelector(`.pm-gantt-bar-progress`);a&&a.setAttribute(`x`,String(t));let o=e.querySelector(`.pm-gantt-bar-icon`);o&&o.setAttribute(`x`,String(t+n+4))}function cm(){return{active:!1,taskId:null,side:null,dotEl:null}}function lm(e){e.dotEl&&e.dotEl.classList.remove(`pm-gantt-link-dot--active`),e.active=!1,e.taskId=null,e.side=null,e.dotEl=null}function um(t,n,r,i,a,o,s){if(!i.active){i.active=!0,i.taskId=n,i.side=r,i.dotEl=t,t.classList.add(`pm-gantt-link-dot--active`);return}if(i.taskId===n){lm(i);return}let c=i.taskId;if(c===null){lm(i);return}if(i.side===r){new e.Notice(`请从右侧连接点（输出）连接到左侧连接点（输入）。`);return}let l=r===`right`?n:c,u=r===`left`?n:c;lm(i);let d=dm(o.tasks),f=d.find(e=>e.id===u);if(f?.dependencies?.includes(l)){new e.Notice(`该依赖关系已存在。`);return}if(d.find(e=>e.id===l)?.dependencies?.includes(u)){new e.Notice(`反向依赖已存在，继续连接会形成循环依赖。`);return}let p=[...f?.dependencies??[],l];Y(async()=>{try{await a.store.updateTask(o,u,{dependencies:p})}catch(t){new e.Notice(`保存依赖关系失败。`),console.error(`GanttLinkHandler: save failed`,t);return}await a.store.scheduleAfterChange(o,u),await s()})()}function dm(e){let t=[],n=e=>{for(let r of e)t.push(r),r.subtasks.length&&n(r.subtasks)};return n(e),t}function fm(e,t){let n=e.add({days:t-1}),r=e.toLocaleString(void 0,{month:`short`});if(e.month===n.month)return`${r} ${e.day}–${n.day}`;let i=n.toLocaleString(void 0,{month:`short`});return`${r} ${e.day} – ${i} ${n.day}`}function pm(e,t,n,r){if(r===`weekNumber`)return`W${n}`;let i=fm(e,t);return r===`dateRange`?i:`W${n}: ${i}`}function mm(e){let t=X(`g`,{class:`pm-gantt-header`});t.appendChild(X(`rect`,{x:0,y:0,width:e.cfg.totalWidth,height:56,class:`pm-gantt-header-bg`}));let{granularity:n}=e.cfg;n===`day`?hm(t,e):n===`week`?gm(t,e):n===`month`?_m(t,e):vm(t,e),e.headerSvgEl.appendChild(t)}function hm(e,t){let{startDate:n,totalDays:r,dayWidth:i}=t.cfg;ym(e,0,24,t);for(let t=0;t<r;t++){let r=n.add({days:t}),a=t*i;if((r.dayOfWeek===6||r.dayOfWeek===7)&&e.appendChild(X(`rect`,{x:a,y:24,width:i,height:32,class:`pm-gantt-weekend-header`})),i>=20){let t=X(`text`,{x:a+i/2,y:42,class:`pm-gantt-header-day`});t.textContent=String(r.day),e.appendChild(t)}}}function gm(e,t){let{startDate:n,totalDays:r,dayWidth:i}=t.cfg;ym(e,0,24,t);let a=n.dayOfWeek===1?0:8-n.dayOfWeek,o=t.plugin.settings.ganttWeekLabel;if(a>0){let t=rm(n),r=X(`text`,{x:a*i/2,y:44,class:`pm-gantt-header-week`});r.textContent=pm(n,a,t,o),e.appendChild(r)}let s=a;for(;s<r;){let t=n.add({days:s}),a=rm(t),c=s*i,l=Math.min(7,r-s),u=X(`text`,{x:c+l*i/2,y:44,class:`pm-gantt-header-week`});u.textContent=pm(t,l,a,o),e.appendChild(u),e.appendChild(X(`line`,{x1:c,y1:24,x2:c,y2:56,class:`pm-gantt-header-tick`})),s+=7}}function _m(e,t){bm(e,0,24,t);let n=t.cfg.startDate.with({day:1});for(;G.PlainDate.compare(n,t.cfg.endDate)<0;){let r=n.add({months:1}),i=Math.max(0,$(t.cfg,n)),a=X(`text`,{x:i+(Math.min(t.cfg.totalWidth,$(t.cfg,r))-i)/2,y:44,class:`pm-gantt-header-month`});a.textContent=n.toLocaleString(void 0,{month:`short`}),e.appendChild(a),e.appendChild(X(`line`,{x1:i,y1:24,x2:i,y2:56,class:`pm-gantt-header-tick`})),n=r}}function vm(e,t){bm(e,0,24,t);let{startDate:n}=t.cfg,r=G.PlainDate.from({year:n.year,month:Math.floor((n.month-1)/3)*3+1,day:1});for(;G.PlainDate.compare(r,t.cfg.endDate)<0;){let n=Math.floor((r.month-1)/3)+1,i=r.add({months:3}),a=Math.max(0,$(t.cfg,r)),o=X(`text`,{x:a+(Math.min(t.cfg.totalWidth,$(t.cfg,i))-a)/2,y:44,class:`pm-gantt-header-quarter`});o.textContent=`${r.year}年第${n}季度`,e.appendChild(o),r=i}}function ym(e,t,n,r){let i=r.cfg.startDate.with({day:1});for(;G.PlainDate.compare(i,r.cfg.endDate)<0;){let a=i.add({months:1}),o=Math.max(0,$(r.cfg,i)),s=Math.min(r.cfg.totalWidth,$(r.cfg,a))-o;e.appendChild(X(`rect`,{x:o,y:t,width:s,height:n,class:(i.month-1)%2==0?`pm-gantt-band-even`:`pm-gantt-band-odd`}));let c=X(`text`,{x:o+6,y:t+n-6,class:`pm-gantt-header-month-top`});c.textContent=i.toLocaleString(void 0,{month:`short`,year:`2-digit`}),e.appendChild(c),i=a}}function bm(e,t,n,r){let i=G.PlainDate.from({year:r.cfg.startDate.year,month:1,day:1});for(;G.PlainDate.compare(i,r.cfg.endDate)<0;){let a=i.add({years:1}),o=Math.max(0,$(r.cfg,i)),s=Math.min(r.cfg.totalWidth,$(r.cfg,a));e.appendChild(X(`rect`,{x:o,y:t,width:s-o,height:n,class:i.year%2==0?`pm-gantt-band-even`:`pm-gantt-band-odd`}));let c=X(`text`,{x:o+6,y:t+n-6,class:`pm-gantt-header-year`});c.textContent=String(i.year),e.appendChild(c),i=a}}function xm(e,t,n,r,i){let a=K(t.start),o=K(t.due);if(!a&&!o){Sm(e,t,n,i);return}let s=sd(i.statuses,t.status),c=s?.color??getComputedStyle(i.svgEl).getPropertyValue(`--interactive-accent`).trim(),l=56+n*44,u=l+8;if(e.appendChild(X(`rect`,{x:0,y:l,width:i.cfg.totalWidth,height:44,class:`pm-gantt-row-hover`})),t.type===`milestone`){Cm(e,t,n,c,i);return}let d=a??o;if(!d)return;let f=(o??d).add({days:1}),p=Math.max(0,$(i.cfg,d)),m=Math.min(i.cfg.totalWidth,$(i.cfg,f)),h=Math.max(8,m-p),g=X(`g`,{class:`pm-gantt-bar-group`});e.appendChild(g);let _=X(`rect`,{x:p,y:u,width:h,height:28,rx:7,ry:7,fill:c,opacity:.4,class:`pm-gantt-bar`});if(g.appendChild(_),t.progress>0){let e=t.progress/100*h;g.appendChild(X(`rect`,{x:p,y:u,width:e,height:28,rx:7,ry:7,fill:c,opacity:.9,class:`pm-gantt-bar-progress`}))}if(t.recurrence){let e=X(`text`,{x:p+h+4,y:u+14+5,class:`pm-gantt-bar-icon`});e.textContent=`↻`,g.appendChild(e)}if(h>55){let e=X(`text`,{x:p+8,y:u+14+5,class:`pm-gantt-bar-label`}),n=Math.max(4,Math.floor((h-16)/7.5));e.textContent=t.title.length>n?t.title.slice(0,n-1)+`…`:t.title,g.appendChild(e)}let v=X(`title`,{}),y=t.assignees.length?`\nAssignees: ${t.assignees.join(`, `)}`:``;v.textContent=`${t.title}\n${s?.label??t.status} \u00b7 ${t.priority}\nStart: ${t.start||`—`}  Due: ${t.due||`—`}\nProgress: ${t.progress}%${y}`,_.appendChild(v);for(let e of[`left`,`right`]){let n=X(`rect`,{x:e===`left`?p:p+h-8,y:u,width:8,height:28,rx:3,ry:3,class:`pm-gantt-drag-handle`,cursor:`ew-resize`}),r=am(n,e,t,_,g,p,h,i.cfg,i.drag,i.plugin,i.project,i.onRefresh);i.cleanupFns.push(r),g.appendChild(n)}for(let e of[`left`,`right`]){let n=X(`circle`,{cx:e===`left`?p-4-4:p+h+4+4,cy:u+14,r:4,class:`pm-gantt-link-dot`,cursor:`crosshair`});n.addEventListener(`mousedown`,e=>{e.stopPropagation()}),n.addEventListener(`click`,r=>{r.stopPropagation(),um(n,t.id,e,i.link,i.plugin,i.project,i.onRefresh)}),g.appendChild(n)}if(t.start&&t.due){let e=om(_,g,t,p,h,i.cfg,i.drag,i.plugin,i.project,i.onRefresh);i.cleanupFns.push(e),_.setAttribute(`cursor`,`grab`)}else _.setAttribute(`cursor`,`pointer`);_.addEventListener(`click`,()=>{if(i.drag.dragMoved){i.drag.dragMoved=!1;return}Q(i.plugin,i.project,{task:t,onSave:()=>i.onRefresh()})})}function Sm(t,n,r,i){let a=56+r*44,o=X(`rect`,{x:0,y:a,width:i.cfg.totalWidth,height:44,fill:`transparent`,cursor:`cell`,class:`pm-gantt-empty-row-hit`}),s=X(`rect`,{x:0,y:a+8,width:Math.max(i.cfg.dayWidth,8),height:28,rx:7,ry:7,class:`pm-gantt-empty-row-preview`,"pointer-events":`none`});s.classList.add(`pm-hidden`),t.appendChild(o),t.appendChild(s);let c=tm(i.cfg),l=i.cfg.dayWidth*.4;o.addEventListener(`mousemove`,e=>{let t=i.svgEl.getBoundingClientRect(),n=nm(e.clientX-t.left,c,l);s.setAttribute(`x`,String(n)),s.classList.remove(`pm-hidden`)}),o.addEventListener(`mouseleave`,()=>{s.classList.add(`pm-hidden`)}),o.addEventListener(`click`,Y(async t=>{let r=i.svgEl.getBoundingClientRect(),a=nm(t.clientX-r.left,c,l),o=em(i.cfg,a).toString();try{await i.plugin.store.updateTask(i.project,n.id,{start:o,due:o})}catch(t){new e.Notice(`设置事项日期失败，请重试。`),console.error(`GanttTaskBarRenderer: click-to-set-dates failed`,t);return}await i.plugin.store.scheduleAfterChange(i.project,n.id),await i.onRefresh()}));let u=X(`title`,{});u.textContent=`点击设置日期`,o.appendChild(u)}function Cm(e,t,n,r,i){let a=K(t.due)??K(t.start);if(!a)return;let o=$(i.cfg,a)+i.cfg.dayWidth/2,s=56+n*44+22,c=X(`polygon`,{points:`${o},${s-12} ${o+12},${s} ${o},${s+12} ${o-12},${s}`,fill:r,opacity:.8,class:`pm-gantt-milestone`,cursor:`pointer`});e.appendChild(c);let l=X(`title`,{});l.textContent=`${t.title} (milestone)\nDate: ${t.due||t.start||`—`}`,c.appendChild(l),c.addEventListener(`click`,()=>{Q(i.plugin,i.project,{task:t,onSave:()=>i.onRefresh()})})}function wm(e){let t=e.flatTasks.filter(e=>e.task.type===`milestone`&&(e.task.due||e.task.start));if(!t.length)return;let n=X(`g`,{class:`pm-gantt-milestone-labels`});for(let{task:r}of t){let t=K(r.due)??K(r.start);if(!t)continue;let i=$(e.cfg,t)+e.cfg.dayWidth/2,a=sd(e.statuses,r.status)?.color??getComputedStyle(e.svgEl).getPropertyValue(`--interactive-accent`).trim(),o=56+e.flatTasks.filter(e=>e.visible||e.depth===0).length*44;n.appendChild(X(`line`,{x1:i,y1:56,x2:i,y2:o,stroke:a,"stroke-width":1,"stroke-dasharray":`4 4`,opacity:.4}));let s=X(`text`,{x:i,y:14,"text-anchor":`middle`,class:`pm-gantt-milestone-label`,fill:a});s.textContent=r.title.length>16?r.title.slice(0,14)+`…`:r.title,e.headerSvgEl.appendChild(s)}e.svgEl.appendChild(n)}function Tm(e){let t=new Map;e.flatTasks.forEach((e,n)=>t.set(e.task.id,n));let n=X(`g`,{class:`pm-gantt-arrows`});for(let{task:r}of e.flatTasks){if(!r.dependencies?.length)continue;let i=t.get(r.id);if(i===void 0)continue;let a=56+i*44+22,o=K(r.start);if(!o)continue;let s=$(e.cfg,o);for(let i of r.dependencies){let r=t.get(i);if(r===void 0)continue;let o=e.flatTasks.find(e=>e.task.id===i)?.task,c=o?K(o.due):null;if(!c)continue;let l=$(e.cfg,c.add({days:1})),u=56+r*44+22,d=(l+s)/2;n.appendChild(X(`path`,{d:`M ${l} ${u} C ${d} ${u}, ${d} ${a}, ${s} ${a}`,class:`pm-gantt-arrow`,"marker-end":`url(#pm-arrowhead)`}))}}let r=Em(e.svgEl),i=X(`marker`,{id:`pm-arrowhead`,markerWidth:8,markerHeight:8,refX:6,refY:3,orient:`auto`});i.appendChild(X(`path`,{d:`M0,0 L0,6 L8,3 z`,class:`pm-gantt-arrowhead`})),r.appendChild(i),e.svgEl.appendChild(n)}function Em(e){return e.querySelector(`defs`)??(()=>{let t=X(`defs`,{});return e.insertBefore(t,e.firstChild),t})()}function Dm(e,t){let n=X(`g`,{class:`pm-gantt-grid`}),r=56+t*44,{startDate:i,totalDays:a,dayWidth:o,granularity:s}=e.cfg;for(let e=0;e<a;e++){let t=i.add({days:e}),a=e*o,c=t.dayOfWeek===6||t.dayOfWeek===7,l=t.dayOfWeek===1,u=t.day===1;c&&s===`day`&&n.appendChild(X(`rect`,{x:a,y:56,width:o,height:r-56,class:`pm-gantt-weekend`})),(s===`day`&&l||s===`week`&&l||s===`month`&&u||s===`quarter`&&u&&(t.month-1)%3==0)&&n.appendChild(X(`line`,{x1:a,y1:56,x2:a,y2:r,class:`pm-gantt-gridline-v`}))}for(let r=0;r<=t;r++){let t=56+r*44;n.appendChild(X(`line`,{x1:0,y1:t,x2:e.cfg.totalWidth,y2:t,class:`pm-gantt-gridline-h`}))}e.svgEl.appendChild(n)}function Om(e,t){let n=$(e.cfg,Zl());n<0||n>e.cfg.totalWidth||(e.svgEl.appendChild(X(`line`,{x1:n,y1:48,x2:n,y2:t,class:`pm-gantt-today-line`})),e.headerSvgEl.appendChild(X(`polygon`,{points:`${n},40 ${n+6},48 ${n},56 ${n-6},48`,class:`pm-gantt-today-diamond`})))}function km(e,t,n,r,i){let a=e.createDiv(`pm-gantt-label-row`);a.style.height=`44px`,a.dataset.taskId=t.id,a.draggable=!0,a.addEventListener(`dragstart`,e=>{e.dataTransfer?.setData(`text/plain`,t.id),a.addClass(`pm-gantt-label-row--dragging`)}),a.addEventListener(`dragend`,()=>{a.removeClass(`pm-gantt-label-row--dragging`)});let o=`before`;a.addEventListener(`dragover`,e=>{e.preventDefault();let t=a.getBoundingClientRect(),n=t.top+t.height/2;o=e.clientY<n?`before`:`after`,a.removeClass(`pm-gantt-label-row--drop-before`,`pm-gantt-label-row--drop-after`),a.addClass(o===`before`?`pm-gantt-label-row--drop-before`:`pm-gantt-label-row--drop-after`)}),a.addEventListener(`dragleave`,()=>{a.removeClass(`pm-gantt-label-row--drop-before`,`pm-gantt-label-row--drop-after`)}),a.addEventListener(`drop`,Y(async e=>{e.preventDefault(),a.removeClass(`pm-gantt-label-row--drop-before`,`pm-gantt-label-row--drop-after`);let n=e.dataTransfer?.getData(`text/plain`);!n||n===t.id||(await i.plugin.store.reorderTask(i.project,n,t.id,o),await i.onRefresh())}));let s=xp(t),c=a.createDiv(`pm-gantt-label-id`);c.setText(s.zentaoId?`${s.typeLabel} #${s.zentaoId}`:`—`);let l=a.createDiv(`pm-gantt-label-item`);l.style.paddingLeft=`${n*18+8}px`,t.subtasks.length>0?new up(l,{collapsed:t.collapsed,onToggle:Y(async()=>{await i.plugin.toggleTaskCollapsed(i.project,t.id),await i.onRefresh()})}):l.createSpan({cls:`pm-gantt-label-spacer`});let w=l.createSpan({text:t.title,cls:`pm-gantt-label-title`});w.setAttr(`title`,t.title),w.addEventListener(`click`,()=>{Q(i.plugin,i.project,{task:t,onSave:()=>i.onRefresh()})}),t.progress>0&&l.createSpan({text:`${t.progress}%`,cls:`pm-gantt-label-progress`}),new Ud(l).setIcon(`plus`).setTooltip(`添加子任务`).setRevealOnHover(!0).onClick(e=>{e.stopPropagation(),Q(i.plugin,i.project,{parentId:t.id,onSave:()=>i.onRefresh()})});let u=a.createDiv(`pm-gantt-label-stage`),d=cd(i.stages,t.stage);af(u,t.stage,d);let f=a.createDiv(`pm-gantt-label-status`),p=sd(i.statuses,t.status);af(f,t.status,p);let m=a.createDiv(`pm-gantt-label-priority`),h=ud(i.priorities,t.priority),g=new Z(m).setLabel(pd(h?.icon,h?.label??(t.priority||`未设置`))).setColor(h?.color??`var(--text-muted)`).setVariant(`plain`),_=tf(h);_?g.setLeadingIcon(_):h?.icon||g.setLeadingIcon(of[t.priority]??`equal`);let v=a.createDiv(`pm-gantt-label-assignees`);t.assignees.length?new ap(v).setNames(t.assignees).setMax(2):v.createSpan({text:`—`,cls:`pm-gantt-label-assignees-empty`});let y=a.createDiv(`pm-gantt-label-completed-by`),b=t.customFields.completedBy;b?new ap(y).setNames([b]).setMax(1):y.createSpan({text:`—`,cls:`pm-gantt-label-assignees-empty`})}var Am=class{container;project;plugin;onRefresh;filter;granularity;scrollEl;svgEl;headerSvgEl;flatTasks=[];cfg;drag=im();link=cm();labelWidth=900;ganttSortKey=null;ganttSortDir=`asc`;getLabelWidth(){return this.labelWidth}setLabelWidth(e){this.labelWidth=Math.max(760,e)}cleanupFns=[];pendingScroll=null;constructor(e,t,n,r,i){this.container=e,this.project=t,this.plugin=n,this.onRefresh=r,this.filter=i,this.granularity=n.settings.ganttGranularity}destroy(){for(let e of this.cleanupFns)e();this.cleanupFns=[]}getScrollPosition(){return{top:this.scrollEl?.scrollTop??0,anchorDate:this.scrollEl?em(this.cfg,this.scrollEl.scrollLeft):Zl()}}setPendingScroll(e){this.pendingScroll=e}refresh(){this.pendingScroll=this.getScrollPosition(),this.render()}render(){this.cleanupFns.forEach(e=>e()),this.cleanupFns=[],lm(this.link),this.container.empty(),this.container.addClass(`pm-gantt-view`);let e=this.getVisibleTasks();this.flatTasks=q(e).filter(e=>e.visible||e.depth===0),this.cfg=$p(e,this.granularity),this.renderGranularityControls(),this.renderGantt()}renderGranularityControls(){let t=this.container.createDiv(`pm-gantt-controls`),n=[`day`,`week`,`month`,`quarter`],r={day:`Day`,week:`Week`,month:`Month`,quarter:`Quarter`};new Xp(t,{options:n.map(e=>({id:e,label:r[e]})),active:this.granularity,onChange:e=>{this.granularity=e,this.plugin.settings.ganttGranularity=e,this.plugin.saveSettings(),this.render()}}),t.createSpan({cls:`pm-gantt-sep`}),new e.ButtonComponent(t).setButtonText(`今天`).onClick(()=>this.scrollToToday()),new e.ButtonComponent(t).setButtonText(`全部展开`).onClick(()=>this.setAllCollapsed(!1)),new e.ButtonComponent(t).setButtonText(`全部折叠`).onClick(()=>this.setAllCollapsed(!0))}renderGantt(){let e=this.container.createDiv(`pm-gantt-wrapper`),t=e.createDiv(`pm-gantt-left`),n=this.plugin.settings.ganttLabelWidth;typeof n===`number`&&(this.labelWidth=Math.max(760,n)),t.style.width=`${this.labelWidth}px`,t.style.minWidth=`${this.labelWidth}px`;for(let[e,n]of Object.entries(this.plugin.settings.ganttColumnWidths??{}))t.style.setProperty(e,`${n}px`);let r=t.createDiv(`pm-gantt-left-header`);r.style.height=`56px`;{let e=[{key:`zentaoId`,label:`事项 ID`,width:`--pm-gantt-id-col`,min:80},{key:`title`,label:`事项`,width:`--pm-gantt-item-min-col`,min:180},{key:`stage`,label:`阶段`,width:`--pm-gantt-stage-col`,min:64},{key:`status`,label:`状态`,width:`--pm-gantt-status-col`,min:64},{key:`priority`,label:`优先级`,width:`--pm-gantt-priority-col`,min:60},{key:`assignees`,label:`负责人`,width:`--pm-gantt-person-col`,min:72},{key:`completedBy`,label:`完成者`,width:`--pm-gantt-person-col`,min:72}],o=[];for(let i of e){let e=r.createSpan({text:i.label,cls:`pm-gantt-left-header-label pm-gantt-left-header-label--sortable`});this.ganttSortKey===i.key&&e.createSpan({text:this.ganttSortDir===`asc`?` ↑`:` ↓`,cls:`pm-sort-indicator`}),e.setAttr(`aria-label`,`按${i.label}排序`),e.addEventListener(`click`,()=>{this.ganttSortKey===i.key?this.ganttSortDir=this.ganttSortDir===`asc`?`desc`:`asc`:(this.ganttSortKey=i.key,this.ganttSortDir=`asc`),this.render()}),o.push(e)}for(let[i,a]of o.entries()){if(i===o.length-1)continue;let r=a.createSpan({cls:`pm-gantt-column-resizer`});r.addEventListener(`click`,e=>e.stopPropagation()),r.addEventListener(`pointerdown`,n=>{n.preventDefault(),n.stopPropagation(),r.setPointerCapture(n.pointerId);let o=a.getBoundingClientRect().width,s=this.labelWidth,c=e[i].width,l=e[i].min,u=n.clientX,d=e=>{let r=Math.max(l,Math.round(o+e.clientX-u));t.style.setProperty(c,`${r}px`),this.plugin.settings.ganttColumnWidths??={},this.plugin.settings.ganttColumnWidths[c]=r;let i=Math.max(760,Math.min(1400,s+r-o));this.labelWidth=i,this.plugin.settings.ganttLabelWidth=i,t.style.width=`${i}px`,t.style.minWidth=`${i}px`};r.addEventListener(`pointermove`,d),r.addEventListener(`pointerup`,()=>{r.removeEventListener(`pointermove`,d),this.plugin.saveSettings()},{once:!0})})}}let q=t.createDiv(`pm-gantt-left-body`),i=e.createDiv(`pm-gantt-resize-handle`),a=!1,o=0,s=0;i.addEventListener(`mousedown`,e=>{e.preventDefault(),a=!0,o=e.clientX,s=this.labelWidth,activeDocument.body.addClass(`pm-resize-active`)});let c=e=>{if(!a)return;let n=Math.max(760,Math.min(1400,s+(e.clientX-o)));this.labelWidth=n,t.style.width=`${n}px`,t.style.minWidth=`${n}px`},l=()=>{a&&(a=!1,this.plugin.settings.ganttLabelWidth=this.labelWidth,this.plugin.saveSettings(),activeDocument.body.removeClass(`pm-resize-active`))};activeDocument.addEventListener(`mousemove`,c),activeDocument.addEventListener(`mouseup`,l),this.cleanupFns.push(()=>{activeDocument.removeEventListener(`mousemove`,c),activeDocument.removeEventListener(`mouseup`,l)});let u=e.createDiv(`pm-gantt-right`);this.scrollEl=u;let d=u.createDiv(`pm-gantt-header-sticky`);d.style.width=`${this.cfg.totalWidth}px`,d.style.height=`56px`,this.headerSvgEl=X(`svg`,{width:this.cfg.totalWidth,height:56,class:`pm-gantt-header-svg`}),d.appendChild(this.headerSvgEl);let f=u.createDiv(`pm-gantt-svg-container`);f.style.width=`${this.cfg.totalWidth}px`,f.style.marginTop=`-56px`;let p=this.flatTasks.filter(e=>e.visible||e.depth===0).length,m=56+(p+1)*44;this.svgEl=X(`svg`,{width:this.cfg.totalWidth,height:m,class:`pm-gantt-svg`}),f.appendChild(this.svgEl);let h=()=>this.container.closest(`.workspace-leaf`)?.classList.contains(`mod-active`)??!1,g=e=>{if(!h()||(e.key===`Escape`&&this.link.active&&lm(this.link),this.drag.isDragging)||!(e.ctrlKey||e.metaKey))return;let t=e.key.toLowerCase();t===`z`&&!e.shiftKey?(e.preventDefault(),this.plugin.undoLastAction()):(t===`z`&&e.shiftKey||t===`y`)&&(e.preventDefault(),this.plugin.redoLastAction())};activeDocument.addEventListener(`keydown`,g),this.cleanupFns.push(()=>activeDocument.removeEventListener(`keydown`,g));let _=this.makeRendererContext();mm(_),Dm(_,p),Om(_,m),this.renderTaskRows(q,_),Tm(_),wm(_);let v=e=>{u.scrollTop+=e.deltaY,u.scrollLeft+=e.deltaX,e.preventDefault()};t.addEventListener(`wheel`,v,{passive:!1}),this.cleanupFns.push(()=>t.removeEventListener(`wheel`,v));let y=q.createDiv(`pm-gantt-label-row pm-gantt-add-row`);y.style.height=`44px`,Sf(y,`Add task`,()=>{Q(this.plugin,this.project,{onSave:()=>this.onRefresh()})});let b=r.createDiv();b.addClass(`pm-no-shrink`);let x=()=>{let e=u.offsetHeight-u.clientHeight;b.style.height=`${e}px`};u.addEventListener(`scroll`,()=>{x(),q.scrollTop=u.scrollTop}),window.requestAnimationFrame(()=>{x(),this.pendingScroll?(this.scrollEl.scrollTop=this.pendingScroll.top,this.scrollEl.scrollLeft=Math.max(0,$(this.cfg,this.pendingScroll.anchorDate)),this.pendingScroll=null):this.scrollToToday()})}renderTaskRows(e,t){let n=X(`g`,{class:`pm-gantt-bars`});this.svgEl.appendChild(n);let r=this.plugin.store.configFor(this.project),i={plugin:this.plugin,project:this.project,stages:r.stages,statuses:r.statuses,priorities:r.priorities,onRefresh:this.onRefresh},a=0,o=(r,s)=>{for(let c of r)km(e,c,s,a,i),xm(n,c,a,s,t),a++,!c.collapsed&&c.subtasks.length&&o(c.subtasks,s+1)};o(this.getVisibleTasks(),0)}makeRendererContext(){return{svgEl:this.svgEl,headerSvgEl:this.headerSvgEl,cfg:this.cfg,plugin:this.plugin,project:this.project,statuses:this.plugin.store.configFor(this.project).statuses,flatTasks:this.flatTasks,drag:this.drag,link:this.link,onRefresh:this.onRefresh,cleanupFns:this.cleanupFns}}ganttSortValue(e){switch(this.ganttSortKey){case`zentaoId`:return String(e.customFields.zentaoId??e.id);case`title`:return e.title;case`assignees`:return e.assignees.join(`、`);case`completedBy`:return String(e.customFields.completedBy??``);default:return String(e[this.ganttSortKey]??``)}}sortGanttTasks(e){let t=e=>[...e].sort((e,t)=>this.ganttSortValue(e).localeCompare(this.ganttSortValue(t),`zh-CN`,{numeric:!0,sensitivity:`base`})*(this.ganttSortDir===`asc`?1:-1)).map(e=>({...e,subtasks:t(e.subtasks)}));return t(e)}getVisibleTasks(){let e=kd(this.project.tasks,this.filter,this.plugin.store.configFor(this.project).statuses);return this.ganttSortKey?this.sortGanttTasks(e):e}scrollToToday(){if(!this.scrollEl)return;let e=$(this.cfg,Zl())-this.scrollEl.clientWidth/2;this.scrollEl.scrollLeft=Math.max(0,e)}setAllCollapsed(e){for(let{task:t}of q(this.project.tasks))t.subtasks.length>0&&(t.collapsed=e);this.plugin.persistCollapsedState(this.project),this.render()}},jm=class{el;constructor(e,t){let{task:n}=t,r=e.createDiv(`pm-kanban-card`);r.draggable=t.draggable!==!1,r.dataset.taskId=n.id,this.el=r,t.priorityColor&&r.createDiv(`pm-kanban-card-priority-bar`).setCssStyles({background:t.priorityColor});let i=r.createDiv(`pm-kanban-card-body`);t.parentTitle&&i.createSpan({text:t.parentTitle,cls:`pm-kanban-card-parent`});let a=i.createDiv(`pm-kanban-card-title-row`);if(a.createSpan({text:n.title,cls:`pm-kanban-card-title`}),n.tags.includes(`zentao-requirement`)&&new Z(a).setLabel(`需求`).setVariant(`solid`).setSize(`sm`).setColor(`var(--color-orange)`).setTooltip(`禅道需求`),n.type===`milestone`&&new Z(a).setLabel(`里程碑`).setVariant(`solid`).setSize(`sm`).setColor(`var(--color-purple)`).setTooltip(`里程碑`),n.recurrence&&new Z(a).setLabel(`重复`).setVariant(`solid`).setSize(`sm`).setColor(`var(--color-blue)`).setTooltip(`重复任务`),t.descriptionPreview&&i.createDiv({cls:`pm-kanban-card-description`,text:t.descriptionPreview}),vp(i,t.loggedHours,projectEstimateHours(n),`sm`),n.tags.length){let e=i.createDiv(`pm-kanban-card-tags`);for(let r of n.tags.slice(0,3))bp(e,r,t.showTagColors)}n.progress>0&&new pp(i).setSize(`sm`).setValue(n.progress);let o=i.createDiv(`pm-kanban-card-footer`);let s=new Z(o).setLabel(t.statusLabel||`未设置`).setColor(t.statusColor??`var(--text-muted)`).setVariant(`solid`).setDot().setSize(`sm`).setTooltip(`当前状态：${t.statusLabel||`未设置`}`);s.el.addClass(`pm-kanban-card-status`);let c=o.createDiv(`pm-kanban-card-people`);n.assignees.length&&new Z(c).setLabel(`负责人 · ${n.assignees.slice(0,2).join(`、`)}`).setLeadingIcon(`user`).setColor(`var(--interactive-accent)`).setVariant(`solid`).setSize(`sm`).setTooltip(`负责人：${n.assignees.join(`、`)}`),n.customFields.completedBy&&new Z(c).setLabel(`完成者 · ${n.customFields.completedBy}`).setLeadingIcon(`circle-check`).setColor(`var(--color-green)`).setVariant(`solid`).setSize(`sm`).setTooltip(`完成者：${n.customFields.completedBy}`),n.due&&cp(o,Qu(n.due),t.overdue?`overdue`:`normal`,`sm`),r.addEventListener(`dragstart`,e=>{if(t.draggable===!1){e.preventDefault();return}e.dataTransfer?.setData(`text/plain`,n.id),r.addClass(`pm-kanban-card--dragging`),window.setTimeout(()=>r.addClass(`pm-dragging`),0),t.onDragStart()}),r.addEventListener(`dragend`,()=>{r.removeClass(`pm-kanban-card--dragging`),r.removeClass(`pm-dragging`),t.onDragEnd()}),r.addEventListener(`click`,()=>t.onClick()),r.addEventListener(`contextmenu`,e=>{e.preventDefault(),t.onContextMenu(e)})}},Mm=class{el;cardsEl;props;cards;devHeight=128;overscan=4;heightCache=new Map;start=-1;end=-1;frame=null;measureFrame=null;dragging=!1;destroyed=!1;viewportObserver=null;constructor(t,n){this.props=n,this.cards=n.cards,this.heightCache=n.heightCache??this.heightCache;let r=t.createDiv(`pm-kanban-col`);r.dataset.status=n.status.id,this.el=r;let i=r.createDiv(`pm-kanban-col-header`);i.style.setProperty(`--col-color`,n.status.color),i.createDiv(`pm-kanban-col-topbar`).setCssStyles({background:n.status.color});let a=i.createDiv(`pm-kanban-col-title-row`),o=a.createSpan({cls:`pm-kanban-col-badge`});n.status.icon&&fd(n.status.icon)?((0,e.setIcon)(o.createSpan({cls:`pm-kanban-col-badge-icon`}),n.status.icon),o.appendText(n.status.label)):o.setText(pd(n.status.icon,n.status.label)),o.style.color=n.status.color,a.createDiv(`pm-kanban-col-header-right`).createSpan({text:String(n.cards.length),cls:`pm-kanban-col-count`});let s=r.createDiv(`pm-kanban-cards pm-kanban-cards--virtual`);this.cardsEl=s,s.dataset.status=n.status.id,s.style.display=`block`,s.addEventListener(`scroll`,()=>this.scheduleRender()),s.addEventListener(`dragover`,e=>{e.preventDefault(),s.addClass(`pm-kanban-drop-target`);let t=Nm(s,e.clientY),n=s.querySelector(`.pm-kanban-card--dragging`);if(n){let e=n.closest(`.pm-kanban-virtual-item`),r=t?.closest(`.pm-kanban-virtual-item`);e&&e.parentElement===s&&(r?s.insertBefore(e,r):s.appendChild(e))}}),s.addEventListener(`dragleave`,()=>{s.removeClass(`pm-kanban-drop-target`)}),s.addEventListener(`drop`,Y(async e=>{e.preventDefault(),s.removeClass(`pm-kanban-drop-target`);let t=e.dataTransfer?.getData(`text/plain`)??``;t&&await n.onDrop(t,n.status.id)})),typeof ResizeObserver!=`undefined`&&(this.viewportObserver=new ResizeObserver(()=>this.scheduleRender(!0)),this.viewportObserver.observe(s)),this.renderWindow(!0),n.scrollTop&&(s.scrollTop=n.scrollTop,this.renderWindow(!0))}offsets(){let e=[0];for(let t=0;t<this.cards.length;t+=1){let n=this.cards[t],r=this.heightCache.get(n.task.id)??this.devHeight;e.push(e[t]+r)}return e}range(e){if(this.cards.length===0)return[0,0];let t=this.cardsEl.scrollTop,n=this.cardsEl.clientHeight||640,r=Math.max(0,t-this.devHeight*this.overscan),i=t+n+this.devHeight*this.overscan,a=0;for(;a<this.cards.length&&e[a+1]<r;)a+=1;let o=a;for(;o<this.cards.length&&e[o]<i;)o+=1;return[a,Math.min(this.cards.length,Math.max(a+1,o))]}scheduleRender(e=!1){if(this.destroyed||this.dragging&&!e)return;this.frame!==null&&cancelAnimationFrame(this.frame),this.frame=requestAnimationFrame(()=>{this.frame=null,this.renderWindow(e)})}renderWindow(e=!1){if(this.destroyed)return;let t=this.offsets(),[n,r]=this.range(t);if(!e&&n===this.start&&r===this.end)return;this.start=n,this.end=r;let i=this.cardsEl.scrollTop;this.cardsEl.empty();let a=this.cardsEl.createDiv(`pm-kanban-virtual-spacer`);a.style.height=`${t[n]}px`;for(let e=n;e<r;e+=1)this.renderCard(this.cards[e],e);let o=this.cardsEl.createDiv(`pm-kanban-virtual-spacer`);o.style.height=`${Math.max(0,t[this.cards.length]-t[r])}px`,this.cardsEl.scrollTop=i,this.measureFrame!==null&&cancelAnimationFrame(this.measureFrame),this.measureFrame=requestAnimationFrame(()=>{this.measureFrame=null,this.measureVisible()})}renderCard(e,t){let n=this.cardsEl.createDiv(`pm-kanban-virtual-item`);n.dataset.virtualIndex=String(t),n.style.marginBottom=`8px`,n.style.contain=`layout style`,new jm(n,{task:e.task,draggable:e.draggable,statusLabel:e.statusLabel,statusColor:e.statusColor,priorityColor:e.priorityColor,descriptionPreview:e.descriptionPreview,parentTitle:e.parentTitle,loggedHours:e.loggedHours,overdue:e.overdue,showTagColors:e.showTagColors,onClick:()=>this.props.onCardClick(e.task),onContextMenu:t=>this.props.onCardContextMenu(e.task,t),onDragStart:()=>this.props.onCardDragStart(e.task),onDragEnd:()=>this.props.onCardDragEnd()})}measureVisible(){if(this.destroyed)return;let e=!1;for(let t of this.cardsEl.querySelectorAll(`.pm-kanban-virtual-item`)){let n=Number(t.dataset.virtualIndex),r=t.querySelector(`.pm-kanban-card`);if(!r||!Number.isInteger(n)||!this.cards[n])continue;let i=Math.ceil(r.getBoundingClientRect().height)+8,a=this.cards[n].task.id,o=this.heightCache.get(a);(!o||Math.abs(o-i)>1)&&(this.heightCache.set(a,i),e=!0)}e&&this.renderWindow(!0)}setDragging(e){this.dragging=e;if(e){this.frame!==null&&cancelAnimationFrame(this.frame),this.frame=null,this.measureFrame!==null&&cancelAnimationFrame(this.measureFrame),this.measureFrame=null;return}this.scheduleRender(!0)}getScrollTop(){return this.cardsEl.scrollTop}destroy(){this.destroyed=!0,this.frame!==null&&cancelAnimationFrame(this.frame),this.measureFrame!==null&&cancelAnimationFrame(this.measureFrame),this.viewportObserver?.disconnect()}};function Nm(e,t){let n=Array.from(e.querySelectorAll(`.pm-kanban-card:not(.pm-kanban-card--dragging)`)),r=null,i=-1/0;for(let e of n){let n=e.getBoundingClientRect(),a=t-n.top-n.height/2;a<0&&a>i&&(i=a,r=e)}return r}let Pm=class{container;project;plugin;onRefresh;filter;groupBy;dragTask=null;config;columns=[];parentTitles=new Map;allTasks=[];includeSubtasks=!1;scrollPositions=new Map;heightCaches=new Map;boardScrollLeft=0;constructor(e,t,n,r,i,a=`stage`){this.container=e,this.project=t,this.plugin=n,this.onRefresh=r,this.filter=i,this.groupBy=a}render(){this.renderBoard(),this.config.kanbanShowDescriptionPreview&&this.hydrateDescriptions()}updateFilter(e,t){this.filter=e,this.renderBoard(t),this.config.kanbanShowDescriptionPreview&&this.hydrateDescriptions()}destroyColumns(){let e=this.container.querySelector(`.pm-kanban-board`);e&&(this.boardScrollLeft=e.scrollLeft);for(let e of this.columns){this.scrollPositions.set(`${this.groupBy}:${e.props.status.id}`,e.getScrollTop()),e.destroy()}this.columns=[]}destroy(){this.destroyColumns()}renderBoard(e=this.groupBy){this.config=this.plugin.store.configFor(this.project),this.destroyColumns(),this.groupBy=e,this.container.empty(),this.container.addClass(`pm-kanban-view`);let t=this.container.createDiv(`pm-kanban-board`),n=this.groupBy===`status`,r=q(this.project.tasks);this.parentTitles=new Map;for(let{task:e}of r)for(let t of e.subtasks)this.parentTitles.set(t.id,e.title);this.includeSubtasks=this.config.kanbanShowSubtasks||this.filter.quickSource!==`requirement`,this.allTasks=this.includeSubtasks?r.map(e=>e.task):this.project.tasks;let i=new Set(this.allTasks.map(e=>n?e.status:e.stage)),a=this.allTasks.filter(e=>Od(e,this.filter,this.config.statuses)),o=new Map;for(let e of a){let t=n?e.status:e.stage,r=o.get(t);r?r.push(e):o.set(t,[e])}let s=(n?this.config.statuses:this.config.stages).filter(e=>i.has(e.id));for(let e of s){let n=(o.get(e.id)??[]).map(e=>this.buildCardData(e)),r=`${this.groupBy}:${e.id}`,i=this.heightCaches.get(r)??new Map;this.heightCaches.set(r,i);let a=new Mm(t,{status:e,cards:n,heightCache:i,scrollTop:this.scrollPositions.get(r)??0,onCardClick:e=>this.openTask(e),onCardContextMenu:(e,t)=>this.openContextMenu(e,t),onCardDragStart:e=>{this.dragTask=e;for(let e of this.columns)e.setDragging(!0)},onCardDragEnd:()=>{this.dragTask=null;for(let e of this.columns)e.setDragging(!1)},onDrop:(e,t)=>this.handleDrop(e,t)});this.columns.push(a)}t.scrollLeft=this.boardScrollLeft}async hydrateDescriptions(){let e=this.allTasks.filter(e=>e.filePath&&!e.description&&Od(e,this.filter,this.config.statuses));e.length&&(await Promise.all(e.map(e=>this.plugin.store.loadTaskBody(e))),e.some(e=>e.description)&&this.renderBoard())}buildCardData(e){let t=ud(this.config.priorities,e.priority),n=sd(this.config.statuses,e.status),r=t&&e.priority!==`medium`&&e.priority!==`low`?t.color:void 0,i;if(this.config.kanbanShowDescriptionPreview&&e.description.trim()){let t=e.description.replace(/```[\s\S]*?```/g,` `).replace(/`([^`]*)`/g,`$1`).replace(/!?\[([^\]]*)\]\([^)]*\)/g,`$1`).replace(/^[ \t]*[#>\-*+]+[ \t]+/gm,``).replace(/[*~]/g,``).replace(/\s+/g,` `).trim();i=t?t.slice(0,240):void 0}let a=this.includeSubtasks&&e.type===`subtask`?this.parentTitles.get(e.id):void 0;return{task:e,draggable:!e.customFields.zentaoSourceType,statusLabel:n?.label??e.status,statusColor:n?.color??`var(--text-muted)`,priorityColor:r,descriptionPreview:i,parentTitle:a,loggedHours:gu(e),overdue:rd(e,this.config.statuses)===`overdue`,showTagColors:this.plugin.settings.showTagColors}}openTask(e){Q(this.plugin,this.project,{task:e,onSave:async()=>{await this.onRefresh()}})}openContextMenu(t,n){let r=new e.Menu;np(r,t,{plugin:this.plugin,project:this.project,onRefresh:this.onRefresh}),r.showAtMouseEvent(n)}async handleDrop(e,t){!this.dragTask||this.dragTask.id!==e||this.dragTask.customFields.zentaoSourceType||t!==this.dragTask.stage&&(await this.plugin.store.updateTask(this.project,this.dragTask.id,{stage:t}),await this.onRefresh())}},Fm=class{el;constructor(t,n){this.el=t.createDiv(`pm-view-switcher`);for(let t of n.options){let r=new e.ExtraButtonComponent(this.el).setIcon(t.icon).setTooltip(t.label);r.extraSettingsEl.addClass(`pm-view-btn`),t.id===n.active&&r.extraSettingsEl.addClass(`pm-view-btn--active`),r.onClick(()=>{this.el.querySelectorAll(`.pm-view-btn`).forEach(e=>e.removeClass(`pm-view-btn--active`)),r.extraSettingsEl.addClass(`pm-view-btn--active`),n.onChange(t.id)})}}},Im=class{el;button;constructor(t){this.button=new e.ButtonComponent(t),this.el=this.button.buttonEl,this.el.addClass(`pm-chip-btn`)}setLabel(e){return this.button.setButtonText(e),this}setActive(e){return this.el.toggleClass(`pm-chip-btn--active`,e),this}setShape(e){return this.el.toggleClass(`pm-chip-btn--pill`,e===`pill`),this}setAriaLabel(e){return this.el.setAttribute(`aria-label`,e),this}onClick(e){return this.el.addEventListener(`click`,t=>{t.preventDefault(),t.stopPropagation(),e(t)}),this}onContextMenu(e){return this.el.addEventListener(`contextmenu`,e),this}},QuickFilterBar=class{props;el;expanded=!1;constructor(e,t){this.props=t,this.el=e.createDiv(`pm-project-header-quick`),this.render()}refresh(){this.render()}change(e){Object.assign(this.props.filter,e,{quickPreset:``}),this.props.onChange(e)}group(e,t,n,r,i=!1){let a=this.el.createDiv(`pm-quick-filter-row`);a.createSpan({text:e,cls:`pm-quick-filter-label`});for(let e of t){let t=i?Array.isArray(n)&&n.includes(e.id):n===e.id;new Im(a).setLabel(e.label).setShape(`pill`).setActive(t).onClick(()=>r(e.id))}}summary(e,t){let n=[];t===`requirement`?n.push(`需求`):t===`task`&&n.push(`任务`);let r=e.quickWorkType??`all`;if(r!==`all`){let e=quickStageOptions(this.props.project,this.props.stages,t).find(e=>e.id===r);n.push(e?.label??r)}let i=e.quickCompletion??`all`;i===`unfinished`?n.push(`未完成`):i===`completed`&&n.push(`已完成`);let a=e.quickOwnership??`all`;a===`mine`?n.push(`我负责`):a===`participated`?n.push(`我参与`):a===`unassigned`&&n.push(`未指派`);let o={high:`高优先级`,overdue:`逾期`,blocked:`阻塞`};for(let t of Array.isArray(e.quickAttention)?e.quickAttention:[])o[t]&&n.push(o[t]);return n}render(){this.el.empty();let e=this.props.filter,t=e.quickSource??`all`,s=this.summary(e,t),c=this.el.createDiv(`pm-quick-filter-toggle-row`);new Im(c).setLabel(this.expanded?`快速组合 ▾`:`快速组合 ▸`).setShape(`pill`).setActive(this.expanded).onClick(()=>{this.expanded=!this.expanded,this.render()}),s.length&&c.createSpan({text:`当前组合：${s.join(` / `)}`,cls:`pm-quick-filter-summary`});if(!this.expanded)return;this.group(`对象`,[{id:`all`,label:`全部`},{id:`requirement`,label:`需求`},{id:`task`,label:`任务`}],t,t=>this.change({quickSource:t,quickWorkType:`all`}));if(t===`requirement`||t===`task`){let n=quickStageOptions(this.props.project,this.props.stages,t),r=[{id:`all`,label:`全部`},...n];this.group(t===`task`?`类型`:`阶段`,r,e.quickWorkType??`all`,e=>this.change({quickWorkType:e}))}this.group(`进度`,[{id:`all`,label:`全部`},{id:`unfinished`,label:`未完成`},{id:`completed`,label:`已完成`}],e.quickCompletion??`all`,e=>this.change({quickCompletion:e}));let n=quickCurrentUser(this.props.project),r=[{id:`all`,label:`全部`}];n&&(r.push({id:`mine`,label:`我负责`}),r.push({id:`participated`,label:`我参与`})),r.push({id:`unassigned`,label:`未指派`});this.group(`归属`,r,e.quickOwnership??`all`,t=>this.change({quickOwnership:t,quickOwner:t===`mine`||t===`participated`?n:e.quickOwner??``}));let i=Array.isArray(e.quickAttention)?e.quickAttention:[],a=[{id:`high`,label:`高优先级`},{id:`overdue`,label:`逾期`},{id:`blocked`,label:`阻塞`}],o=[{id:`all`,label:`全部`},...a];this.group(`关注`,o,i,t=>{if(t===`all`){this.change({quickAttention:[]});return}let n=i.includes(t)?i.filter(e=>e!==t):[...i,t];this.change({quickAttention:n})},!0)}};let Lm=class{props;el;volatileEl=null;constructor(e,t){this.props=t,this.el=e.createDiv(`pm-project-header-primary`),this.volatileEl=this.el.createDiv(`pm-project-header-actions`),this.renderVolatile()}setActiveSavedViewId(e){this.props.activeSavedViewId=e,this.renderVolatile()}refresh(){this.renderVolatile()}refreshVolatile(){this.renderVolatile()}renderVolatile(){this.volatileEl&&(this.volatileEl.empty(),this.renderSavedViewPills(this.volatileEl),this.renderSaveViewAction(this.volatileEl))}renderSavedViewPills(t){let n=t.createDiv(`pm-project-header-saved-views`);n.createSpan({text:`常用`,cls:`pm-quick-filter-label`});new Im(n).setLabel(`全部`).setShape(`pill`).setActive(!this.props.activeSavedViewId&&!Ed(this.props.filter)&&!this.props.filter.showArchived).onClick(()=>this.props.onSavedViewSelect(null));let r=[{id:`unfinished-requirements`,label:`未完成需求`},{id:`unfinished-development`,label:`未完成开发`},{id:`my-unfinished-requirements`,label:`我的未完成需求`},{id:`my-unfinished-tasks`,label:`我的未完成任务`},{id:`overdue`,label:`逾期事项`}];for(let e of r)new Im(n).setLabel(e.label).setShape(`pill`).setActive(this.props.filter.quickPreset===e.id).onClick(()=>this.props.onQuickPresetSelect(e.id));let i=this.props.project.savedViews.find(e=>e.id===this.props.activeSavedViewId),a=new Im(n).setLabel(i?`更多 · ${i.name}`:`更多视图`).setShape(`pill`).setActive(Boolean(i)).onClick(t=>{let n=new e.Menu;if(this.props.project.savedViews.length===0)n.addItem(e=>e.setTitle(`暂无其他视图`).setDisabled(!0));else for(let e of this.props.project.savedViews)n.addItem(t=>t.setTitle(e.name).setChecked(this.props.activeSavedViewId===e.id).onClick(()=>this.props.onSavedViewSelect(e.id)));n.showAtMouseEvent(t)});i&&a.onContextMenu(t=>this.showViewContext(t,i))}showViewContext(t,n){t.preventDefault();let r=new e.Menu;r.addItem(e=>e.setTitle(`使用当前筛选更新`).setIcon(`refresh-cw`).onClick(Y(()=>this.props.onSavedViewUpdate(n.id)))),r.addItem(e=>e.setTitle(`删除视图`).setIcon(`trash`).onClick(Y(()=>this.props.onSavedViewDelete(n.id)))),r.showAtMouseEvent(t)}renderSaveViewAction(t){if(!Ed(this.props.filter)&&!this.props.filter.showArchived)return;let n=new e.ButtonComponent(t).setButtonText(`+ 保存视图`);n.onClick(()=>this.beginInlineSave(t,n))}beginInlineSave(e,t){t.buttonEl.addClass(`pm-hidden`);let n=e.createDiv(`pm-project-header-save-input`),r=n.createEl(`input`,{type:`text`,placeholder:`视图名称…`,cls:`pm-project-header-save-input-field`});r.focus();let i=!1,a=()=>{n.remove(),t.buttonEl.removeClass(`pm-hidden`)},o=Y(async()=>{if(i)return;i=!0;let e=r.value.trim();if(!e){a();return}await this.props.onSavedViewSave(e)});r.addEventListener(`keydown`,e=>{e.key===`Enter`?(e.preventDefault(),o()):e.key===`Escape`&&a()}),r.addEventListener(`blur`,()=>{r.value.trim()?o():a()})}};function projectFilterIcon(e){return{阶段:`layers-3`,状态:`workflow`,优先级:`signal-high`,负责人:`users`,标签:`tags`,截止日期:`calendar-clock`}[e]??`list-filter`}function projectFilterMenuBehavior(e,t,n){e.addEventListener(`toggle`,()=>{if(!e.open)return;for(let n of t.querySelectorAll(`.pm-insight-project-filter-menu[open]`))n!==e&&(n.open=!1)}),e.addEventListener(`keydown`,t=>{t.key===`Escape`&&e.open&&(e.open=!1,n.focus(),t.preventDefault(),t.stopPropagation())})}function Rm(t,n,r,i,a){let o=t.createEl(`details`,{cls:`pmi-task-filter-menu pm-insight-project-filter-menu`}),s=o.createEl(`summary`,{attr:{"aria-label":`按${n}筛选`}});(0,e.setIcon)(s.createSpan(`pmi-task-filter-icon`),projectFilterIcon(n));let c=s.createSpan(`pmi-task-filter-copy`);c.createSpan({cls:`pmi-task-filter-label`,text:n});let l=c.createSpan(`pmi-task-filter-value`),u=s.createSpan(`pmi-task-filter-chevron`);(0,e.setIcon)(u,`chevron-down`);let d=o.createDiv(`pmi-task-filter-panel`),f=d.createDiv(`pmi-task-filter-panel-head`);f.createEl(`strong`,{text:n}),f.createSpan({text:`${i.length} 项`});let p=d.createDiv(`pmi-task-filter-actions`),m=p.createEl(`button`,{text:`全部`,attr:{type:`button`}}),h=d.createDiv(`pmi-task-filter-options`),g=[...r],_=()=>{if(g.length===0)return`全部${n}`;if(g.length===1)return i.find(e=>e.id===g[0])?.label??`已选 1 项`;return`已选 ${g.length} 项`},v=t=>{g=[...t],l.setText(_());for(let e of h.querySelectorAll(`input[type="checkbox"]`))e.checked=g.includes(e.dataset.filterValue??``);a([...g])};for(let t of i){let n=h.createEl(`label`,{cls:`pmi-task-filter-option`}),r=n.createEl(`input`,{type:`checkbox`});r.dataset.filterValue=t.id,r.checked=g.includes(t.id);let i=n.createSpan(`pmi-task-filter-option-name`);i.createSpan({cls:`pmi-task-filter-option-label`,text:t.label}),r.addEventListener(`change`,()=>{let e=new Set(g);r.checked?e.add(t.id):e.delete(t.id),v([...e])})}return l.setText(_()),m.addEventListener(`click`,()=>v([])),projectFilterMenuBehavior(o,t,s),o}function projectSingleFilter(t,n,r,i,a,o){let s=t.createEl(`details`,{cls:`pmi-task-filter-menu pm-insight-project-filter-menu`}),c=s.createEl(`summary`,{attr:{"aria-label":r}});(0,e.setIcon)(c.createSpan(`pmi-task-filter-icon`),n);let l=c.createSpan(`pmi-task-filter-copy`);l.createSpan({cls:`pmi-task-filter-label`,text:r});let u=l.createSpan(`pmi-task-filter-value`),d=c.createSpan(`pmi-task-filter-chevron`);(0,e.setIcon)(d,`chevron-down`);let f=s.createDiv(`pmi-task-filter-panel`),p=f.createDiv(`pmi-task-filter-panel-head`);p.createEl(`strong`,{text:r}),p.createSpan({text:`${a.length} 项`});let m=f.createDiv(`pmi-task-filter-options`),h=()=>u.setText(a.find(e=>e.id===i)?.label??r);for(let t of a){let n=m.createEl(`label`,{cls:`pmi-task-filter-option`}),r=n.createEl(`input`,{type:`radio`,attr:{name:`pm-filter-${i}`}});r.checked=t.id===i,n.createSpan({cls:`pmi-task-filter-option-label`,text:t.label}),r.addEventListener(`change`,()=>{if(!r.checked)return;i=t.id,h(),o(i),s.open=!1})}return h(),projectFilterMenuBehavior(s,t,c),s}const zm={any:`截止日期`,overdue:`已逾期`,"this-week":`本周`,"this-month":`本月`,"no-date":`无日期`};var Bm=class{props;el;clearBtn=null;constructor(e,t){this.props=t,this.el=e.createDiv(`pm-project-header-filter`),this.render()}refresh(){this.render()}render(){this.el.empty();let{filter:t,stages:n,statuses:r,priorities:i,project:a}=this.props,o=()=>{this.props.onFilterChange(),this.updateClearButton()},s=this.el.createDiv(`pm-insight-filter-search`);(0,e.setIcon)(s.createSpan(),`search`);let c=s.createEl(`input`,{type:`search`,placeholder:`搜索事项…`,cls:`pm-insight-filter-search-input`});c.value=t.text,c.addEventListener(`input`,()=>{t.text=c.value,o()}),Rm(this.el,`阶段`,t.stages??[],n.map(e=>({id:e.id,label:pd(e.icon,e.label)})),e=>{t.stages=e,o()}),Rm(this.el,`状态`,t.statuses,r.map(e=>({id:e.id,label:pd(e.icon,e.label)})),e=>{t.statuses=e,o()}),Rm(this.el,`优先级`,t.priorities,i.map(e=>({id:e.id,label:pd(e.icon,e.label)})),e=>{t.priorities=e,o()});let l=mu(a.tasks);l.length&&Rm(this.el,`负责人`,t.assignees,l.map(e=>({id:e,label:e})),e=>{t.assignees=e,o()});let u=hu(a.tasks);u.length&&Rm(this.el,`标签`,t.tags,u.map(e=>({id:e,label:e})),e=>{t.tags=e,o()}),this.renderDueDateButton(o),this.renderArchivedButton(o),this.renderClearButton()}renderDueDateButton(t){let{filter:n}=this.props,r=[`any`,`overdue`,`this-week`,`this-month`,`no-date`].map(e=>({id:e,label:zm[e]}));projectSingleFilter(this.el,`calendar-clock`,`截止日期`,n.dueDateFilter,r,e=>{n.dueDateFilter=e,t()})}renderArchivedButton(e){let{filter:t}=this.props,n=new Im(this.el).setLabel(`已归档`).setActive(t.showArchived);n.el.addClass(`pm-insight-filter-archive`),n.onClick(()=>{t.showArchived=!t.showArchived,n.setActive(t.showArchived),e()})}renderClearButton(){let e=Dd(this.props.filter)+(this.props.filter.text?1:0);this.clearBtn=new Im(this.el).setLabel(`重置筛选`),this.clearBtn.el.addClass(`pm-insight-filter-reset`),this.clearBtn.el.disabled=e===0,this.clearBtn.onClick(()=>{if(e===0)return;this.props.onClear(),this.render()})}refreshClearButton(){this.updateClearButton()}updateClearButton(){this.clearBtn&&=(this.clearBtn.el.remove(),null),this.renderClearButton()}},Vm=class{props;el;primaryRow=null;quickRow=null;filterPanel=null;filterRow=null;constructor(e,t){this.props=t,this.el=e.createDiv(`pm-project-header`),this.render()}refresh(){this.render()}notifyMutation(){this.primaryRow?.refreshVolatile(),this.quickRow?.refresh(),this.filterRow?.refreshClearButton()}setActiveSavedViewId(e){this.props.activeSavedViewId=e,this.primaryRow?.setActiveSavedViewId(e),this.quickRow?.refresh(),this.filterRow?.refresh()}render(){this.el.empty(),this.primaryRow=new Lm(this.el,{project:this.props.project,filter:this.props.filter,activeSavedViewId:this.props.activeSavedViewId,onSavedViewSelect:this.props.onSavedViewSelect,onQuickPresetSelect:this.props.onQuickPresetSelect,onSavedViewSave:this.props.onSavedViewSave,onSavedViewUpdate:this.props.onSavedViewUpdate,onSavedViewDelete:this.props.onSavedViewDelete}),this.quickRow=new QuickFilterBar(this.el,{project:this.props.project,stages:this.props.stages,filter:this.props.filter,onChange:this.props.onQuickFilterChange}),this.mountFilterPanel()}mountFilterPanel(){this.filterPanel=this.el.createDiv(`pm-project-header-filter-panel`),this.filterPanel.addClass(`pm-insight-filter-bar`),this.filterRow=new Bm(this.filterPanel,{project:this.props.project,stages:this.props.stages,statuses:this.props.statuses,priorities:this.props.priorities,filter:this.props.filter,onFilterChange:this.props.onFilterChange,onClear:this.props.onClearFilter})}};const Hm=`pm-project`;var Um=class extends e.ItemView{plugin;project=null;filePath=``;currentView;filter=au();activeSavedViewId=null;kanbanGroupBy=`stage`;subview=null;savedTableViewState=null;toolbarEl;headerEl;bodyEl;header=null;titleEl2;keydownHandler=null;pendingRefresh=null;filterRenderTimer=null;initialized=!1;defaultViewAppliedFor=null;constructor(e,t){super(e),this.plugin=t,this.currentView=t.settings.defaultView,this.navigation=!1}getViewType(){return Hm}getDisplayText(){return ad(this.project?.title??`项目`,10)}getIcon(){return`chart-gantt`}async setState(e,t){e.filePath&&e.filePath!==this.filePath&&(this.filePath=e.filePath,await this.loadProject()),await super.setState(e,t)}getState(){return{filePath:this.filePath}}onOpen(){return this.ensureInitialized(),Promise.resolve()}onClose(){return this.keydownHandler&&=(this.containerEl.removeEventListener(`keydown`,this.keydownHandler),null),this.filterRenderTimer!==null&&(window.clearTimeout(this.filterRenderTimer),this.filterRenderTimer=null),this.subview?.destroy?.(),this.subview=null,Promise.resolve()}ensureInitialized(){if(this.initialized)return;this.initialized=!0,this.containerEl.addClass(`pm-view`);let e=this.contentEl;e.empty(),e.addClass(`pm-root`),this.toolbarEl=e.createDiv(`pm-toolbar`),this.headerEl=e.createDiv(`pm-project-header-mount`),this.bodyEl=e.createDiv(`pm-content`),this.keydownHandler=e=>{this.subview?.handleKeyDown?.(e)},this.containerEl.addEventListener(`keydown`,this.keydownHandler),this.containerEl.hasAttribute(`tabindex`)||this.containerEl.setAttribute(`tabindex`,`-1`),this.register(this.plugin.store.onProjectChanged(e=>{e===this.filePath&&this.handleProjectChanged()}))}handleProjectChanged(){if(!this.project)return;if(!(this.app.vault.getAbstractFileByPath(this.filePath)instanceof e.TFile)){this.renderMissingProject();return}let t=activeDocument.activeElement;!this.toolbarEl.contains(t)&&!this.headerEl.contains(t)&&(this.renderProjectToolbar(),this.renderProjectHeader()),this.refreshProject()}async loadProject(){this.ensureInitialized();let t=this.app.vault.getAbstractFileByPath(this.filePath);if(!(t instanceof e.TFile)){this.renderMissingProject();return}if(this.project=await this.plugin.store.loadProject(t),!this.project){this.renderMissingProject();return}this.plugin.applyCollapsedState(this.project),this.defaultViewAppliedFor!==this.filePath&&(this.defaultViewAppliedFor=this.filePath,this.currentView=this.plugin.store.configFor(this.project).defaultView),this.loadFilterFromSettings(),this.leaf.updateHeader?.(),this.renderProjectToolbar(),this.renderProjectHeader(),this.renderCurrentView()}loadFilterFromSettings(){let e=this.plugin.settings.projectFilters[this.filePath];if(e)this.filter=e.filter,this.activeSavedViewId=e.activeSavedViewId;else this.filter=au(),this.activeSavedViewId=null;let t=this.activeSavedViewId&&this.project?.savedViews.find(e=>e.id===this.activeSavedViewId);t&&(this.filter={...t.filter},this.kanbanGroupBy=t.groupBy===`status`?`status`:`stage`)}async persistFilter(){this.filePath&&(this.plugin.settings.projectFilters[this.filePath]={filter:this.filter,activeSavedViewId:this.activeSavedViewId},await this.plugin.saveSettings())}renderMissingProject(){this.toolbarEl.empty(),this.headerEl.empty(),this.header=null,this.bodyEl.empty();let e=this.bodyEl.createDiv(`pm-empty-state`);e.createEl(`h3`,{text:`未找到项目`}),e.createEl(`p`,{text:`路径 ${this.filePath} 下没有项目，文件可能已删除或重命名。`})}renderProjectHeader(){if(!this.project)return;this.headerEl.empty();let e=this.plugin.store.configFor(this.project);this.header=new Vm(this.headerEl,{project:this.project,stages:e.stages,statuses:e.statuses,priorities:e.priorities,filter:this.filter,activeSavedViewId:this.activeSavedViewId,onFilterChange:()=>this.handleFilterMutation(),onClearFilter:()=>this.handleClearDetailedFilter(),onSavedViewSelect:e=>this.handleSavedViewSelect(e),onSavedViewSave:e=>this.handleSavedViewSave(e),onSavedViewUpdate:e=>this.handleSavedViewUpdate(e),onSavedViewDelete:e=>this.handleSavedViewDelete(e),onQuickFilterChange:e=>this.handleQuickFilterMutation(e),onQuickPresetSelect:e=>this.handleQuickPresetSelect(e)})}handleQuickFilterMutation(e){this.activeSavedViewId=null,this.kanbanGroupBy=e.quickSource===`task`?`status`:`stage`,this.header?.setActiveSavedViewId(null),this.persistFilter(),this.scheduleFilterRender()}handleQuickPresetSelect(t){if(!this.project)return;let n=au(),r=quickCurrentUser(this.project);if(t.startsWith(`my-`)&&!r){new e.Notice(`当前项目尚未识别“我的”用户，请先配置包含当前用户的个人视图。`);return}n.quickPreset=t,t===`unfinished-requirements`?(n.quickSource=`requirement`,n.quickCompletion=`unfinished`):t===`unfinished-development`?(n.quickSource=`task`,n.quickWorkType=quickPreferredStage(this.project,this.plugin.store.configFor(this.project).stages,`开发`,[`devel`,`develop`,`development`]),n.quickCompletion=`unfinished`):t===`my-unfinished-requirements`?(n.quickSource=`requirement`,n.quickCompletion=`unfinished`,n.quickOwnership=`mine`,n.quickOwner=r):t===`my-unfinished-tasks`?(n.quickSource=`task`,n.quickCompletion=`unfinished`,n.quickOwnership=`mine`,n.quickOwner=r):t===`overdue`&&(n.quickCompletion=`unfinished`,n.quickAttention=[`overdue`]),Object.assign(this.filter,n),this.activeSavedViewId=null,this.kanbanGroupBy=n.quickSource===`task`?`status`:`stage`,this.persistFilter(),this.header?.setActiveSavedViewId(null),this.scheduleFilterRender()}handleFilterMutation(){this.filter.quickPreset=``,this.activeSavedViewId===null?this.header?.notifyMutation():(this.activeSavedViewId=null,this.header?.setActiveSavedViewId(null)),this.persistFilter(),this.scheduleFilterRender()}handleClearDetailedFilter(){Object.assign(this.filter,{text:``,stages:[],statuses:[],priorities:[],assignees:[],participants:[],tags:[],dueDateFilter:`any`,showArchived:!1}),this.filter.quickPreset=``,this.activeSavedViewId=null,this.persistFilter(),this.header?.setActiveSavedViewId(null),this.scheduleFilterRender()}handleClearFilter(){Object.assign(this.filter,au()),this.activeSavedViewId=null,this.kanbanGroupBy=`stage`,this.persistFilter(),this.header?.setActiveSavedViewId(this.activeSavedViewId),this.scheduleFilterRender()}handleSavedViewSelect(e){if(this.project){if(e===null)Object.assign(this.filter,au()),this.activeSavedViewId=null,this.kanbanGroupBy=`stage`;else{let t=this.project.savedViews.find(t=>t.id===e);if(!t)return;Object.assign(this.filter,t.filter),this.activeSavedViewId=t.id,this.kanbanGroupBy=t.groupBy===`status`?`status`:`stage`,this.subview instanceof Yp&&(this.savedTableViewState={sortKey:t.sortKey,sortDir:t.sortDir})}this.persistFilter(),this.header?.setActiveSavedViewId(this.activeSavedViewId),this.scheduleFilterRender()}}async handleSavedViewSave(e){if(!this.project)return;let t=this.subview instanceof Yp?this.subview.getViewState():{sortKey:`stage`,sortDir:`asc`},n={id:nu(),name:e,filter:{...this.filter},sortKey:t.sortKey,sortDir:t.sortDir,viewMode:this.currentView};this.project.savedViews.push(n),this.activeSavedViewId=n.id,await this.plugin.store.saveProject(this.project),this.persistFilter(),this.header?.setActiveSavedViewId(this.activeSavedViewId)}async handleSavedViewUpdate(e){if(!this.project)return;let t=this.project.savedViews.find(t=>t.id===e);if(t){if(t.filter={...this.filter},t.viewMode=this.currentView,this.subview instanceof Yp){let e=this.subview.getViewState();t.sortKey=e.sortKey,t.sortDir=e.sortDir}await this.plugin.store.saveProject(this.project),this.header?.refresh()}}async handleSavedViewDelete(e){this.project&&(this.project.savedViews=this.project.savedViews.filter(t=>t.id!==e),this.activeSavedViewId===e&&(this.activeSavedViewId=null),await this.plugin.store.saveProject(this.project),this.persistFilter(),this.header?.setActiveSavedViewId(this.activeSavedViewId))}scheduleFilterRender(){this.filterRenderTimer!==null&&window.clearTimeout(this.filterRenderTimer),this.bodyEl.addClass(`pm-filter-switching`),this.filterRenderTimer=window.setTimeout(()=>{this.filterRenderTimer=null,this.subview instanceof Pm?this.subview.updateFilter(this.filter,this.kanbanGroupBy):this.subview instanceof Yp?this.subview.updateFilter(this.filter,this.savedTableViewState):this.renderCurrentView(),this.bodyEl.removeClass(`pm-filter-switching`)},0)}refreshSubview(){this.subview?.render()}renderProjectToolbar(){if(!this.project)return;this.toolbarEl.empty();let t=this.toolbarEl.createDiv(`pm-toolbar-left`);t.createSpan({text:this.project.icon,cls:`pm-toolbar-icon`,attr:{"aria-label":`编辑项目`,role:`button`,tabindex:`0`}}).addEventListener(`click`,()=>{Xf(this.plugin,{project:this.project})}),this.titleEl2=t.createEl(`h2`,{text:this.project.title,cls:`pm-toolbar-title`}),this.titleEl2.contentEditable=`true`,this.titleEl2.addEventListener(`blur`,Y(async()=>{if(!this.project)return;let e=this.titleEl2.textContent?.trim();!e||e===this.project.title||await this.plugin.store.updateProject(this.project,{title:e})})),new Fm(this.toolbarEl,{options:[{id:`table`,icon:`table`,label:`表格`},{id:`gantt`,icon:`git-fork`,label:`甘特图`},{id:`kanban`,icon:`layout-dashboard`,label:`看板`}],active:this.currentView,onChange:e=>{this.currentView=e,this.renderCurrentView()}});let n=this.toolbarEl.createDiv(`pm-toolbar-right`);new e.ButtonComponent(n).setButtonText(`+ 添加任务`).setCta().onClick(()=>{this.project&&Q(this.plugin,this.project,{onSave:async()=>{await this.refreshProject()}})}),this.currentView===`gantt`&&new e.ButtonComponent(n).setButtonText(`+ 里程碑`).onClick(()=>{this.project&&Q(this.plugin,this.project,{defaults:{type:`milestone`},onSave:async()=>{await this.refreshProject()}})}),new e.ExtraButtonComponent(n).setIcon(`settings`).setTooltip(`项目设置`).onClick(()=>{Xf(this.plugin,{project:this.project})})}renderCurrentView(){if(!this.project)return;let e=null,t=null;this.currentView===`gantt`&&this.subview instanceof Am&&(e=this.subview.getScrollPosition(),t=this.subview.getLabelWidth());let n=null;switch(this.subview instanceof Yp?(this.savedTableViewState=this.subview.getViewState(),this.currentView===`table`&&(n=this.subview.getScrollTop())):this.currentView!==`table`&&(this.savedTableViewState=null),this.subview?.destroy?.(),this.bodyEl.empty(),this.subview=null,this.currentView){case`table`:{let e=new Yp(this.bodyEl,this.project,this.plugin,()=>this.refreshProject(),this.filter,this.savedTableViewState??void 0);n!==null&&e.setPendingScrollTop(n),this.subview=e;break}case`gantt`:{let n=new Am(this.bodyEl,this.project,this.plugin,()=>this.refreshProject(),this.filter);e&&n.setPendingScroll(e),t!==null&&n.setLabelWidth(t),this.subview=n;break}case`kanban`:this.subview=new Pm(this.bodyEl,this.project,this.plugin,()=>this.refreshProject(),this.filter,this.kanbanGroupBy)}this.bodyEl.toggleClass(`pm-content--kanban`,this.currentView===`kanban`),this.subview?.render()}refreshProject(){return this.pendingRefresh||=new Promise(e=>{window.setTimeout(()=>{this.pendingRefresh=null,this.project&&(this.subview?.refresh?this.subview.refresh():this.subview?this.subview.render():this.renderCurrentView()),e()},0)}),this.pendingRefresh}},Wm=class{el;iconEl;titleEl;bodyEl;actionEl;constructor(e){this.el=e.createDiv(`pm-empty-state`)}setIcon(e){return this.iconEl??=this.el.createDiv(`pm-empty-icon`),this.iconEl.setText(e),this}setTitle(e){return this.titleEl??=this.el.createEl(`h3`),this.titleEl.setText(e),this}setBody(e){return this.bodyEl??=this.el.createEl(`p`),this.bodyEl.setText(e),this}setAction(t,n){return this.actionEl||=this.el.createDiv(`pm-empty-action`),this.actionEl.empty(),new e.ButtonComponent(this.actionEl).setButtonText(t).setCta().onClick(n),this}},Gm=class{el;constructor(e,t){let n=e.createDiv(`pm-project-card`);this.el=n,n.createDiv(`pm-project-card-bar`).setCssStyles({background:t.color});let r=n.createDiv(`pm-project-card-body`);r.createDiv({text:t.icon,cls:`pm-project-card-icon`}),r.createEl(`h3`,{text:t.title,cls:`pm-project-card-title`}),r.createDiv(`pm-project-card-meta`).createSpan({text:`${t.tasksDone}/${t.tasksTotal} 个事项`,cls:`pm-project-card-tasks`});let i=t.tasksTotal?t.tasksDone/t.tasksTotal*100:0;new pp(r).setSize(`sm`).setValue(i).setColor(t.color),n.addEventListener(`click`,()=>t.onClick()),n.addEventListener(`contextmenu`,e=>t.onContextMenu(e))}};function Km(t){t.toolbarEl.empty(),t.toolbarEl.createEl(`h2`,{text:`项目管理`,cls:`pm-toolbar-title`}),new e.ButtonComponent(t.toolbarEl).setButtonText(`+ 新建项目`).setCta().onClick(()=>Jm(t))}async function qm(t){let n=await t.plugin.store.loadAllProjects(t.plugin.settings.projectsFolder);if(t.isStale())return;if(t.contentEl.empty(),n.length===0){new Wm(t.contentEl).setIcon(`📋`).setTitle(`暂无项目`).setBody(`创建第一个项目即可开始使用。`).setAction(`+ 新建项目`,()=>Jm(t));return}let r=[{id:`active`,label:`进行中`,projects:[]},{id:`pending`,label:`待开始`,projects:[]},{id:`backlog`,label:`待规划`,projects:[]},{id:`completed`,label:`已完成`,projects:[]}];for(let e of n){let t=Xm(e.tasks,!1),n=Xm(e.tasks,!0),i=String(e.status??``).toLowerCase(),a=e.id.endsWith(`-backlog`)?`backlog`:[`done`,`closed`].includes(i)||t>0&&n===t?`completed`:[`wait`,`waiting`,`draft`,`planned`].includes(i)||n===0?`pending`:`active`;r.find(e=>e.id===a)?.projects.push({project:e,tasksTotal:t,tasksDone:n})}for(let n of r){if(!n.projects.length)continue;let r=t.contentEl.createDiv(`pm-project-section`);r.setCssStyles({marginBottom:`28px`});let i=r.createEl(`h3`,{text:`${n.label}（${n.projects.length}）`,cls:`pm-project-section-title`});i.setCssStyles({margin:`0 0 12px`,fontSize:`16px`,color:`var(--text-normal)`});let a=r.createDiv(`pm-project-grid`);for(let r of n.projects){let n=r.project,i=r.tasksTotal,o=r.tasksDone;new Gm(a,{title:n.title,icon:n.icon,color:n.color,tasksDone:o,tasksTotal:i,onClick:Y(async()=>{let r=t.plugin.app.vault.getAbstractFileByPath(n.filePath);r instanceof e.TFile&&await t.openProjectFile(r)}),onContextMenu:e=>Ym(t,n,e)})}}}function Jm(t){Xf(t.plugin,{onSave:async n=>{let r=t.plugin.app.vault.getAbstractFileByPath(n.filePath);r instanceof e.TFile&&await t.openProjectFile(r)}})}function Ym(t,n,r){let i=new e.Menu;i.addItem(e=>e.setTitle(`编辑项目`).setIcon(`settings`).onClick(()=>{Xf(t.plugin,{project:n,onSave:async()=>{await qm(t)}})})),i.addItem(e=>e.setTitle(`删除项目`).setIcon(`trash`).onClick(Y(async()=>{await t.plugin.store.deleteProject(n),await qm(t)}))),i.showAtMouseEvent(r)}function Xm(e,t){let n=0;for(let r of e)(!t||r.completed)&&n++,n+=Xm(r.subtasks,t);return n}const Zm=`pm-dashboard`;var Qm=class extends e.ItemView{plugin;toolbarEl;bodyEl;renderToken=0;reloadDebounceTimer=null;constructor(e,t){super(e),this.plugin=t,this.navigation=!1}getViewType(){return Zm}getDisplayText(){return`项目`}getIcon(){return`chart-gantt`}onOpen(){this.containerEl.addClass(`pm-view`);let e=this.contentEl;return e.empty(),e.addClass(`pm-root`),this.toolbarEl=e.createDiv(`pm-toolbar`),this.bodyEl=e.createDiv(`pm-content`),this.render(),this.registerVaultListeners(),Promise.resolve()}onClose(){return this.reloadDebounceTimer!==null&&(window.clearTimeout(this.reloadDebounceTimer),this.reloadDebounceTimer=null),Promise.resolve()}registerVaultListeners(){let e=e=>{let t=this.plugin.settings.projectsFolder;return e===t||e.startsWith(`${t}/`)},t=t=>{e(t)&&(this.reloadDebounceTimer!==null&&window.clearTimeout(this.reloadDebounceTimer),this.reloadDebounceTimer=window.setTimeout(()=>{this.reloadDebounceTimer=null,this.render()},300))};this.register(this.plugin.store.onProjectChanged(t)),this.registerEvent(this.app.vault.on(`create`,e=>t(e.path))),this.registerEvent(this.app.vault.on(`delete`,e=>t(e.path))),this.registerEvent(this.app.vault.on(`rename`,(e,n)=>{t(e.path),t(n)}))}render(){let e=this.makeCtx();Km(e),this.bodyEl.empty(),this.bodyEl.addClass(`pm-project-list-container`),qm(e)}makeCtx(){let e=++this.renderToken;return{plugin:this.plugin,toolbarEl:this.toolbarEl,contentEl:this.bodyEl,isStale:()=>e!==this.renderToken,openProjectFile:e=>this.plugin.router.openProject(e)}}},$m=class{plugin;constructor(e){this.plugin=e}async openDashboard(){let e=this.plugin.app.workspace,t=e.getLeaf(`tab`);await t.setViewState({type:Zm,state:{}}),await e.revealLeaf(t)}async openProject(e){let t=this.plugin.app.workspace,n=t.getLeaf(`tab`);await n.setViewState({type:Hm,state:{filePath:e.path}}),await t.revealLeaf(n)}async openProjectByPath(t){let n=this.plugin.app.vault.getAbstractFileByPath(t);n instanceof e.TFile&&await this.openProject(n)}},eh=class{plugin;intervalId=null;notifiedIds=new Set;constructor(e){this.plugin=e}start(){this.check(),this.intervalId=window.setInterval(()=>{this.check()},36e5),this.plugin.registerInterval(this.intervalId)}stop(){this.intervalId!==null&&(window.clearInterval(this.intervalId),this.intervalId=null)}async check(){if(!this.plugin.settings.notificationsEnabled)return;let t=this.plugin.settings.notificationLeadDays,n=Zl(),r=n.add({days:t}),i;try{i=await this.plugin.store.loadAllProjects(this.plugin.settings.projectsFolder)}catch{return}for(let t of i){let i=q(t.tasks);for(let{task:a}of i){let i=K(a.due);if(!i||a.completed)continue;let o=G.PlainDate.compare(i,n),s=o<0,c=o>=0&&G.PlainDate.compare(i,r)<=0,l=`${a.id}-${a.due}`;if(s&&!this.notifiedIds.has(l+`-overdue`)){this.notifiedIds.add(l+`-overdue`);let r=n.since(i,{largestUnit:`days`}).days;new e.Notice(`⚠️ 已逾期：${t.title}中的“${a.title}”已逾期 ${r} 天`,8e3)}else if(c&&!this.notifiedIds.has(l+`-soon`)){this.notifiedIds.add(l+`-soon`);let r=i.since(n,{largestUnit:`days`}).days,o=r===0?`📅 今天到期：${t.title}中的“${a.title}”`:`📅 ${r} 天后到期：${t.title}中的“${a.title}”`;new e.Notice(o,6e3)}}}}};async function th(t){let n=t.settings.projectsFolder,r=t.app.vault.getMarkdownFiles().filter(e=>e.path.startsWith(n+`/`)),i=0;for(let n of r)try{let{frontmatter:r}=Ru(await t.app.vault.read(n));if(!r||r[`pm-project`]!==!0||!Vu(r))continue;let a=await t.store.loadProject(n);if(!a||a.tasks.length===0)continue;new e.Notice(`正在迁移项目：${a.title}……`),await t.store.saveProject(a),i++}catch(t){console.error(`[PM] Migration failed for ${n.path}:`,t),new e.Notice(`项目管理：迁移“${n.basename}”失败，请查看控制台了解详情。`)}i>0&&new e.Notice(`项目管理：已将 ${i} 个项目迁移为新格式。`)}var nh=class extends e.Plugin{settings={...tu};store;notifier;router;undoStack=[];redoStack=[];pushUndo(e){this.undoStack.push(e),this.undoStack.length>20&&this.undoStack.shift(),this.redoStack=[]}async undoLastAction(){let e=this.undoStack.pop();e&&(await e.undo(),this.redoStack.push(e))}async redoLastAction(){let e=this.redoStack.pop();e&&(await e.redo(),this.undoStack.push(e))}async onload(){await this.loadSettings(),this.store=new Td(this.app,()=>this.settings),this.store.registerVaultSync(this),this.notifier=new eh(this),this.router=new $m(this),this.registerObsidianProtocolHandler(`open-projects`,async()=>{await this.router.openDashboard()}),this.registerView(Hm,e=>new Um(e,this)),this.registerView(Zm,e=>new Qm(e,this)),this.app.workspace.onLayoutReady(Y(async()=>{await th(this),await this.cleanupStaleProjectFilters()})),this.addRibbonIcon(`chart-gantt`,`项目管理`,async()=>{await this.router.openDashboard()}),this.addCommand({id:`open-projects`,name:`打开项目管理面板`,callback:()=>{this.router.openDashboard()}}),this.addCommand({id:`new-project`,name:`新建项目`,callback:()=>{Xf(this,{onSave:async e=>{await this.router.openProjectByPath(e.filePath)}})}}),this.addCommand({id:`new-task`,name:`新建任务`,callback:()=>{this.pickProjectThenCreateTask(null)}}),this.addCommand({id:`new-subtask`,name:`新建子任务`,callback:()=>{this.pickProjectThenCreateTask(`pick-parent`)}}),this.addCommand({id:`undo-last-action`,name:`撤销上一步操作`,callback:()=>{this.undoLastAction()}}),this.addCommand({id:`redo-last-action`,name:`重做上一步操作`,callback:()=>{this.redoLastAction()}}),this.addCommand({id:`import-notes-as-tasks`,name:`将笔记导入为任务`,callback:()=>{this.importNotes()}}),this.addCommand({id:`create-task-from-selection`,name:`根据选中文本创建任务`,editorCheckCallback:(e,t)=>{let n=t.getSelection().trim();return n?(e||this.createTaskFromText(n),!0):!1}}),this.registerEvent(this.app.workspace.on(`editor-menu`,(e,t)=>{let n=t.getSelection().trim();n&&e.addItem(e=>e.setTitle(`根据选中文本创建任务`).setIcon(`list-plus`).onClick(()=>void this.createTaskFromText(n)))})),this.addCommand({id:`open-current-as-project`,name:`将当前文件作为项目打开`,checkCallback:t=>{let n=this.app.workspace.getActiveViewOfType(e.MarkdownView),r=n?.file;return!r||this.app.metadataCache.getFileCache(r)?.frontmatter?.[`pm-project`]!==!0?!1:(t||n.leaf.setViewState({type:Hm,state:{filePath:r.path}}),!0)}}),this.addSettingTab(new Qd(this.app,this)),this.notifier.start()}onunload(){this.notifier.stop()}async loadSettings(){let e=await this.loadData();this.settings=Object.assign({},tu,e??{}),e?.stages?.length||(this.settings.stages=tu.stages),e?.statuses?.length||(this.settings.statuses=tu.statuses),e?.priorities?.length||(this.settings.priorities=tu.priorities),this.settings.projectFilters||(this.settings.projectFilters={}),this.settings.collapsedTasks||(this.settings.collapsedTasks={}),this.settings.tableColumnWidths||(this.settings.tableColumnWidths={});for(let e of Object.values(this.settings.projectFilters))Array.isArray(e.filter.stages)||(e.filter.stages=[]),Array.isArray(e.filter.participants)||(e.filter.participants=[]);let t=!1;for(let e of this.settings.statuses)e.complete===void 0&&(e.complete=e.id===`done`||e.id===`cancelled`,t=!0);if((e??{}).ganttHideDone===!0){let e=this.settings.statuses.filter(e=>!e.complete).map(e=>e.id);for(let t of Object.values(this.settings.projectFilters))t.filter.statuses.length===0&&(t.filter.statuses=e);t=!0}t&&await this.saveSettings()}async cleanupStaleProjectFilters(){let e=this.settings.projectFilters,t={},n=!1;for(let[r,i]of Object.entries(e))this.app.vault.getAbstractFileByPath(r)?t[r]=i:n=!0;let r={};for(let[e,t]of Object.entries(this.settings.collapsedTasks))this.app.vault.getAbstractFileByPath(e)?r[e]=t:n=!0;n&&(this.settings.projectFilters=t,this.settings.collapsedTasks=r,await this.saveSettings())}applyCollapsedState(e){let t=this.settings.collapsedTasks[e.filePath];if(!t)return;let n=new Set(t);for(let{task:t}of q(e.tasks))t.collapsed=n.has(t.id)}async persistCollapsedState(e){this.settings.collapsedTasks[e.filePath]=q(e.tasks).filter(e=>e.task.collapsed).map(e=>e.task.id),await this.saveSettings()}async toggleTaskCollapsed(e,t){let n=ou(e.tasks,t);n&&(n.collapsed=!n.collapsed,await this.persistCollapsedState(e))}async saveSettings(){await this.saveData(this.settings)}showNotice(t,n=3e3){new e.Notice(t,n)}refreshProjectViews(){for(let e of this.app.workspace.getLeavesOfType(Hm))e.view instanceof Um&&e.view.refreshProject()}async pickProjectThenCreateTask(e){let t=await this.store.loadAllProjects(this.settings.projectsFolder);if(!t.length){this.showNotice(`暂无项目，请先创建项目。`);return}Zf(this,t,t=>{if(e===`pick-parent`){let e=q(t.tasks);if(!e.length){this.showNotice(`当前项目暂无任务，请先创建任务。`);return}Qf(this,e.map(e=>e.task),e=>{this.openTaskModalForProject(t,e.id)})}else this.openTaskModalForProject(t,null)})}openTaskModalForProject(e,t,n){Q(this,e,{parentId:t,defaults:n,onSave:async()=>{await this.store.saveProject(e),await this.router.openProjectByPath(e.filePath)}})}async createTaskFromText(e){let t=e.trim();if(!t)return;let n=t.indexOf(`
 `),r=n===-1?{title:t}:{title:t.slice(0,n).trim(),description:t.slice(n+1).trim()},i=await this.store.loadAllProjects(this.settings.projectsFolder);if(!i.length){this.showNotice(`暂无项目，请先创建项目。`);return}if(i.length===1){this.openTaskModalForProject(i[0],null,r);return}Zf(this,i,e=>{this.openTaskModalForProject(e,null,r)})}async importNotes(){let e=this.app.workspace.getLeavesOfType(Hm),t=null;for(let n of e)if(n.view instanceof Um&&n.view.project){t=n.view.project;break}if(t){let e=t;$f(this,t,async()=>{await this.router.openProjectByPath(e.filePath)});return}let n=await this.store.loadAllProjects(this.settings.projectsFolder);if(!n.length){this.showNotice(`暂无项目，请先创建项目。`);return}Zf(this,n,e=>{$f(this,e,async()=>{await this.router.openProjectByPath(e.filePath)})})}};module.exports=nh;
 
+const PM_COLLAPSED_STATE_PERSIST_DELAY_MS = 180;
+const pmCollapsedStatePersistTimers = new WeakMap();
+
+/*
+ * 展开或收起事项时先更新内存状态，让表格立即刷新。
+ * 折叠配置按项目合并后再异步写盘，避免等待整份插件设置序列化造成点击卡顿。
+ */
+nh.prototype.toggleTaskCollapsed = function pmToggleTaskCollapsed(project, taskId) {
+  const task = ou(project.tasks, taskId);
+  if (!task) return;
+
+  task.collapsed = !task.collapsed;
+
+  let projectTimers = pmCollapsedStatePersistTimers.get(this);
+  if (!projectTimers) {
+    projectTimers = new Map();
+    pmCollapsedStatePersistTimers.set(this, projectTimers);
+  }
+
+  const projectKey = project.filePath;
+  const pendingTimer = projectTimers.get(projectKey);
+  if (pendingTimer !== undefined) window.clearTimeout(pendingTimer);
+
+  const persistTimer = window.setTimeout(() => {
+    projectTimers.delete(projectKey);
+    void this.persistCollapsedState(project).catch((error) => {
+      console.error(`[PM] 保存折叠状态失败：${projectKey}`, error);
+    });
+  }, PM_COLLAPSED_STATE_PERSIST_DELAY_MS);
+  projectTimers.set(projectKey, persistTimer);
+};
+
 /**
  * 判断当前事项是否直接命中文本搜索条件。
  */
@@ -1452,170 +1685,247 @@ function kd(tasks, filter, statuses = []) {
 }
 
 /**
- * 表格虚拟滚动的缓冲行数和默认可视高度。
+ * 大迭代只挂载可视区附近的事项行，完整数据仍然保留在 state.visibleRows 中。
  */
-const PM_ITERATION_TABLE_OVERSCAN = 8;
-const PM_ITERATION_TABLE_VIRTUAL_THRESHOLD = 120;
+const PM_ITERATION_TABLE_OVERSCAN = 18;
+const PM_ITERATION_TABLE_VIRTUAL_THRESHOLD = 80;
 const PM_ITERATION_TABLE_FALLBACK_VIEWPORT = 600;
-const PM_ITERATION_TABLE_PAGE_OVERSCAN = 24;
-const PM_ITERATION_TABLE_MEDIUM_OVERSCAN = 48;
-const PM_ITERATION_TABLE_FAST_OVERSCAN = 96;
-const PM_ITERATION_TABLE_MEDIUM_VELOCITY = 0.8;
-const PM_ITERATION_TABLE_FAST_VELOCITY = 2;
-const PM_ITERATION_TABLE_INITIAL_BATCH = 24;
-const PM_ITERATION_TABLE_APPEND_BATCH = 16;
 
 /**
- * 根据整页滚动位置计算表格可见行，避免进入大迭代时一次创建全部事项节点。
+ * 返回事项行的已测量高度；尚未挂载的行使用当前中位高度估算。
+ */
+function pmIterationVirtualRowHeight(state, visibleRow) {
+  const taskId = String(visibleRow?.task?.id ?? ``);
+  const measuredHeight = state.virtualRowHeights?.get(taskId);
+  return measuredHeight ?? Math.max(1, Number(state.rowHeight) || 36);
+}
+
+/**
+ * 根据已测量行高建立累计偏移，同一批可见数据只在行高变化后重算。
+ */
+function pmIterationVirtualOffsets(state) {
+  const heightVersion = state.virtualHeightVersion ?? 0;
+  if (
+    state.virtualOffsetsRowsReference === state.visibleRows
+    && state.virtualOffsetsHeightVersion === heightVersion
+    && Array.isArray(state.virtualOffsets)
+  ) {
+    return state.virtualOffsets;
+  }
+
+  const offsets = [0];
+  for (const visibleRow of state.visibleRows) {
+    offsets.push(offsets[offsets.length - 1] + pmIterationVirtualRowHeight(state, visibleRow));
+  }
+  state.virtualOffsetsRowsReference = state.visibleRows;
+  state.virtualOffsetsHeightVersion = heightVersion;
+  state.virtualOffsets = offsets;
+  return offsets;
+}
+
+/**
+ * 使用二分查找将滚动偏移转换为事项索引。
+ */
+function pmIterationVirtualIndexAtOffset(offsets, offset) {
+  const rowCount = Math.max(0, offsets.length - 1);
+  if (rowCount === 0) return 0;
+
+  let left = 0;
+  let right = rowCount;
+  while (left < right) {
+    const middle = Math.floor((left + right) / 2);
+    if (offsets[middle + 1] <= offset) left = middle + 1;
+    else right = middle;
+  }
+  return Math.min(left, rowCount - 1);
+}
+
+/**
+ * 根据表格内部滚动位置计算当前需要挂载的窗口。
  */
 function Np(state) {
+  const rowCount = state.visibleRows.length;
+  if (rowCount <= PM_ITERATION_TABLE_VIRTUAL_THRESHOLD) return { start: 0, end: rowCount };
+
   const wrapper = state.wrapper;
-  const pageRoot = wrapper?.closest(`.pm-project-detail-root--table`);
-  if (wrapper && pageRoot) {
-    const rootRect = pageRoot.getBoundingClientRect();
-    const wrapperRect = wrapper.getBoundingClientRect();
-    const tableHeader = wrapper.querySelector(`thead`);
-    const tableHeaderHeight = tableHeader instanceof HTMLElement ? tableHeader.offsetHeight : 0;
-    const stickyFilter = pageRoot.querySelector(`:scope > .pm-iteration-filter-sticky`);
-    const stickyBottom = stickyFilter instanceof HTMLElement
-      ? stickyFilter.getBoundingClientRect().bottom
-      : rootRect.top;
-    const visibleRowTop = Math.max(0, stickyBottom - wrapperRect.top);
-    const visibleRowBottom = Math.max(0, rootRect.bottom - wrapperRect.top - tableHeaderHeight);
-    const velocity = Number(state.pageScrollVelocity ?? 0);
-    const directionalOverscan = velocity >= PM_ITERATION_TABLE_FAST_VELOCITY
-      ? PM_ITERATION_TABLE_FAST_OVERSCAN
-      : velocity >= PM_ITERATION_TABLE_MEDIUM_VELOCITY
-        ? PM_ITERATION_TABLE_MEDIUM_OVERSCAN
-        : PM_ITERATION_TABLE_PAGE_OVERSCAN;
-    const scrollingUp = state.pageScrollDirection === `up`;
-    const scrollingDown = state.pageScrollDirection === `down`;
-    const beforeOverscan = scrollingUp ? directionalOverscan : PM_ITERATION_TABLE_PAGE_OVERSCAN;
-    const afterOverscan = scrollingDown ? directionalOverscan : PM_ITERATION_TABLE_PAGE_OVERSCAN;
-    let start = Math.floor(visibleRowTop / state.rowHeight) - beforeOverscan;
-    let end = Math.ceil(visibleRowBottom / state.rowHeight) + afterOverscan;
-
-    if (start < 0) start = 0;
-    if (start > state.visibleRows.length) start = state.visibleRows.length;
-    if (end > state.visibleRows.length) end = state.visibleRows.length;
-    if (end < start) end = start;
-    return { start, end };
-  }
-
-  if (state.visibleRows.length <= PM_ITERATION_TABLE_VIRTUAL_THRESHOLD) {
-    return { start: 0, end: state.visibleRows.length };
-  }
-
-  if (!wrapper) return { start: 0, end: state.visibleRows.length };
+  if (!wrapper) return { start: 0, end: Math.min(rowCount, PM_ITERATION_TABLE_VIRTUAL_THRESHOLD) };
 
   const tableHeader = wrapper.querySelector(`thead`);
   const tableHeaderHeight = tableHeader instanceof HTMLElement ? tableHeader.offsetHeight : 0;
   const scrollTop = Math.max(0, wrapper.scrollTop - tableHeaderHeight);
   const viewportHeight = wrapper.clientHeight || PM_ITERATION_TABLE_FALLBACK_VIEWPORT;
-  let start = Math.floor(scrollTop / state.rowHeight) - PM_ITERATION_TABLE_OVERSCAN;
-  if (start < 0) start = 0;
-
-  let end = Math.ceil((scrollTop + viewportHeight) / state.rowHeight) + PM_ITERATION_TABLE_OVERSCAN;
-  if (end > state.visibleRows.length) end = state.visibleRows.length;
+  const offsets = pmIterationVirtualOffsets(state);
+  const firstVisibleIndex = pmIterationVirtualIndexAtOffset(offsets, scrollTop);
+  const lastVisibleIndex = pmIterationVirtualIndexAtOffset(offsets, scrollTop + viewportHeight);
+  const start = Math.max(0, firstVisibleIndex - PM_ITERATION_TABLE_OVERSCAN);
+  const end = Math.min(rowCount, lastVisibleIndex + PM_ITERATION_TABLE_OVERSCAN + 1);
   return { start, end };
 }
 
 /**
- * 逐帧追加完整表格行；已经渲染的事项不会再因滚动被删除或替换。
+ * 创建窗口化表格的占位行，使未挂载事项仍然占用正确滚动高度。
  */
-function pmAppendIterationTableBatch(context, generation) {
+function pmCreateIterationVirtualSpacer(container, columnCount, height, position) {
+  if (height <= 0) return null;
+
+  const row = container.createEl(`tr`, {
+    cls: `pm-table-spacer pm-table-virtual-spacer pm-table-virtual-spacer--${position}`,
+  });
+  row.createEl(`td`, { attr: { colspan: String(columnCount) } }).setCssStyles({
+    height: `${height}px`,
+  });
+  return row;
+}
+
+/**
+ * 测量已挂载行的真实高度，并校正占位高度与当前滚动锚点。
+ */
+function pmMeasureIterationVirtualWindow(context, generation, start, end, previousTopOffset) {
   const state = context.state;
-  const tableBody = state.tableBody;
-  if (!tableBody || state.pageProgressiveGeneration !== generation) return;
-
-  const visibleRows = state.visibleRows;
-  const start = state.pageProgressiveRendered ?? 0;
-  const batchSize = start === 0
-    ? PM_ITERATION_TABLE_INITIAL_BATCH
-    : PM_ITERATION_TABLE_APPEND_BATCH;
-  const end = Math.min(start + batchSize, visibleRows.length);
-  const spacer = tableBody.querySelector(`.pm-table-progressive-spacer`);
-  if (!(spacer instanceof HTMLElement)) return;
-
-  const stagingBody = activeDocument.createElement(`tbody`);
-  for (let index = start; index < end; index += 1) {
-    const visibleRow = visibleRows[index];
-    Cp(
-      stagingBody,
-      visibleRow.task,
-      visibleRow.depth,
-      context,
-      visibleRow.groupTone ?? `a`,
-    );
+  if (state.virtualMeasureFrame !== null && state.virtualMeasureFrame !== undefined) {
+    window.cancelAnimationFrame(state.virtualMeasureFrame);
   }
-  for (const row of [...stagingBody.children]) tableBody.insertBefore(row, spacer);
 
-  state.pageProgressiveRendered = end;
-  state.windowStart = 0;
-  state.windowEnd = end;
+  state.virtualMeasureFrame = window.requestAnimationFrame(() => {
+    state.virtualMeasureFrame = null;
+    if (state.virtualRenderGeneration !== generation || !state.tableBody) return;
 
-  if (!state.heightCalibrated) {
-    const firstRow = tableBody.querySelector(`tr[data-task-id]`);
-    if (firstRow instanceof HTMLElement && firstRow.offsetHeight > 0) {
-      state.heightCalibrated = true;
-      if (Math.abs(firstRow.offsetHeight - state.rowHeight) > 0.5) {
-        state.rowHeight = firstRow.offsetHeight;
+    const rowHeights = state.virtualRowHeights ?? new Map();
+    const measuredHeights = [];
+    let heightChanged = false;
+    for (const row of state.tableBody.querySelectorAll(`tr[data-task-id]`)) {
+      if (!(row instanceof HTMLElement)) continue;
+
+      const taskId = String(row.dataset.taskId ?? ``);
+      const height = row.offsetHeight;
+      if (!taskId || height <= 0) continue;
+
+      measuredHeights.push(height);
+      if (Math.abs((rowHeights.get(taskId) ?? 0) - height) > 0.5) {
+        rowHeights.set(taskId, height);
+        heightChanged = true;
       }
     }
-  }
+    state.virtualRowHeights = rowHeights;
 
-  if (end >= visibleRows.length) {
-    spacer.remove();
-    state.pageProgressiveFrame = null;
-    return;
-  }
+    // 首次使用中位数校准未挂载行，避免个别分组首行影响整体高度估算。
+    if (!state.heightCalibrated && measuredHeights.length > 0) {
+      measuredHeights.sort((left, right) => left - right);
+      const medianHeight = measuredHeights[Math.floor(measuredHeights.length / 2)];
+      if (Math.abs(medianHeight - state.rowHeight) > 0.5) {
+        state.rowHeight = medianHeight;
+        heightChanged = true;
+      }
+      state.heightCalibrated = true;
+    }
 
-  const spacerCell = spacer.firstElementChild;
-  if (spacerCell instanceof HTMLElement) {
-    spacerCell.style.height = `${(visibleRows.length - end) * state.rowHeight}px`;
-  }
-  state.pageProgressiveFrame = window.requestAnimationFrame(() => {
-    state.pageProgressiveFrame = null;
-    pmAppendIterationTableBatch(context, generation);
+    if (!heightChanged) return;
+
+    state.virtualHeightVersion = (state.virtualHeightVersion ?? 0) + 1;
+    const offsets = pmIterationVirtualOffsets(state);
+    const topOffset = offsets[start] ?? 0;
+    const bottomOffset = (offsets[offsets.length - 1] ?? 0) - (offsets[end] ?? 0);
+    const topCell = state.tableBody.querySelector(`.pm-table-virtual-spacer--top > td`);
+    const bottomCell = state.tableBody.querySelector(`.pm-table-virtual-spacer--bottom > td`);
+    if (topCell instanceof HTMLElement) topCell.style.height = `${topOffset}px`;
+    if (bottomCell instanceof HTMLElement) bottomCell.style.height = `${Math.max(0, bottomOffset)}px`;
+
+    // 已滚过的行高被校正时，同步补偿 scrollTop，保持用户眼前的事项不跳动。
+    const anchorDelta = topOffset - previousTopOffset;
+    if (start > 0 && state.wrapper && Math.abs(anchorDelta) > 0.5) {
+      state.wrapper.scrollTop += anchorDelta;
+    }
   });
 }
 
 /**
- * 当筛选、排序或数据发生变化时重新启动渐进式完整渲染。
+ * 只替换可视窗口中的 DOM，搜索、筛选、排序和批量选择仍使用全量数据。
  */
 function Pp(context) {
   const state = context.state;
   const tableBody = state.tableBody;
   if (!tableBody) return;
 
-  if (state.pageVisibleRowsReference === state.visibleRows) return;
+  const { start, end } = Np(state);
+  if (state.windowStart === start && state.windowEnd === end && tableBody.childElementCount > 0) return;
 
-  if (state.pageProgressiveFrame !== null && state.pageProgressiveFrame !== undefined) {
-    window.cancelAnimationFrame(state.pageProgressiveFrame);
-  }
-  state.pageProgressiveFrame = null;
-  state.pageVisibleRowsReference = state.visibleRows;
-  state.pageProgressiveRendered = 0;
-  state.pageProgressiveGeneration = (state.pageProgressiveGeneration ?? 0) + 1;
-  state.windowStart = 0;
-  state.windowEnd = 0;
-
-  const columnCount = 15 + Ip(context.project).length;
+  const offsets = pmIterationVirtualOffsets(state);
+  const topOffset = offsets[start] ?? 0;
+  const bottomOffset = (offsets[offsets.length - 1] ?? 0) - (offsets[end] ?? 0);
+  // 基础表格共 14 列，迭代页将独立展开列合并到事项 ID 列后减少为 13 列。
+  const columnCount = 13 + Ip(context.project).length;
   const stagingBody = activeDocument.createElement(`tbody`);
-  const spacer = stagingBody.createEl(`tr`, {
-    cls: `pm-table-spacer pm-table-progressive-spacer`,
-  });
-  spacer.createEl(`td`, { attr: { colspan: String(columnCount) } }).setCssStyles({
-    height: `${state.visibleRows.length * state.rowHeight}px`,
-  });
+  pmCreateIterationVirtualSpacer(stagingBody, columnCount, topOffset, `top`);
+  for (let index = start; index < end; index += 1) {
+    const visibleRow = state.visibleRows[index];
+    Cp(stagingBody, visibleRow.task, visibleRow.depth, context, visibleRow.groupTone ?? `a`);
+  }
+  pmCreateIterationVirtualSpacer(stagingBody, columnCount, bottomOffset, `bottom`);
+
   const addRow = stagingBody.createEl(`tr`, { cls: `pm-table-add-row` });
   const addCell = addRow.createEl(`td`, { attr: { colspan: String(columnCount) } });
   Sf(addCell, `添加任务`, () => {
     Q(context.plugin, context.project, { onSave: () => context.onRefresh() });
   });
+
+  state.windowStart = start;
+  state.windowEnd = end;
+  state.virtualRenderGeneration = (state.virtualRenderGeneration ?? 0) + 1;
   tableBody.replaceChildren(...stagingBody.children);
-  pmAppendIterationTableBatch(context, state.pageProgressiveGeneration);
+  Vp(state);
+
+  if (state.selectedTaskId) {
+    const selectedRow = [...tableBody.querySelectorAll(`tr[data-task-id]`)]
+      .find((row) => row.dataset.taskId === state.selectedTaskId);
+    selectedRow?.addClass(`pm-table-row--selected`);
+  }
+  pmMeasureIterationVirtualWindow(
+    context,
+    state.virtualRenderGeneration,
+    start,
+    end,
+    topOffset,
+  );
 }
+
+/**
+ * 键盘选中的事项不在当前窗口时，先按累计行高定位，再挂载和高亮目标行。
+ */
+kp = function pmIterationSelectTaskRow(state) {
+  if (!state.tableBody) return;
+
+  state.tableBody.querySelectorAll(`.pm-table-row--selected`)
+    .forEach((row) => row.removeClass(`pm-table-row--selected`));
+  if (!state.selectedTaskId) return;
+
+  let selectedRow = [...state.tableBody.querySelectorAll(`tr[data-task-id]`)]
+    .find((row) => row.dataset.taskId === state.selectedTaskId);
+  if (!selectedRow && state.wrapper && state.renderWindow) {
+    const selectedIndex = state.visibleRows
+      .findIndex((visibleRow) => visibleRow.task.id === state.selectedTaskId);
+    if (selectedIndex < 0) return;
+
+    const offsets = pmIterationVirtualOffsets(state);
+    const tableHeader = state.wrapper.querySelector(`thead`);
+    const tableHeaderHeight = tableHeader instanceof HTMLElement ? tableHeader.offsetHeight : 0;
+    const rowTop = offsets[selectedIndex] ?? 0;
+    const rowHeight = (offsets[selectedIndex + 1] ?? rowTop) - rowTop;
+    state.wrapper.scrollTop = Math.max(
+      0,
+      tableHeaderHeight + rowTop - Math.max(0, state.wrapper.clientHeight - rowHeight) / 2,
+    );
+    state.windowStart = -1;
+    state.windowEnd = -1;
+    state.renderWindow();
+    selectedRow = [...state.tableBody.querySelectorAll(`tr[data-task-id]`)]
+      .find((row) => row.dataset.taskId === state.selectedTaskId);
+  }
+
+  if (selectedRow instanceof HTMLElement) {
+    selectedRow.addClass(`pm-table-row--selected`);
+    selectedRow.scrollIntoView({ block: `nearest` });
+  }
+};
 
 const PM_ITERATION_DEVELOPMENT_STAGES = new Set([`devel`, `developing`, `developed`]);
 const PM_ITERATION_TEST_STAGES = new Set([`test`, `testing`, `tested`]);
@@ -2117,31 +2427,6 @@ function pmRenderIterationBugCard(container, stats) {
 }
 
 /**
- * 渲染迭代总工时概览。
- */
-function pmRenderIterationEffort(container, effort, health) {
-  const effortContainer = container.createDiv(`pm-iteration-effort`);
-  const items = [
-    [`预计工时`, effort.estimate, ``],
-    [`计划应完成`, health.plannedEarned, ``],
-    [`实际挣值`, health.actualEarned, health.actualEarned < health.plannedEarned ? `is-warning` : ``],
-    [`已消耗`, effort.consumed, ``],
-    [`剩余工时`, effort.remaining, effort.remaining > 0 ? `is-warning` : ``],
-    [`超时工时`, effort.overrun, effort.overrun > 0 ? `is-danger` : ``],
-    [`未估时`, effort.unestimated, effort.unestimated > 0 ? `is-warning` : ``],
-  ];
-
-  for (const [label, value, tone] of items) {
-    const item = effortContainer.createDiv(`pm-iteration-effort-item ${tone}`.trim());
-    item.createSpan({ text: label, cls: `pm-iteration-effort-label` });
-    item.createSpan({
-      text: label === `未估时` ? `${value} 项` : pmIterationFormatHours(value),
-      cls: `pm-iteration-effort-value`,
-    });
-  }
-}
-
-/**
  * 获取人员在当前迭代中的角色文案。
  */
 function pmIterationMemberRole(view, memberName) {
@@ -2236,7 +2521,7 @@ function pmOpenIterationMemberHealth(view, member, health) {
  */
 function pmRenderIterationMembers(container, view, health) {
   if (view.iterationSummaryMembersExpanded === undefined) {
-    view.iterationSummaryMembersExpanded = true;
+    view.iterationSummaryMembersExpanded = false;
   }
 
   const bugFacts = pmBugFactsForProject(view.plugin, view.project?.id);
@@ -2268,12 +2553,12 @@ function pmRenderIterationMembers(container, view, health) {
   if (members.length === 0) {
     const section = container.createDiv(`pm-iteration-members`);
     const header = section.createDiv(`pm-iteration-members-heading`);
-    header.createSpan({ text: `人员进度健康`, cls: `pm-iteration-members-title` });
+    header.createSpan({ text: `人员综合健康`, cls: `pm-iteration-members-title` });
     section.createDiv({ text: `暂无人员工时数据`, cls: `pm-iteration-members-empty` });
     return;
   }
 
-  // 健康结论同时合并进度与 Bug 风险，并将需要关注的人员排在最前。
+  // 综合结论合并进度偏差、剩余负载与 Bug 风险，并将需要关注的人员排在最前。
   const memberRows = members.map((member) => {
     const bugStats = pmBuildBugStats(bugFacts, member.name);
     const bugRisk = pmBugRisk(bugStats);
@@ -2293,7 +2578,11 @@ function pmRenderIterationMembers(container, view, health) {
 
   const section = container.createDiv(`pm-iteration-members`);
   const header = section.createDiv(`pm-iteration-members-heading`);
-  header.createSpan({ text: `人员进度健康`, cls: `pm-iteration-members-title` });
+  header.createSpan({ text: `人员综合健康`, cls: `pm-iteration-members-title` });
+  header.createSpan({
+    text: `综合状态取进度偏差、剩余负载和 Bug 风险中的最高等级`,
+    cls: `pm-iteration-members-description`,
+  });
   header.createSpan({ text: `共 ${members.length} 人`, cls: `pm-iteration-members-count` });
   if (attentionCount > 0) {
     header.createSpan({ text: `${attentionCount} 人需关注`, cls: `pm-iteration-members-attention` });
@@ -2301,7 +2590,7 @@ function pmRenderIterationMembers(container, view, health) {
 
   const table = section.createDiv(`pm-iteration-members-table`);
   const tableHeader = table.createDiv(`pm-iteration-members-row pm-iteration-members-row--header`);
-  for (const label of [`人员`, `健康状态`, `计划 → 实际`, `偏差`, `工作负载`, `Bug 风险`, `预计完成`]) {
+  for (const label of [`人员`, `综合状态`, `计划 → 实际`, `偏差`, `工作负载`, `Bug 风险`, `预计完成`]) {
     tableHeader.createSpan({ text: label });
   }
 
@@ -2791,71 +3080,567 @@ function pmRenderIterationMilestones(container, health) {
 }
 
 /**
- * 展示当前风险由哪些人员、需求和任务贡献，人员行可直接联动下方任务筛选。
+ * 格式化距离交付节点的剩余时间，超期和时间缺失使用明确文案提示。
+ */
+function pmPressureTimeLabel(item) {
+  if (!item.targetDate) return `${item.targetType ?? `交付`}时间未维护`;
+  if (item.overdue > 0 || item.overdue === true || item.targetDate < pmhToday()) {
+    return `${pmhFormatDate(item.targetDate)} ${item.targetType ?? `交付`} · 已超期`;
+  }
+  if (item.availableDays === 0) return `${pmhFormatDate(item.targetDate)} ${item.targetType ?? `交付`} · 今天`;
+  return `${pmhFormatDate(item.targetDate)} ${item.targetType ?? `交付`} · 剩余${item.availableDays}个工作日`;
+}
+
+function pmPressureMemberTasks(pressure, member) {
+  return pressure.tasks.filter((task) => task.owners.includes(member.name));
+}
+
+function pmPressureMemberRiskGroups(member, tasks) {
+  const groups = [];
+  const addTaskGroup = (id, label, taskBadge, tone, matchingTasks, basis) => {
+    if (matchingTasks.length === 0) return;
+    groups.push({ id, label, taskBadge, tone, tasks: matchingTasks, basis, aggregate: false });
+  };
+
+  addTaskGroup(
+    `overdue`,
+    `${tasks.filter((task) => task.overdue).length}个任务已超期`,
+    `已超期`,
+    `danger`,
+    tasks.filter((task) => task.overdue),
+    `任务目标节点早于今天`,
+  );
+  addTaskGroup(
+    `blocked`,
+    `${tasks.filter((task) => task.blocked).length}个阻塞任务`,
+    `阻塞`,
+    `danger`,
+    tasks.filter((task) => task.blocked),
+    `任务状态为阻塞、暂停或挂起`,
+  );
+
+  const nodeTasks = member.targetDate
+    ? tasks.filter((task) => task.targetDate && task.targetDate <= member.targetDate)
+    : [];
+  if (member.gap > 0) {
+    groups.push({
+      id: `gap`,
+      label: `${pmhFormatDate(member.targetDate)}前缺口${member.gap}h`,
+      taskBadge: `参与缺口`,
+      tone: `danger`,
+      tasks: nodeTasks,
+      basis: `节点前剩余工作超过可用产能`,
+      aggregate: true,
+    });
+  }
+
+  addTaskGroup(
+    `unassigned`,
+    `${tasks.filter((task) => task.unassigned).length}个任务未分配`,
+    `未分配`,
+    `danger`,
+    tasks.filter((task) => task.unassigned),
+    `任务没有负责人`,
+  );
+  addTaskGroup(
+    `missing-target`,
+    `${tasks.filter((task) => task.missingTarget).length}个任务缺少交付时间`,
+    `缺少时间`,
+    `unknown`,
+    tasks.filter((task) => task.missingTarget),
+    `交付批次、任务截止时间和迭代节点均未提供可用日期`,
+  );
+  addTaskGroup(
+    `unestimated`,
+    `${tasks.filter((task) => task.unestimated).length}个任务未估时`,
+    `未估时`,
+    `unknown`,
+    tasks.filter((task) => task.unestimated),
+    `任务预计工时为空或为0`,
+  );
+
+  if (member.gap <= 0 && member.load > PMH_HEALTHY_LOAD) {
+    groups.push({
+      id: `load`,
+      label: `节点产能接近满载`,
+      taskBadge: `负载构成`,
+      tone: `warning`,
+      tasks: nodeTasks,
+      basis: `节点负载已超过健康阈值`,
+      aggregate: true,
+    });
+  }
+  return groups;
+}
+
+function pmPressureTaskStatusLabel(view, task) {
+  const status = String(task.status ?? ``).toLowerCase();
+  const config = view.plugin.store.configFor(view.project);
+  const configured = pmIterationSummaryStatusLabel(config, status);
+  if (configured !== status) return configured;
+  return ({
+    blocked: `已阻塞`,
+    pause: `暂停`,
+    paused: `暂停`,
+    suspended: `挂起`,
+    wait: `未开始`,
+    doing: `进行中`,
+  }[status] ?? status) || `未设置`;
+}
+
+function pmPressureTaskKindLabel(task) {
+  return {
+    development: `开发任务`,
+    testing: `测试任务`,
+    requirement: `需求`,
+  }[task.kind] ?? `任务`;
+}
+
+function pmPressureOpenTaskDetail(view, task) {
+  const projectTask = J(view.project, task.id);
+  if (!projectTask) {
+    new e.Notice(`未找到任务：${task.title}`);
+    return;
+  }
+  pmPressureCloseRiskDetail();
+  Q(view.plugin, view.project, {
+    task: projectTask,
+    onSave: async () => {
+      view.plugin.refreshProjectViews();
+    },
+  });
+}
+
+let pmPressureActiveRiskDetail = null;
+
+function pmPressureCloseRiskDetail() {
+  if (!pmPressureActiveRiskDetail) return;
+  pmPressureActiveRiskDetail.cleanup();
+  pmPressureActiveRiskDetail.el.remove();
+  pmPressureActiveRiskDetail = null;
+}
+
+function pmPressurePositionRiskDetail(popover, anchor) {
+  const margin = 12;
+  const gap = 8;
+  const anchorRect = anchor.getBoundingClientRect();
+  const popoverRect = popover.getBoundingClientRect();
+  const left = Math.min(
+    Math.max(margin, anchorRect.left),
+    Math.max(margin, window.innerWidth - popoverRect.width - margin),
+  );
+  const roomBelow = window.innerHeight - anchorRect.bottom - margin;
+  const top = roomBelow >= Math.min(popoverRect.height, 420)
+    ? anchorRect.bottom + gap
+    : Math.max(margin, anchorRect.top - popoverRect.height - gap);
+  popover.style.left = `${left}px`;
+  popover.style.top = `${top}px`;
+}
+
+function pmPressureOpenMemberRiskDetail(view, pressure, member, initialRiskId, anchor) {
+  pmPressureCloseRiskDetail();
+  const memberTasks = pmPressureMemberTasks(pressure, member);
+  const groups = pmPressureMemberRiskGroups(member, memberTasks);
+  if (groups.length === 0) return;
+
+  const popover = document.body.createDiv({
+    cls: `pm-project-pressure-risk-detail`,
+    attr: { role: `dialog`, 'aria-label': `${member.name}节点风险详情` },
+  });
+  const header = popover.createDiv(`pm-project-pressure-risk-detail-header`);
+  const headerCopy = header.createDiv();
+  headerCopy.createEl(`strong`, { text: `${member.name} · 节点风险详情` });
+  const uniqueTaskIds = new Set(groups.flatMap((group) => group.tasks.map((task) => task.id)));
+  headerCopy.createSpan({
+    text: groups.length === 1
+      ? `${groups[0].label} · 涉及${uniqueTaskIds.size}项任务`
+      : `${groups.length}类风险 · 涉及${uniqueTaskIds.size}项任务`,
+  });
+  const closeButton = header.createEl(`button`, {
+    text: `×`,
+    cls: `pm-project-pressure-risk-detail-close`,
+    attr: { type: `button`, 'aria-label': `关闭风险详情` },
+  });
+
+  const tabs = popover.createDiv(`pm-project-pressure-risk-detail-tabs`);
+  const content = popover.createDiv(`pm-project-pressure-risk-detail-content`);
+  let selectedRiskId = groups.length === 1
+    ? groups[0].id
+    : groups.some((group) => group.id === initialRiskId) ? initialRiskId : `all`;
+  const tabButtons = new Map();
+
+  const renderTasks = (container, tasks, selectedGroup) => {
+    const list = container.createDiv(`pm-project-pressure-risk-task-list`);
+    const sortedTasks = [...tasks].sort((left, right) => {
+      const leftShare = left.remaining / Math.max(1, left.owners.length);
+      const rightShare = right.remaining / Math.max(1, right.owners.length);
+      return Number(right.overdue) - Number(left.overdue)
+        || Number(right.blocked) - Number(left.blocked)
+        || rightShare - leftShare
+        || (left.targetDate || `9999-12-31`).localeCompare(right.targetDate || `9999-12-31`)
+        || left.title.localeCompare(right.title, `zh-CN`);
+    });
+    for (const task of sortedTasks) {
+      const row = list.createEl(`button`, {
+        cls: `pm-project-pressure-risk-task`,
+        attr: { type: `button`, title: `打开任务详情` },
+      });
+      const copy = row.createDiv(`pm-project-pressure-risk-task-copy`);
+      copy.createEl(`strong`, { text: task.title });
+      const share = pmhRound(task.remaining / Math.max(1, task.owners.length));
+      const remainingText = task.owners.length > 1
+        ? `分摊${share}h / 总剩余${task.remaining}h`
+        : `剩余${task.remaining}h`;
+      copy.createSpan({
+        text: `${pmPressureTaskKindLabel(task)} · ${pmPressureTaskStatusLabel(view, task)} · ${remainingText} · ${pmPressureTimeLabel(task)}`,
+      });
+      const taskGroups = groups.filter((group) => group.tasks.some((item) => item.id === task.id));
+      const badges = row.createDiv(`pm-project-pressure-risk-task-badges`);
+      for (const group of taskGroups) {
+        badges.createSpan({ text: group.taskBadge, cls: `is-${group.tone}` });
+      }
+      badges.createSpan({ text: `打开 ›`, cls: `is-action` });
+      row.addEventListener(`click`, () => pmPressureOpenTaskDetail(view, task));
+    }
+
+    if (selectedGroup?.basis && !selectedGroup.aggregate) {
+      container.createDiv({
+        text: `判定依据：${selectedGroup.basis}`,
+        cls: `pm-project-pressure-risk-detail-basis`,
+      });
+    }
+  };
+
+  const renderContent = () => {
+    content.empty();
+    for (const [id, button] of tabButtons) {
+      const active = id === selectedRiskId;
+      button.toggleClass(`is-active`, active);
+      button.setAttribute(`aria-pressed`, String(active));
+    }
+
+    const selectedGroup = groups.find((group) => group.id === selectedRiskId) ?? null;
+    const selectedTasks = selectedGroup
+      ? selectedGroup.tasks
+      : [...new Map(groups.flatMap((group) => group.tasks).map((task) => [task.id, task])).values()];
+
+    if (selectedGroup?.aggregate) {
+      const calculation = content.createDiv(`pm-project-pressure-risk-calculation`);
+      calculation.createDiv({
+        text: `${pmhFormatDate(member.targetDate)} ${member.targetType ?? `交付`}节点`,
+        cls: `pm-project-pressure-risk-calculation-title`,
+      });
+      calculation.createEl(`strong`, {
+        text: selectedGroup.id === `gap`
+          ? `${member.required}h − ${member.capacity}h = 缺口 ${member.gap}h`
+          : `${member.required}h / ${member.capacity}h · 负载 ${member.loadLabel}`,
+        cls: `pm-project-pressure-risk-calculation-summary${selectedGroup.id === `gap` ? ` is-danger` : ``}`,
+      });
+      calculation.createDiv({
+        text: selectedGroup.id === `gap`
+          ? `节点前剩余工作 − 可用产能；${member.availableDays}个工作日 × ${PMH_DAILY_CAPACITY_HOURS}h/天。`
+          : `剩余缓冲${pmhRound(Math.max(member.capacity - member.required, 0))}h；${member.availableDays}个工作日 × ${PMH_DAILY_CAPACITY_HOURS}h/天。`,
+        cls: `pm-project-pressure-risk-calculation-formula`,
+      });
+    }
+
+    const listHeading = content.createDiv(`pm-project-pressure-risk-detail-list-heading`);
+    listHeading.createEl(`strong`, {
+      text: selectedGroup?.aggregate ? `节点工作构成` : selectedGroup ? selectedGroup.label : `全部风险任务`,
+    });
+    listHeading.createSpan({ text: `${selectedTasks.length}项` });
+    renderTasks(content, selectedTasks, selectedGroup);
+  };
+
+  if (groups.length > 1) {
+    for (const [id, label] of [[`all`, `全部`], ...groups.map((group) => [group.id, group.label])]) {
+      const button = tabs.createEl(`button`, {
+        text: label,
+        attr: { type: `button`, 'aria-pressed': `false` },
+      });
+      button.addEventListener(`click`, () => {
+        selectedRiskId = id;
+        renderContent();
+      });
+      tabButtons.set(id, button);
+    }
+  } else {
+    tabs.remove();
+  }
+
+  const position = () => pmPressurePositionRiskDetail(popover, anchor);
+  const closeOnOutside = (event) => {
+    if (!popover.contains(event.target) && !anchor.contains(event.target)) pmPressureCloseRiskDetail();
+  };
+  const closeOnEscape = (event) => {
+    if (event.key === `Escape`) pmPressureCloseRiskDetail();
+  };
+  const cleanup = () => {
+    document.removeEventListener(`pointerdown`, closeOnOutside, true);
+    document.removeEventListener(`keydown`, closeOnEscape);
+    window.removeEventListener(`resize`, position);
+    window.removeEventListener(`scroll`, position, true);
+  };
+  pmPressureActiveRiskDetail = { el: popover, cleanup };
+  closeButton.addEventListener(`click`, pmPressureCloseRiskDetail);
+  renderContent();
+  window.requestAnimationFrame(position);
+  window.setTimeout(() => document.addEventListener(`pointerdown`, closeOnOutside, true), 0);
+  document.addEventListener(`keydown`, closeOnEscape);
+  window.addEventListener(`resize`, position);
+  window.addEventListener(`scroll`, position, true);
+}
+
+/**
+ * 展示当前风险由哪些人员、需求和任务贡献，人员卡片可直接联动下方任务筛选。
  */
 function pmRenderProjectPressure(container, view, health) {
+  pmPressureCloseRiskDetail();
   const pressure = health.pressure;
   const section = container.createDiv(`pm-project-pressure`);
   const heading = section.createDiv(`pm-project-pressure-heading`);
-  heading.createEl(`h4`, { text: `项目压力分布` });
+  const headingCopy = heading.createDiv(`pm-project-pressure-heading-copy`);
+  headingCopy.createEl(`h4`, { text: `节点履约评估` });
+  headingCopy.createSpan({ text: `判断各交付节点前的剩余工作能否承接，不代表当前进度健康` });
   heading.createSpan({
-    text: `高风险人员 ${pressure.members.filter((member) => member.level === `danger`).length} · 压力需求 ${pressure.requirements.length} · 未完成任务 ${pressure.tasks.length}`,
+    text: `未完成任务 ${pressure.tasks.length}`,
+    cls: `pm-project-pressure-heading-total`,
   });
 
-  const overview = section.createDiv(`pm-project-pressure-overview`);
-  const memberPanel = overview.createDiv(`pm-project-pressure-panel`);
-  memberPanel.createEl(`h5`, { text: `人员压力` });
-  const memberList = memberPanel.createDiv(`pm-project-pressure-list`);
-  for (const member of pressure.members.slice(0, 6)) {
-    const active = view.iterationSummaryActiveFilter?.kind === `member`
-      && view.iterationSummaryActiveFilter.memberName === member.name;
-    const row = memberList.createEl(`button`, {
-      cls: `pm-project-pressure-row is-${member.level}${active ? ` is-active` : ``}`,
+  const activeSummaryFilter = String(view.iterationPressureSummaryFilter ?? ``);
+  const dangerMemberNames = new Set(pressure.members
+    .filter((member) => member.name !== `未分配` && member.level === `danger`)
+    .map((member) => member.name));
+  const dangerRequirementIds = new Set(pressure.requirements
+    .filter((requirement) => requirement.level === `danger`)
+    .map((requirement) => requirement.id));
+  const pressureItemId = (task) => task.requirementId === `unlinked`
+    ? `task:${task.id}`
+    : task.requirementId;
+  let visibleTasks = pressure.tasks;
+
+  // 四个指标使用同一批压力明细反向筛选人员和事项，确保统计数与卡片范围一致。
+  if (activeSummaryFilter === `danger-members`) {
+    visibleTasks = pressure.tasks.filter((task) => task.owners.some((owner) => dangerMemberNames.has(owner)));
+  } else if (activeSummaryFilter === `danger-items`) {
+    visibleTasks = pressure.tasks.filter((task) => dangerRequirementIds.has(pressureItemId(task)));
+  } else if (activeSummaryFilter === `overdue-tasks`) {
+    visibleTasks = pressure.tasks.filter((task) => task.overdue);
+  } else if (activeSummaryFilter === `incomplete-tasks`) {
+    visibleTasks = pressure.tasks.filter((task) => task.missingTarget || task.unassigned || task.unestimated);
+  }
+
+  const visibleMemberNames = new Set(visibleTasks.flatMap((task) => task.owners));
+  const visibleRequirementIds = new Set(visibleTasks.map(pressureItemId));
+  const visibleMembers = activeSummaryFilter === `danger-members`
+    ? pressure.members.filter((member) => dangerMemberNames.has(member.name))
+    : activeSummaryFilter
+      ? pressure.members.filter((member) => visibleMemberNames.has(member.name))
+      : pressure.members;
+  const visibleRequirements = activeSummaryFilter === `danger-items`
+    ? pressure.requirements.filter((requirement) => dangerRequirementIds.has(requirement.id))
+    : activeSummaryFilter
+      ? pressure.requirements.filter((requirement) => visibleRequirementIds.has(requirement.id))
+      : pressure.requirements;
+
+  const summary = section.createDiv(`pm-project-pressure-summary`);
+  for (const [id, label, value, tone, targetTab] of [
+    [`danger-members`, `节点履约风险人员`, pressure.summary?.dangerMembers ?? pressure.members.filter((member) => member.level === `danger`).length, `danger`, `member`],
+    [`danger-items`, `节点履约风险事项`, pressure.summary?.dangerItems ?? pressure.requirements.filter((item) => item.level === `danger`).length, `danger`, `requirement`],
+    [`overdue-tasks`, `已超期任务`, pressure.summary?.overdueTasks ?? pressure.tasks.filter((task) => task.overdue).length, `warning`, `requirement`],
+    [`incomplete-tasks`, `信息不完整`, pressure.summary?.incompleteTasks ?? 0, `unknown`, `requirement`],
+  ]) {
+    const active = activeSummaryFilter === id;
+    const metric = summary.createEl(`button`, {
+      cls: `pm-project-pressure-summary-item is-${tone}${active ? ` is-active` : ``}`,
       attr: {
         type: `button`,
         'aria-pressed': String(active),
+        'data-pm-pressure-filter': id,
+      },
+    });
+    metric.createSpan({ text: label });
+    metric.createEl(`strong`, { text: String(value) });
+    metric.addEventListener(`click`, () => {
+      view.iterationPressureSummaryFilter = active ? `` : id;
+      if (!active) view.iterationPressureTab = targetTab;
+      pmRenderIterationSummary(view);
+    });
+  }
+
+  const tabs = section.createDiv(`pm-project-pressure-tabs`);
+  const memberTab = tabs.createEl(`button`, {
+    text: `人员节点评估 ${visibleMembers.length}`,
+    cls: `pm-project-pressure-tab`,
+    attr: { type: `button`, role: `tab` },
+  });
+  const requirementTab = tabs.createEl(`button`, {
+    text: `事项节点评估 ${visibleRequirements.length}`,
+    cls: `pm-project-pressure-tab`,
+    attr: { type: `button`, role: `tab` },
+  });
+
+  const panels = section.createDiv(`pm-project-pressure-panels`);
+  const memberPanel = panels.createDiv(`pm-project-pressure-panel`);
+  const memberList = memberPanel.createDiv(`pm-project-pressure-list pm-project-pressure-member-list`);
+  for (const member of visibleMembers.slice(0, activeSummaryFilter ? visibleMembers.length : 8)) {
+    const active = view.iterationSummaryActiveFilter?.kind === `member`
+      && view.iterationSummaryActiveFilter.memberName === member.name;
+    const memberRiskGroups = pmPressureMemberRiskGroups(member, pmPressureMemberTasks(pressure, member));
+    const card = memberList.createDiv({
+      cls: `pm-project-pressure-card pm-project-pressure-member-card is-${member.level}${active ? ` is-active` : ``}`,
+      attr: {
+        role: `group`,
+        tabindex: `0`,
+        'aria-label': `${member.name}节点评估，点击卡片筛选该人员`,
         'data-pm-summary-filter': `member`,
         'data-pm-member-name': member.name,
       },
     });
-    const identity = row.createDiv(`pm-project-pressure-copy`);
+    const cardHeader = card.createDiv(`pm-project-pressure-card-header`);
+    const identity = cardHeader.createDiv(`pm-project-pressure-card-identity`);
     identity.createEl(`strong`, { text: member.name });
-    identity.createSpan({ text: `${member.taskCount}个任务 · 主要压力：${member.primaryTask}` });
-    row.createSpan({ text: `${member.remaining}h`, cls: `pm-project-pressure-value` });
-    row.createSpan({ text: member.loadLabel, cls: `pm-project-pressure-status` });
-    row.addEventListener(`click`, () => pmIterationApplyMemberFilter(view, member.name));
-  }
-  if (pressure.members.length === 0) memberList.createDiv({ text: `当前没有人员压力`, cls: `pm-project-pressure-empty` });
+    identity.createSpan({ text: `${member.taskCount}个未完成任务` });
+    cardHeader.createSpan({ text: member.label, cls: `pm-project-pressure-badge` });
 
-  const requirementPanel = overview.createDiv(`pm-project-pressure-panel`);
-  requirementPanel.createEl(`h5`, { text: `需求压力` });
+    // 将节点、负载和工作构成放在同一视觉层级，优先回答“何时交付、能否做完”。
+    const focus = card.createDiv(`pm-project-pressure-member-focus`);
+    const nodeStatus = !member.targetDate
+      ? `时间未维护`
+      : member.overdue > 0 || member.targetDate < pmhToday()
+        ? `已超期`
+        : member.availableDays === 0
+          ? `今天`
+          : `剩余${member.availableDays}个工作日`;
+    const node = focus.createDiv(`pm-project-pressure-member-node`);
+    node.createSpan({ text: `当前${member.targetType ?? `交付`}节点` });
+    node.createEl(`strong`, { text: pmhFormatDate(member.targetDate) });
+    node.createSpan({ text: nodeStatus, cls: `pm-project-pressure-member-node-time` });
+
+    const workload = focus.createDiv(`pm-project-pressure-member-workload`);
+    const workloadHeader = workload.createDiv(`pm-project-pressure-member-workload-header`);
+    const workloadCopy = workloadHeader.createDiv();
+    workloadCopy.createSpan({ text: `节点工作量` });
+    workloadCopy.createEl(`strong`, { text: `剩余 ${member.remaining}h / 可用 ${member.capacity}h` });
+    workloadHeader.createSpan({ text: member.loadLabel, cls: `pm-project-pressure-member-load` });
+    const workloadTrack = workload.createDiv(`pm-project-pressure-member-load-track`);
+    workloadTrack.createSpan(`pm-project-pressure-member-load-fill`).style.width = `${pmhClamp(Number.isFinite(member.load) ? member.load : 1) * 100}%`;
+    workload.createSpan({
+      text: member.gap > 0
+        ? `仍缺少 ${member.gap}h 可用工时`
+        : `剩余 ${pmhRound(Math.max(member.capacity - member.remaining, 0))}h 产能缓冲`,
+      cls: `pm-project-pressure-member-gap${member.gap > 0 ? ` is-danger` : ``}`,
+    });
+
+    const stage = focus.createDiv(`pm-project-pressure-member-stage`);
+    stage.createSpan({ text: `工作构成` });
+    stage.createEl(`strong`, { text: `开发 ${member.developmentRemaining}h` });
+    stage.createSpan({ text: `测试 ${member.testingRemaining}h` });
+
+    const assessment = card.createDiv(`pm-project-pressure-member-assessment`);
+    assessment.createSpan({ text: `节点判断` });
+    const riskChips = assessment.createDiv(`pm-project-pressure-member-risk-chips`);
+    if (memberRiskGroups.length === 0) {
+      riskChips.createEl(`strong`, { text: `节点前产能充足` });
+    } else {
+      for (const group of memberRiskGroups.slice(0, 2)) {
+        const chip = riskChips.createEl(`button`, {
+          text: `${group.label} ›`,
+          cls: `pm-project-pressure-member-risk-chip is-${group.tone}`,
+          attr: { type: `button`, 'aria-haspopup': `dialog` },
+        });
+        chip.addEventListener(`click`, (event) => {
+          event.stopPropagation();
+          pmPressureOpenMemberRiskDetail(view, pressure, member, group.id, chip);
+        });
+      }
+      if (memberRiskGroups.length > 2) {
+        const more = riskChips.createEl(`button`, {
+          text: `+${memberRiskGroups.length - 2}`,
+          cls: `pm-project-pressure-member-risk-chip is-more`,
+          attr: { type: `button`, 'aria-haspopup': `dialog`, 'aria-label': `查看全部${memberRiskGroups.length}类风险` },
+        });
+        more.addEventListener(`click`, (event) => {
+          event.stopPropagation();
+          pmPressureOpenMemberRiskDetail(view, pressure, member, `all`, more);
+        });
+      }
+    }
+
+    const primaryTask = card.createDiv(`pm-project-pressure-member-primary`);
+    primaryTask.createSpan({ text: `主要任务`, cls: `pm-project-pressure-member-primary-label` });
+    const primaryTaskCopy = primaryTask.createDiv(`pm-project-pressure-member-primary-copy`);
+    primaryTaskCopy.createEl(`strong`, { text: member.primaryTaskInfo ? member.primaryTask : `--` });
+    if (member.primaryTaskInfo) {
+      primaryTaskCopy.createSpan({
+        text: `${pmPressureTimeLabel(member.primaryTaskInfo)} · 剩余${member.primaryTaskInfo.remaining}h`,
+      });
+    }
+    card.addEventListener(`click`, (event) => {
+      if (event.target.closest?.(`button`)) return;
+      pmIterationApplyMemberFilter(view, member.name);
+    });
+    card.addEventListener(`keydown`, (event) => {
+      if (event.target !== card || ![`Enter`, ` `].includes(event.key)) return;
+      event.preventDefault();
+      pmIterationApplyMemberFilter(view, member.name);
+    });
+  }
+  if (visibleMembers.length === 0) {
+    memberList.createDiv({
+      text: activeSummaryFilter ? `当前筛选没有关联人员` : `当前没有未完成人员任务`,
+      cls: `pm-project-pressure-empty`,
+    });
+  }
+
+  const requirementPanel = panels.createDiv(`pm-project-pressure-panel`);
   const requirementList = requirementPanel.createDiv(`pm-project-pressure-list`);
-  for (const requirement of pressure.requirements.slice(0, 6)) {
-    const row = requirementList.createDiv(`pm-project-pressure-row${requirement.blocked > 0 ? ` is-danger` : ``}`);
-    const copy = row.createDiv(`pm-project-pressure-copy`);
-    copy.createEl(`strong`, { text: requirement.title });
-    copy.createSpan({ text: `${requirement.taskCount}个未完成任务 · ${requirement.owners.join(`、`) || `未分配`}` });
-    row.createSpan({ text: `${requirement.remaining}h`, cls: `pm-project-pressure-value` });
-    row.createSpan({ text: requirement.blocked > 0 ? `阻塞${requirement.blocked}` : requirement.overdue > 0 ? `逾期${requirement.overdue}` : ``, cls: `pm-project-pressure-status` });
-  }
-  if (pressure.requirements.length === 0) requirementList.createDiv({ text: `当前没有需求压力`, cls: `pm-project-pressure-empty` });
+  for (const requirement of visibleRequirements.slice(0, activeSummaryFilter ? visibleRequirements.length : 8)) {
+    const card = requirementList.createDiv(`pm-project-pressure-card is-${requirement.level}`);
+    const cardHeader = card.createDiv(`pm-project-pressure-card-header`);
+    const identity = cardHeader.createDiv(`pm-project-pressure-card-identity`);
+    identity.createEl(`strong`, { text: requirement.title });
+    identity.createSpan({ text: `${requirement.typeLabel} · ${requirement.taskCount}个未完成任务 · ${requirement.owners.join(`、`) || `未分配`}` });
+    cardHeader.createSpan({ text: requirement.label, cls: `pm-project-pressure-badge` });
 
-  const tasks = section.createEl(`details`, { cls: `pm-project-pressure-tasks` });
-  tasks.createEl(`summary`, { text: `查看任务压力明细（${pressure.tasks.length}项）` });
-  const wrapper = tasks.createDiv(`pm-project-pressure-task-wrapper`);
-  const table = wrapper.createEl(`table`, { cls: `pm-project-pressure-task-table` });
-  const tableHeader = table.createEl(`thead`).createEl(`tr`);
-  for (const label of [`任务`, `关联需求`, `负责人`, `剩余`, `实际进度`, `压力原因`]) tableHeader.createEl(`th`, { text: label });
-  const body = table.createEl(`tbody`);
-  for (const task of pressure.tasks) {
-    const row = body.createEl(`tr`, { cls: task.blocked || task.overdue ? `is-danger` : `` });
-    row.createEl(`td`, { text: task.title });
-    row.createEl(`td`, { text: task.requirementTitle });
-    row.createEl(`td`, { text: task.owners.join(`、`) });
-    row.createEl(`td`, { text: `${task.remaining}h` });
-    row.createEl(`td`, { text: `${task.actual}%` });
-    row.createEl(`td`, { text: task.reasons.join(`、`) || `正常排队` });
+    const metrics = card.createDiv(`pm-project-pressure-card-metrics`);
+    for (const [label, value, danger] of [
+      [`剩余工时`, `${requirement.remaining}h`, false],
+      [`开发`, `${requirement.developmentRemaining}h`, false],
+      [`测试`, `${requirement.testingRemaining}h`, false],
+      [`最大缺口`, `${requirement.gap}h`, requirement.gap > 0],
+    ]) {
+      const metric = metrics.createSpan({ cls: danger ? `is-danger` : `` });
+      metric.createSpan({ text: label });
+      metric.createEl(`strong`, { text: value });
+    }
+
+    card.createDiv({ text: `当前交付节点：${pmPressureTimeLabel(requirement)}`, cls: `pm-project-pressure-node` });
+    card.createDiv({
+      text: `节点判断：${requirement.reasons.join(`；`) || `节点前产能充足`}`,
+      cls: `pm-project-pressure-reasons`,
+    });
   }
+  if (visibleRequirements.length === 0) {
+    requirementList.createDiv({
+      text: activeSummaryFilter ? `当前筛选没有关联事项` : `当前没有未完成需求或独立任务`,
+      cls: `pm-project-pressure-empty`,
+    });
+  }
+
+  const activateTab = (tabId) => {
+    view.iterationPressureTab = tabId;
+    const memberActive = tabId === `member`;
+    memberTab.toggleClass(`is-active`, memberActive);
+    requirementTab.toggleClass(`is-active`, !memberActive);
+    memberTab.setAttribute(`aria-selected`, String(memberActive));
+    requirementTab.setAttribute(`aria-selected`, String(!memberActive));
+    memberPanel.toggleClass(`is-hidden`, !memberActive);
+    requirementPanel.toggleClass(`is-hidden`, memberActive);
+  };
+  memberTab.addEventListener(`click`, () => activateTab(`member`));
+  requirementTab.addEventListener(`click`, () => activateTab(`requirement`));
+  activateTab(view.iterationPressureTab === `requirement` ? `requirement` : `member`);
 }
 
 /**
@@ -3691,13 +4476,18 @@ function pmRenderDeliveryBatches(container, view, plan, statuses, manualDates) {
 }
 
 const PM_ITERATION_SUMMARY_THEME_RULES = [
-  { label: `租家收入与暂估`, pattern: /租家|暂估/iu },
-  { label: `收付款与NCC`, pattern: /付款|收款|回单|认领|NCC/iu },
-  { label: `航次与运营`, pattern: /航次|船名|运营|营运/iu },
-  { label: `发票与票样`, pattern: /发票|开票|票样|税率|税点|抬头|蓝字|红字/iu },
-  { label: `客商与基础数据`, pattern: /客商|费用科目|费用类别|基础数据/iu },
-  { label: `消息与文件`, pattern: /企微|消息|通知|文件|附件|下载/iu },
+  { id: `report`, label: `经营报表`, pattern: /报表|汇总表|明细表|统计表|经营分析/iu },
+  { id: `settlement`, label: `资金结算`, pattern: /付款|订金|押保金|滞保金|港使费|退款|资金结算/iu },
+  { id: `revenue-ncc`, label: `收入与NCC`, pattern: /NCC|收款认领|款项性质|租家收入|程租收入|通用收入|收入开票/iu },
+  { id: `invoice`, label: `发票管理`, pattern: /发票|开票|票样|税率|税点|抬头|蓝字|红字|收票通知/iu },
+  { id: `accrual`, label: `暂估管理`, pattern: /暂估|冲暂估/iu },
+  { id: `voyage`, label: `航次与运营`, pattern: /航次|船名|航线|配舱|合同|运营|营运/iu },
+  { id: `common`, label: `通用能力`, pattern: /通用组件|标签页|表单|权限|企微|消息|通知|文件|附件|下载/iu },
 ];
+
+const PM_ITERATION_SUMMARY_THEME_ORDER = new Map(
+  PM_ITERATION_SUMMARY_THEME_RULES.map((rule, index) => [rule.label, index]),
+);
 
 function pmIterationSummaryDataForProject(plugin, projectId) {
   return plugin.pmIterationSummaryDataByProject?.get(String(projectId)) ?? null;
@@ -3777,17 +4567,7 @@ function pmIterationSummaryFallbackThemeLabel(requirement) {
   const searchable = `${requirement.title} ${requirement.customFields?.zentaoModule ?? ``} ${requirement.pmIterationSummaryDescription ?? ``}`;
   const matched = PM_ITERATION_SUMMARY_THEME_RULES.find((rule) => rule.pattern.test(searchable));
   if (matched) return matched.label;
-
-  const moduleParts = String(requirement.customFields?.zentaoModule ?? ``)
-    .split(`/`)
-    .map((part) => part.trim())
-    .filter((part) => part && part !== `未设置` && !/^模块 #\d+$/u.test(part));
-  if (moduleParts.length > 0) return moduleParts[moduleParts.length - 1];
-
-  const bracket = [...String(requirement.title ?? ``).matchAll(/【([^】]+)】/gu)]
-    .map((match) => String(match[1] ?? ``).trim())
-    .find((label) => label && !/^\d{4}$/u.test(label) && !/bug转需求/iu.test(label));
-  return bracket || `其他功能优化`;
+  return `通用能力`;
 }
 
 /**
@@ -3806,11 +4586,13 @@ function pmIterationSummaryFallbackThemes(requirements) {
     .map(([label, items]) => ({
       id: `fallback-${label}`,
       label,
-      summary: `主要包括${items.slice(0, 3).map((item) => `“${item.title}”`).join(`、`)}${items.length > 3 ? `等功能` : ``}。`,
+      summary: items.slice(0, 3)
+        .map((item) => pmIterationSummaryRequirementStatement(item))
+        .join(``),
       requirementIds: items.map((item) => String(item.id ?? ``)),
     }))
-    .sort((left, right) => right.requirementIds.length - left.requirementIds.length
-      || left.label.localeCompare(right.label, `zh-CN`));
+    .sort((left, right) => (PM_ITERATION_SUMMARY_THEME_ORDER.get(left.label) ?? 999)
+      - (PM_ITERATION_SUMMARY_THEME_ORDER.get(right.label) ?? 999));
 }
 
 function pmIterationSummaryScopeData(data, scopeId) {
@@ -4320,59 +5102,78 @@ function pmIterationSummaryRequirementTitle(requirement) {
 }
 
 /**
- * 从需求标题中提取业务模块；标题缺少模块标签时，再根据功能关键词和同步主题安全回退。
+ * 将过程型需求标题改写为面向业务接收人的结果描述，图片、附件和实现过程只留在关联需求中。
  */
-function pmIterationSummaryRequirementModule(requirement, fallbackLabel) {
-  const title = String(requirement?.title ?? ``);
-  const labels = [...title.matchAll(/【([^】]+)】/gu)]
-    .map((matched) => String(matched[1] ?? ``).trim())
-    .filter((label) => label
-      && !/^\d{4}(?:交付)?$/u.test(label)
-      && !/^(?:需求|前端|后端|前端开发|后端开发|测试|测试任务)$/u.test(label));
-  let label = labels[0] ?? ``;
+function pmIterationSummaryRequirementStatement(requirement) {
+  const rawTitle = String(requirement?.title ?? ``).trim();
+  const searchable = `${rawTitle} ${requirement?.pmIterationSummaryDescription ?? ``}`;
+  const fixedRules = [
+    [/外租船业务汇总表.*收付款明细统计表.*3张报表/iu, `新增外租船业务汇总表、收付款明细统计表等3张经营报表。`],
+    [/订金支付成功.*船货配.*自动分配.*运费/iu, `订金支付成功后，可根据船货配舱关系自动分配至对应运费。`],
+    [/付款单.*审批面单.*不同业务类型.*区分/iu, `不同类型的付款业务将使用对应的审批页面。`],
+    [/第三方费用付款.*隐藏付款业务字段.*(?:PM30|CXX|NCC)/iu, `第三方费用付款不再展示付款业务字段，并按约定值PM30-CXX-13传递至NCC。`],
+    [/检查合同、付款及开票.*附件必填校验/iu, `合同、付款及开票等单据提交时，将校验必填附件。`],
+    [/港使费结算付款.*暂存.*无需校验.*销方税号/iu, `港使费结算付款暂存时，不再校验销方税号。`],
+    [/进项发票池.*特殊票种.*下拉选择/iu, `特殊票种筛选改为下拉选择，支持直接选择可用票种。`],
+    [/编辑票样.*票样类型.*默认.*增值税专用发票/iu, `编辑票样时，票样类型默认使用增值税专用发票。`],
+    [/开票申请单管理.*预计生成发票/iu, `开票申请页面新增预计发票数量提示，提交前即可查看预计生成的发票张数。`],
+    [/NCC程租收入明细.*货方收入开票.*实载货量/iu, `NCC程租收入明细的货方收入开票，主表货量改为取实载货量。`],
+    [/收款认领.*款项性质.*NCC对照关系/iu, `优化收款认领与NCC对照关系，按款项性质传递对应信息。`],
+    [/申请提交暂估弹窗.*字段顺序调整/iu, `调整暂估申请弹窗的字段顺序，使填写流程更符合实际操作顺序。`],
+    [/暂估单管理.*筛选条件增加.*暂估.*冲暂估.*默认选中.*暂估/iu, `暂估单列表新增“暂估/冲暂估”筛选条件，并默认展示暂估单。`],
+    [/冲暂估.*规则.*航次结束时间判断/iu, `冲暂估判断规则调整为按航次结束时间计算。`],
+    [/费用明细单价.*精度.*8位/iu, `航次费用明细的单价精度提升至8位，支持更小金额的准确录入。`],
+    [/执行航线默认.*合同.*货方信息.*第一条航线/iu, `新增航次执行信息时，执行航线默认带出合同货方的第一条航线。`],
+    [/航次新增.*必填信息.*保存并提交.*校验提示/iu, `保存并提交航次及合同时，将提前校验货种等必填信息。`],
+    [/合同抄送.*去掉两个通知/iu, `合同抄送将移除两个不必要的通知。`],
+    [/标签页名称.*功能表单名称/iu, `新增或编辑表单时，标签页将正确显示对应的功能名称。`],
+    [/执行航次增加.*实载货量/iu, `订金、滞保金及船方费用付款时，执行航次新增实载货量信息。`],
+    [/开票.*开票申请.*通用收入开票/iu, `开票申请新增通用收入开票能力。`],
+  ];
+  const fixed = fixedRules.find(([pattern]) => pattern.test(searchable))?.[1];
+  if (fixed) return fixed;
 
-  if (!label) {
-    const keywordRules = [
-      [`航次订立`, /航次订立|合同合并审批/iu],
-      [`航次执行`, /航次执行|航次跟踪|环节跟踪/iu],
-      [`收票通知管理`, /收票通知/iu],
-      [`开票申请单`, /开票申请/iu],
-      [`编辑票样`, /编辑票样|发票抬头|参考票样/iu],
-      [`发票文件`, /发票文件/iu],
-      [`报表分析`, /报表|统计表/iu],
-      [`付款单管理`, /付款|订金|滞保金/iu],
-    ];
-    label = keywordRules.find(([, pattern]) => pattern.test(title))?.[0] ?? fallbackLabel ?? ``;
-  }
-
-  return String(label || `其他功能优化`)
-    .replace(/^内贸\s*OP[：:]?/iu, ``)
-    .replace(/航次订立\+合同合并审批/gu, `航次订立`)
-    .replace(/开票申请单管理/gu, `开票申请单`)
-    .replace(/^付款$/u, `付款单管理`)
-    .trim() || `其他功能优化`;
+  let statement = pmIterationSummaryRequirementTitle(requirement)
+    .replace(/^(?:内贸(?:自营)?\s*[+＋、/]?\s*OP|OP\s*[+＋、/]?\s*内贸自营)[，,:：\s-]*/iu, ``)
+    .replace(/(?:枚举)?如下图|如图所示|如图|详见附件|参考附件|见附件/gu, ``)
+    .replace(/(?:枚举|调整|内容|规则)?如下/gu, ``)
+    .replace(/[ \t]*[-—]+[ \t]*/gu, `，`)
+    .replace(/[，,：:]\s*[，,：:]+/gu, `：`)
+    .replace(/\s+/gu, ``)
+    .replace(/[，,:：；;]+$/u, ``)
+    .trim();
+  if (!statement) return `相关功能已完成优化。`;
+  if (/字段顺序调整$/u.test(statement)) statement = statement.replace(/字段顺序调整$/u, `优化字段顺序`);
+  if (!/[。！？]$/u.test(statement)) statement += `。`;
+  return statement;
 }
 
-function pmIterationSummaryRequirementGroups(requirements, themes) {
-  const themeByRequirementId = new Map();
-  for (const theme of themes) {
-    for (const requirementId of Array.isArray(theme.requirementIds) ? theme.requirementIds : []) {
-      themeByRequirementId.set(String(requirementId), String(theme.label ?? ``));
-    }
+function pmIterationSummaryRequirementChangeType(requirement) {
+  const searchable = `${requirement?.title ?? ``} ${requirement?.pmIterationSummaryDescription ?? ``}`;
+  if (/规则|判断|默认|自动|校验|无需|不再|隐藏|区分.*模板|取实载|传.*NCC/iu.test(searchable)) {
+    return { id: `rule`, label: `规则变化`, priority: 0 };
   }
+  if (/新增|增加|开发|提示|支持/iu.test(searchable)) {
+    return { id: `new`, label: `新增`, priority: 1 };
+  }
+  if (/字段|名称|精度|下拉|顺序|显示|带出|通知/iu.test(searchable)) {
+    return { id: `experience`, label: `体验优化`, priority: 2 };
+  }
+  return { id: `optimization`, label: `功能优化`, priority: 3 };
+}
 
+function pmIterationSummaryRequirementGroups(requirements) {
   const groups = new Map();
   for (const requirement of requirements) {
-    const requirementId = String(requirement.id ?? ``);
-    const moduleName = pmIterationSummaryRequirementModule(
-      requirement,
-      themeByRequirementId.get(requirementId),
-    );
+    const moduleName = pmIterationSummaryFallbackThemeLabel(requirement);
     const items = groups.get(moduleName) ?? [];
     items.push(requirement);
     groups.set(moduleName, items);
   }
-  return [...groups.entries()];
+  return [...groups.entries()].sort((left, right) => (
+    (PM_ITERATION_SUMMARY_THEME_ORDER.get(left[0]) ?? 999)
+    - (PM_ITERATION_SUMMARY_THEME_ORDER.get(right[0]) ?? 999)
+  ));
 }
 
 /**
@@ -4384,8 +5185,6 @@ function pmBuildIterationSummaryNoticeText({
   summary,
   requirements,
   bugStats,
-  themes,
-  introduction,
   batch,
   scopeId,
   data,
@@ -4399,74 +5198,109 @@ function pmBuildIterationSummaryNoticeText({
   const noticeType = batchStatus?.id === `released`
     ? `更新通知`
     : batch ? `交付计划` : `迭代总结`;
-  const lines = [
-    `【${noticeType}${noticeDate}】${pmIterationSummarySystemName(view.project)}`,
-  ];
+  const title = `【${noticeType}${noticeDate}】${pmIterationSummarySystemName(view.project)}`;
+  const requirementGroups = pmIterationSummaryRequirementGroups(noticeRequirements);
+  const labels = requirementGroups.map(([label]) => label);
+  const typedRequirements = noticeRequirements.map((requirement) => ({
+    requirement,
+    changeType: pmIterationSummaryRequirementChangeType(requirement),
+  }));
+  const ruleChangeCount = typedRequirements
+    .filter(({ changeType }) => changeType.id === `rule`).length;
+  const scopeSubject = batch ? `本批次` : scopeId === PM_DELIVERY_SCOPE_UNASSIGNED ? `当前未安排范围` : `本次迭代`;
+  const overview = noticeRequirements.length > 0
+    ? `${scopeSubject}主要优化${labels.join(`、`)}，共包含${noticeRequirements.length}项功能更新。${ruleChangeCount > 0 ? `其中${ruleChangeCount}项涉及业务规则或操作流程变化，请相关岗位重点关注。` : ``}`
+    : `${scopeSubject}当前没有可生成更新通知的需求。`;
+  const keyRequirements = [...typedRequirements]
+    .sort((left, right) => left.changeType.priority - right.changeType.priority)
+    .slice(0, 5);
+  const commonLines = [title];
+  if (batch) commonLines.push(`交付批次：${batch.name || `未命名交付批次`}`);
 
-  if (batch) {
-    lines.push(`交付批次：${batch.name || `未命名交付批次`}`);
+  const briefLines = [...commonLines, ``, `迭代概览：`, overview, ``, `重点变化：`];
+  if (keyRequirements.length === 0) {
+    briefLines.push(`当前没有需要单独提示的重点变化。`);
+  } else {
+    keyRequirements.forEach(({ requirement, changeType }, index) => {
+      briefLines.push(`${index + 1}. 【${changeType.label}】${pmIterationSummaryRequirementStatement(requirement)}`);
+    });
   }
-  lines.push(``, introduction, ``);
-  lines.push(batchStatus?.id === `released` ? `本次已上线内容如下：` : `本次功能范围如下：`, ``);
 
-  const requirementGroups = pmIterationSummaryRequirementGroups(noticeRequirements, themes);
+  const allLines = [...briefLines, ``, `全部更新：`];
   if (requirementGroups.length === 0) {
-    lines.push(`当前没有可生成更新通知的已完成需求。`, ``);
+    allLines.push(`当前没有可展示的功能更新。`);
   } else {
     requirementGroups.forEach(([moduleName, items], moduleIndex) => {
-      lines.push(`${moduleName}：`);
+      allLines.push(``, `${moduleName}：`);
       items.forEach((requirement, itemIndex) => {
-        lines.push(`${moduleIndex + 1}.${itemIndex + 1} ${pmIterationSummaryRequirementTitle(requirement)}；`);
+        allLines.push(`${moduleIndex + 1}.${itemIndex + 1} ${pmIterationSummaryRequirementStatement(requirement)}`);
       });
-      lines.push(``);
+    });
+  }
+
+  const traceLines = [...commonLines, ``, `关联需求：`];
+  const traceGroups = pmIterationSummaryRequirementGroups(requirements);
+  if (traceGroups.length === 0) {
+    traceLines.push(`当前范围没有关联需求。`, ``);
+  } else {
+    traceGroups.forEach(([moduleName, items]) => {
+      traceLines.push(``, `${moduleName}：`);
+      items.forEach((requirement, index) => {
+        const storyId = String(requirement.customFields?.zentaoId ?? ``) || `--`;
+        const status = pmIterationSummaryStatusLabel(config, requirement.status);
+        traceLines.push(`${index + 1}. 需求 #${storyId}：${requirement.title}（${status}）`);
+      });
     });
   }
 
   const development = summary.categories.find((category) => category.id === `development`)?.metric;
   const testing = summary.categories.find((category) => category.id === `testing`)?.metric;
-  lines.push(`—— 以下为交付情况及内部参考 ——`, ``);
-  lines.push(`交付情况：`);
+  traceLines.push(``, `交付情况：`);
   if (batch) {
-    lines.push(`1. 当前状态：${batchStatus?.label ?? `待确认`}；负责人：${batch.owner || `未设置`}；`);
-    lines.push(`2. 提测日期：${pmDeliveryFormatDate(batch.testingDate)}；上线日期：${pmDeliveryFormatDate(batch.releaseDate)}；`);
+    traceLines.push(`1. 当前状态：${batchStatus?.label ?? `待确认`}；负责人：${batch.owner || `未设置`}；`);
+    traceLines.push(`2. 提测日期：${pmDeliveryFormatDate(batch.testingDate)}；上线日期：${pmDeliveryFormatDate(batch.releaseDate)}；`);
   } else {
-    lines.push(`1. 迭代状态：${pmIterationSummaryStatusLabel(config, view.project.status)}；`);
+    traceLines.push(`1. 迭代状态：${pmIterationSummaryStatusLabel(config, view.project.status)}；`);
   }
   const deliveryMetricStart = batch ? 3 : 2;
-  lines.push(`${deliveryMetricStart}. 需求共${requirements.length}项，已关闭${closedRequirements.length}项，未关闭${Math.max(requirements.length - closedRequirements.length, 0)}项；`);
-  lines.push(`${deliveryMetricStart + 1}. 当前实际完成${summary.health.actual}%，应完成${summary.health.expected}%，进度偏差${summary.health.deviation > 0 ? `+` : ``}${summary.health.deviation}%；`);
-  lines.push(`${deliveryMetricStart + 2}. 开发任务已完成${development?.completed ?? 0}/${development?.total ?? 0}项，进行中${development?.ongoing ?? 0}项，待开始${development?.pending ?? 0}项；`);
-  lines.push(`${deliveryMetricStart + 3}. 测试任务已完成${testing?.completed ?? 0}/${testing?.total ?? 0}项，进行中${testing?.ongoing ?? 0}项，待开始${testing?.pending ?? 0}项；`, ``);
+  traceLines.push(`${deliveryMetricStart}. 需求共${requirements.length}项，已关闭${closedRequirements.length}项，未关闭${Math.max(requirements.length - closedRequirements.length, 0)}项；`);
+  traceLines.push(`${deliveryMetricStart + 1}. 当前实际完成${summary.health.actual}%，应完成${summary.health.expected}%，进度偏差${summary.health.deviation > 0 ? `+` : ``}${summary.health.deviation}%；`);
+  traceLines.push(`${deliveryMetricStart + 2}. 开发任务已完成${development?.completed ?? 0}/${development?.total ?? 0}项，进行中${development?.ongoing ?? 0}项，待开始${development?.pending ?? 0}项；`);
+  traceLines.push(`${deliveryMetricStart + 3}. 测试任务已完成${testing?.completed ?? 0}/${testing?.total ?? 0}项，进行中${testing?.ongoing ?? 0}项，待开始${testing?.pending ?? 0}项；`, ``);
 
-  lines.push(`质量情况：`);
-  lines.push(`1. Bug共${bugStats.total}个，已关闭${bugStats.closed}个，未关闭${bugStats.unclosed}个；`);
-  lines.push(`2. 未关闭Bug中，未解决${bugStats.unresolved}个，待验证或关闭${bugStats.resolvedOpen}个；`);
-  lines.push(`3. 未关闭1级Bug ${bugStats.unclosedSeverity1}个，未关闭2级Bug ${bugStats.unclosedSeverity2}个；`, ``);
+  traceLines.push(`质量情况：`);
+  traceLines.push(`1. Bug共${bugStats.total}个，已关闭${bugStats.closed}个，未关闭${bugStats.unclosed}个；`);
+  traceLines.push(`2. 未关闭Bug中，未解决${bugStats.unresolved}个，待验证或关闭${bugStats.resolvedOpen}个；`);
+  traceLines.push(`3. 未关闭1级Bug ${bugStats.unclosedSeverity1}个，未关闭2级Bug ${bugStats.unclosedSeverity2}个；`, ``);
 
   const unfinishedRequirements = requirements
     .filter((requirement) => String(requirement.status ?? ``).toLowerCase() !== `closed`);
-  lines.push(`待完成事项：`);
+  traceLines.push(`待完成事项：`);
   if (unfinishedRequirements.length === 0) {
-    lines.push(`当前范围内没有未关闭需求。`, ``);
+    traceLines.push(`当前范围内没有未关闭需求。`, ``);
   } else {
     unfinishedRequirements.forEach((requirement, index) => {
       const status = pmIterationSummaryStatusLabel(config, requirement.status);
-      lines.push(`${index + 1}. ${pmIterationSummaryRequirementTitle(requirement)}（${status}，进度${Number(requirement.progress ?? 0)}%）；`);
+      traceLines.push(`${index + 1}. ${pmIterationSummaryRequirementTitle(requirement)}（${status}，进度${Number(requirement.progress ?? 0)}%）；`);
     });
-    lines.push(``);
+    traceLines.push(``);
   }
 
   if (scopeId === PM_DELIVERY_SCOPE_ALL && data?.changes && !data.changes.initial) {
     const changes = data.changes;
-    lines.push(`本次数据变化：`);
-    lines.push(`新增需求${changes.addedRequirementIds?.length ?? 0}项，移除需求${changes.removedRequirementIds?.length ?? 0}项，新关闭需求${changes.newlyClosedRequirementIds?.length ?? 0}项，状态变化${changes.statusChangedRequirementIds?.length ?? 0}项，调整交付批次${changes.batchChangedRequirementIds?.length ?? 0}项；`);
-    lines.push(`未关闭Bug变化${pmIterationSummaryFormatDelta(changes.bugDelta?.unclosed)}，未关闭1级Bug变化${pmIterationSummaryFormatDelta(changes.bugDelta?.unclosedSeverity1)}，未关闭2级Bug变化${pmIterationSummaryFormatDelta(changes.bugDelta?.unclosedSeverity2)}；`, ``);
+    traceLines.push(`本次数据变化：`);
+    traceLines.push(`新增需求${changes.addedRequirementIds?.length ?? 0}项，移除需求${changes.removedRequirementIds?.length ?? 0}项，新关闭需求${changes.newlyClosedRequirementIds?.length ?? 0}项，状态变化${changes.statusChangedRequirementIds?.length ?? 0}项，调整交付批次${changes.batchChangedRequirementIds?.length ?? 0}项；`);
+    traceLines.push(`未关闭Bug变化${pmIterationSummaryFormatDelta(changes.bugDelta?.unclosed)}，未关闭1级Bug变化${pmIterationSummaryFormatDelta(changes.bugDelta?.unclosedSeverity1)}，未关闭2级Bug变化${pmIterationSummaryFormatDelta(changes.bugDelta?.unclosedSeverity2)}；`, ``);
   }
 
   if (freshness.id === `stale`) {
-    lines.push(`数据说明：需求、Bug或交付批次已发生变化，进度和质量指标已按当前数据计算，功能语义将在刷新或下次同步后更新。`);
+    traceLines.push(`数据说明：需求、Bug或交付批次已发生变化，进度和质量指标已按当前数据计算，功能语义将在刷新或下次同步后更新。`);
   }
-  return lines.join(`\n`).trim();
+  return {
+    brief: briefLines.join(`\n`).trim(),
+    all: allLines.join(`\n`).trim(),
+    trace: traceLines.join(`\n`).trim(),
+  };
 }
 
 /**
@@ -4477,6 +5311,7 @@ function pmOpenIterationSummaryDrawer(view, initialScopeId = PM_DELIVERY_SCOPE_A
   modal.modalEl.addClass(`pm-iteration-summary-drawer`);
   modal.containerEl?.addClass(`pm-iteration-summary-drawer-container`);
   let selectedScopeId = initialScopeId;
+  let selectedNoticeMode = `brief`;
   let refreshing = false;
 
   const renderDrawer = () => {
@@ -4573,50 +5408,41 @@ function pmOpenIterationSummaryDrawer(view, initialScopeId = PM_DELIVERY_SCOPE_A
       selectedScopeId,
     );
     const bugStats = pmBuildBugStats(bugRecords);
-    const scopeData = pmIterationSummaryScopeData(effectiveData, selectedScopeId);
-    const fallbackThemes = pmIterationSummaryFallbackThemes(requirements);
-    const themes = Array.isArray(scopeData?.themes) && scopeData.themes.length > 0
-      ? scopeData.themes
-      : fallbackThemes;
-    const introduction = String(scopeData?.introduction ?? ``)
-      || pmIterationSummaryFallbackIntroduction(
-        view,
-        deliveryPlan,
-        selectedScopeId,
-        requirements,
-        fallbackThemes,
-        summary.delivery,
-      );
     const selectedBatch = selectedScopeId === PM_DELIVERY_SCOPE_ALL
       || selectedScopeId === PM_DELIVERY_SCOPE_UNASSIGNED
       ? null
       : deliveryPlan.batches.find((batch) => batch.id === selectedScopeId) ?? null;
-    const noticeText = pmBuildIterationSummaryNoticeText({
+    const noticeTexts = pmBuildIterationSummaryNoticeText({
       view,
       config,
       summary,
       requirements,
       bugStats,
-      themes,
-      introduction,
       batch: selectedBatch,
       scopeId: selectedScopeId,
       data: effectiveData,
       freshness,
     });
+    const noticeModes = [
+      [`brief`, `重点摘要`, `只展示迭代概览和最多5项重点变化，适合快速同步。`],
+      [`all`, `全部更新`, `按固定业务域展示全部结果型更新文案。`],
+      [`trace`, `关联需求`, `保留原始需求名、交付、质量和待完成信息，仅用于内部追溯。`],
+    ];
+    const selectedMode = noticeModes.find(([id]) => id === selectedNoticeMode) ?? noticeModes[0];
+    const noticeText = noticeTexts[selectedMode[0]];
     const body = modal.contentEl.createDiv(`pm-iteration-summary-drawer-body`);
     const notice = body.createDiv(`pm-iteration-summary-notice`);
     const noticeHeading = notice.createDiv(`pm-iteration-summary-notice-heading`);
     const noticeCopy = noticeHeading.createDiv();
-    noticeCopy.createEl(`h3`, { text: `可发送文字` });
-    noticeCopy.createSpan({ text: `正文后已附完整交付、质量和待完成信息，可复制后自行删减。` });
+    noticeCopy.createEl(`h3`, { text: selectedNoticeMode === `trace` ? `内部参考` : `可发送文字` });
+    noticeCopy.createSpan({ text: selectedMode[2] });
     const copyButton = noticeHeading.createEl(`button`, {
       cls: `pm-iteration-summary-copy`,
-      attr: { type: `button`, title: `复制当前范围的完整文字总结` },
+      attr: { type: `button`, title: `复制当前查看内容` },
     });
     const copyIcon = copyButton.createSpan({ cls: `pm-iteration-summary-copy-icon` });
     e.setIcon(copyIcon, `copy`);
-    copyButton.createSpan({ text: `复制全文` });
+    copyButton.createSpan({ text: `复制当前内容` });
     copyButton.addEventListener(`click`, async () => {
       try {
         await navigator.clipboard.writeText(noticeText);
@@ -4626,6 +5452,18 @@ function pmOpenIterationSummaryDrawer(view, initialScopeId = PM_DELIVERY_SCOPE_A
         new e.Notice(`复制失败，请手动选择文字复制。`);
       }
     });
+    const noticeTabs = notice.createDiv(`pm-iteration-summary-notice-tabs`);
+    for (const [modeId, label] of noticeModes) {
+      const modeButton = noticeTabs.createEl(`button`, {
+        text: label,
+        cls: modeId === selectedNoticeMode ? `is-active` : ``,
+        attr: { type: `button` },
+      });
+      modeButton.addEventListener(`click`, () => {
+        selectedNoticeMode = modeId;
+        renderDrawer();
+      });
+    }
     notice.createEl(`pre`, { text: noticeText, cls: `pm-iteration-summary-notice-text` });
     notice.createDiv({ text: `— 已显示全部内容 —`, cls: `pm-iteration-summary-notice-end` });
   };
@@ -4824,11 +5662,18 @@ function pmRenderIterationSummary(view) {
   const config = view.plugin.store.configFor(view.project);
   const manualDates = view.plugin.settings[PM_DASHBOARD_DATES_SETTING]?.[view.project.id] ?? {};
   const deliveryPlan = pmDeliveryPlanForProject(view.plugin, view.project);
+  const scopeContext = pmDeliveryBuildContext(
+    pmDeliveryAllProjectTasks(view.project),
+    deliveryPlan,
+    PM_DELIVERY_SCOPE_ALL,
+  );
+  const hasUnassignedScope = scopeContext.unassignedRequirementIds.size > 0
+    || scopeContext.unlinkedTaskIds.size > 0;
   const validScopeIds = new Set([
     PM_DELIVERY_SCOPE_ALL,
-    PM_DELIVERY_SCOPE_UNASSIGNED,
     ...deliveryPlan.batches.map((batch) => batch.id),
   ]);
+  if (hasUnassignedScope) validScopeIds.add(PM_DELIVERY_SCOPE_UNASSIGNED);
   if (!validScopeIds.has(view.iterationDeliveryScopeId)) {
     view.iterationDeliveryScopeId = PM_DELIVERY_SCOPE_ALL;
   }
@@ -4879,7 +5724,9 @@ function pmRenderIterationSummary(view) {
     for (const batch of deliveryPlan.batches) {
       scopeSelect.createEl(`option`, { text: batch.name, value: batch.id });
     }
-    scopeSelect.createEl(`option`, { text: `未安排需求/任务`, value: PM_DELIVERY_SCOPE_UNASSIGNED });
+    if (hasUnassignedScope) {
+      scopeSelect.createEl(`option`, { text: `未安排需求/任务`, value: PM_DELIVERY_SCOPE_UNASSIGNED });
+    }
     scopeSelect.value = scopeId;
     scopeSelect.addEventListener(`change`, () => {
       pmDeliverySelectScope(view, deliveryPlan, scopeSelect.value);
@@ -4954,7 +5801,6 @@ function pmRenderIterationSummary(view) {
 
   pmRenderIterationMilestones(body, summary.health);
   pmRenderProjectPressure(body, view, summary.health);
-  pmRenderIterationEffort(body, summary.effort, summary.health);
   pmRenderIterationMembers(body, view, summary.health);
   pmRenderIterationRisks(body, view, summary.risks, bugStats);
   pmRenderOrphanedItems(view);
@@ -4963,18 +5809,43 @@ function pmRenderIterationSummary(view) {
 /**
  * 根据完整吸附操作区的实际高度更新表头吸附偏移。
  */
-function pmUpdateIterationStickyOffset(view) {
-  if (!view.iterationStickyEl) return;
+function pmUpdateIterationStickyOffset(view, measuredStickyHeight, measuredViewportHeight) {
+  if (!view.iterationStickyEl || !view.iterationPageScrollEl) return;
+  if (view.iterationLayoutFrame !== null && view.iterationLayoutFrame !== undefined) return;
 
-  window.requestAnimationFrame(() => {
-    const stickyHeight = view.iterationStickyEl?.offsetHeight ?? 0;
-    const viewportHeight = view.iterationPageScrollEl?.clientHeight || view.contentEl.clientHeight;
-    const styleWindow = view.bodyEl.ownerDocument.defaultView ?? window;
-    const moduleMarginBottom = Number.parseFloat(styleWindow.getComputedStyle(view.bodyEl).marginBottom) || 0;
+  // 同一帧内可能收到多次尺寸通知，只保留一次布局计算，避免重复触发布局和样式重算。
+  view.iterationLayoutFrame = window.requestAnimationFrame(() => {
+    view.iterationLayoutFrame = null;
+    if (!view.iterationStickyEl || !view.iterationPageScrollEl) return;
+
+    const stickyHeight = measuredStickyHeight
+      ?? view.iterationStickyMeasuredHeight
+      ?? view.iterationStickyEl.offsetHeight
+      ?? 0;
+    const viewportHeight = measuredViewportHeight
+      ?? view.iterationViewportMeasuredHeight
+      ?? (view.iterationPageScrollEl.clientHeight || view.contentEl.clientHeight);
+    if (view.iterationModuleMarginBottom === null || view.iterationModuleMarginBottom === undefined) {
+      const styleWindow = view.bodyEl.ownerDocument.defaultView ?? window;
+      view.iterationModuleMarginBottom = Number.parseFloat(
+        styleWindow.getComputedStyle(view.bodyEl).marginBottom,
+      ) || 0;
+    }
+    const moduleMarginBottom = view.iterationModuleMarginBottom;
     const moduleHeight = Math.max(0, viewportHeight - stickyHeight - moduleMarginBottom);
-    view.contentEl.style.setProperty(`--pm-iteration-sticky-offset`, `${stickyHeight}px`);
-    view.contentEl.style.setProperty(`--pm-iteration-table-header-top`, `${stickyHeight}px`);
-    view.contentEl.style.setProperty(`--pm-iteration-module-height`, `${moduleHeight}px`);
+    const stickyHeightValue = `${stickyHeight}px`;
+    const moduleHeightValue = `${moduleHeight}px`;
+
+    // 只有计算结果真正变化时才写入样式，避免重复触发布局和样式重算。
+    if (view.contentEl.style.getPropertyValue(`--pm-iteration-sticky-offset`) !== stickyHeightValue) {
+      view.contentEl.style.setProperty(`--pm-iteration-sticky-offset`, stickyHeightValue);
+    }
+    if (view.contentEl.style.getPropertyValue(`--pm-iteration-table-header-top`) !== stickyHeightValue) {
+      view.contentEl.style.setProperty(`--pm-iteration-table-header-top`, stickyHeightValue);
+    }
+    if (view.contentEl.style.getPropertyValue(`--pm-iteration-module-height`) !== moduleHeightValue) {
+      view.contentEl.style.setProperty(`--pm-iteration-module-height`, moduleHeightValue);
+    }
   });
 }
 
@@ -4988,30 +5859,112 @@ function pmMountIterationStickyHeader(view) {
   view.iterationStickyEl.empty();
   if (projectHeader) view.iterationStickyEl.appendChild(projectHeader);
 
-  view.iterationStickyResizeObserver?.disconnect();
-  if (typeof ResizeObserver !== `undefined`) {
-    view.iterationStickyResizeObserver = new ResizeObserver(() => pmUpdateIterationStickyOffset(view));
-    view.iterationStickyResizeObserver.observe(view.iterationStickyEl);
-    view.iterationStickyResizeObserver.observe(view.contentEl);
+  if (view.iterationLayoutFrame !== null && view.iterationLayoutFrame !== undefined) {
+    window.cancelAnimationFrame(view.iterationLayoutFrame);
+    view.iterationLayoutFrame = null;
   }
+  // 页面尺寸改为由刷新按钮主动重新测量，不再持续观察侧栏和窗口变化。
+  view.iterationStickyResizeObserver?.disconnect();
+  view.iterationStickyResizeObserver = null;
+  view.iterationStickyMeasuredHeight = view.iterationStickyEl.offsetHeight;
+  view.iterationViewportMeasuredHeight = view.iterationPageScrollEl?.clientHeight
+    || view.contentEl.clientHeight;
   pmUpdateIterationStickyOffset(view);
+}
+
+/**
+ * 使用表头的明确列宽生成固定表格宽度，避免容器变宽时重新扫描全部单元格。
+ */
+function pmApplyIterationFixedTableLayout(tableView, initialize = false) {
+  const wrapper = tableView.state.wrapper;
+  const table = wrapper?.querySelector(`table.pm-table`);
+  const headerRow = table?.querySelector(`thead tr`);
+  if (!(table instanceof HTMLTableElement) || !(headerRow instanceof HTMLTableRowElement)) return;
+
+  if (initialize || tableView.state.pmFixedHeaderRow !== headerRow) {
+    const styleWindow = headerRow.ownerDocument.defaultView ?? window;
+    tableView.state.pmFixedHeaderRow = headerRow;
+    tableView.state.pmFixedHeaders = [...headerRow.children]
+      .filter((cell) => cell instanceof HTMLTableCellElement)
+      .map((cell) => ({
+        cell,
+        visible: styleWindow.getComputedStyle(cell).display !== `none`,
+        fallbackWidth: cell.getBoundingClientRect().width || 40,
+      }));
+  }
+
+  let tableWidth = 0;
+  for (const header of tableView.state.pmFixedHeaders ?? []) {
+    if (!header.visible) continue;
+
+    const inlineWidth = Number.parseFloat(header.cell.style.width)
+      || Number.parseFloat(header.cell.style.minWidth);
+    tableWidth += inlineWidth || header.fallbackWidth;
+  }
+
+  // 固定列总宽不能小于当前容器，手动刷新后应立即利用窗口新增的可用空间。
+  tableWidth = Math.max(tableWidth, wrapper.clientWidth || 0);
+  table.addClass(`pm-table--fixed-layout`);
+  table.style.setProperty(`--pm-table-fixed-width`, `${Math.ceil(tableWidth)}px`);
+}
+
+/**
+ * 列宽拖动时只更新表格总宽，拖动结束后再重新测量可见行高。
+ */
+function pmBindIterationFixedTableResize(tableView) {
+  const wrapper = tableView.state.wrapper;
+  if (!wrapper || wrapper.dataset.pmFixedResizeBound === `true`) return;
+  wrapper.dataset.pmFixedResizeBound = `true`;
+
+  wrapper.addEventListener(`pointerdown`, (event) => {
+    if (!(event.target instanceof Element) || !event.target.closest(`.pm-table-column-resizer`)) return;
+
+    tableView.state.virtualRowHeights = new Map();
+    tableView.state.virtualHeightVersion = (tableView.state.virtualHeightVersion ?? 0) + 1;
+    tableView.state.heightCalibrated = false;
+  });
+  wrapper.addEventListener(`pointermove`, (event) => {
+    if (!(event.target instanceof Element) || !event.target.closest(`.pm-table-column-resizer`)) return;
+    if (tableView.state.pmFixedLayoutFrame !== null && tableView.state.pmFixedLayoutFrame !== undefined) return;
+
+    tableView.state.pmFixedLayoutFrame = window.requestAnimationFrame(() => {
+      tableView.state.pmFixedLayoutFrame = null;
+      pmApplyIterationFixedTableLayout(tableView);
+    });
+  });
+  wrapper.addEventListener(`pointerup`, (event) => {
+    if (!(event.target instanceof Element) || !event.target.closest(`.pm-table-column-resizer`)) return;
+
+    window.requestAnimationFrame(() => {
+      pmApplyIterationFixedTableLayout(tableView);
+      tableView.state.windowStart = -1;
+      tableView.state.windowEnd = -1;
+      tableView.state.renderWindow?.();
+    });
+  });
 }
 
 const projectTableRender = Yp.prototype.render;
 
-// 表格只执行渐进式完整渲染，不再绑定滚动位置计算。
+// 保留原有表格能力，补充固定列布局和窗口化行高管理。
 Yp.prototype.render = function render() {
   projectTableRender.call(this);
+  pmApplyIterationFixedTableLayout(this, true);
+  pmBindIterationFixedTableResize(this);
 };
 
 const projectTableDestroy = Yp.prototype.destroy;
 
-// 切换视图或关闭迭代时取消尚未完成的渐进渲染。
+// 切换视图或关闭迭代时取消尚未完成的尺寸测量。
 Yp.prototype.destroy = function destroy() {
-  if (this.state.pageProgressiveFrame !== null && this.state.pageProgressiveFrame !== undefined) {
-    window.cancelAnimationFrame(this.state.pageProgressiveFrame);
+  if (this.state.virtualMeasureFrame !== null && this.state.virtualMeasureFrame !== undefined) {
+    window.cancelAnimationFrame(this.state.virtualMeasureFrame);
   }
-  this.state.pageProgressiveFrame = null;
+  if (this.state.pmFixedLayoutFrame !== null && this.state.pmFixedLayoutFrame !== undefined) {
+    window.cancelAnimationFrame(this.state.pmFixedLayoutFrame);
+  }
+  this.state.virtualMeasureFrame = null;
+  this.state.pmFixedLayoutFrame = null;
   projectTableDestroy?.call(this);
 };
 
@@ -5060,6 +6013,9 @@ function pmSyncTableMultiSelectMode(view) {
     button.setAttribute(`aria-label`, enabled ? `退出多选模式` : `开启多选模式`);
     button.toggleClass(`is-active`, enabled);
   }
+
+  // 多选列显示状态改变后重新统计有效表头宽度。
+  if (view.subview instanceof Yp) pmApplyIterationFixedTableLayout(view.subview, true);
 }
 
 /**
@@ -5158,6 +6114,7 @@ function pmRefreshProjectTodoButtons(plugin) {
 async function pmUpdateProjectTodoButton(button, plugin, source) {
   const api = pmProjectTodoApi(plugin);
   button.empty();
+  button.addClass(`is-loading`);
   button.removeClass(
     `is-none`,
     `is-active`,
@@ -5169,6 +6126,7 @@ async function pmUpdateProjectTodoButton(button, plugin, source) {
     `is-source-completed`,
   );
   if (!api || api.enabled?.() !== true) {
+    button.removeClass(`is-loading`);
     button.addClass(`is-unavailable`);
     button.disabled = true;
     button.setAttribute(`aria-label`, `任务中心增强插件未启用项目待办联动`);
@@ -5186,6 +6144,8 @@ async function pmUpdateProjectTodoButton(button, plugin, source) {
   }
   if (!button.isConnected) return;
 
+  // 状态查询已经结束，必须清理加载标记，否则每个事项按钮都会永久运行加载动画。
+  button.removeClass(`is-loading`);
   const status = state?.status ?? `none`;
   button.pmProjectTodoState = state;
   button.addClass(`is-${status}`);
@@ -5505,26 +6465,6 @@ function pmMountIterationFilterLayout(view) {
   filterRow.appendChild(right);
 }
 
-/**
- * 监听原筛选组件的内部重绘，及时恢复迭代页的左右分区布局。
- */
-function pmObserveIterationFilterLayout(view) {
-  view.iterationFilterMutationObserver?.disconnect();
-
-  view.iterationFilterMutationObserver = new MutationObserver(() => {
-    const filterRow = view.contentEl.querySelector(`.pm-project-header-filter`);
-    if (!(filterRow instanceof HTMLElement)) return;
-    if (filterRow.querySelector(`.pm-iteration-filter-layout-right`)) return;
-
-    pmMountTableMultiSelectToggle(view);
-    pmMountIterationViewSwitcher(view);
-    pmMountIterationFilterLayout(view);
-    pmSyncTableMultiSelectMode(view);
-    pmUpdateIterationStickyOffset(view);
-  });
-  view.iterationFilterMutationObserver.observe(view.contentEl, { childList: true, subtree: true });
-}
-
 // 在表格事项标题旁增加个人待办入口，里程碑不参与待办联动。
 const pmProjectTodoOriginalRenderTableRow = Cp;
 Cp = function pmProjectTodoRenderTableRow(container, task, depth, context, groupTone = `a`) {
@@ -5764,6 +6704,90 @@ Cp = function pmBugSummaryRenderTableRow(container, task, depth, context, groupT
   if (cell) pmRenderBugSummaryCell(cell, task);
 };
 
+/**
+ * 为当前可见事项建立位置索引，用于识别一张分组卡片的首行和尾行。
+ * 缓存跟随 visibleRows 引用更新，避免逐行渲染时重复遍历整个列表。
+ */
+function pmIterationCardPosition(task, depth, context) {
+  const visibleRows = context.state.visibleRows ?? [];
+  if (context.state.pmIterationCardRowsReference !== visibleRows) {
+    context.state.pmIterationCardRowsReference = visibleRows;
+    context.state.pmIterationCardRowIndex = new Map(
+      visibleRows.map((visibleRow, index) => [String(visibleRow.task.id ?? ``), index]),
+    );
+  }
+
+  const taskId = String(task.id ?? ``);
+  const currentIndex = context.state.pmIterationCardRowIndex.get(taskId);
+  const nextRow = currentIndex === undefined ? null : visibleRows[currentIndex + 1] ?? null;
+  return {
+    isStart: depth === 0,
+    isEnd: !nextRow || nextRow.depth === 0,
+  };
+}
+
+/**
+ * 筛选模式默认会展开全部匹配事项，这里额外尊重用户在当前表格中手动执行的折叠操作。
+ */
+function pmIterationApplyManualCollapse(visibleRows, collapsedTaskIds) {
+  const result = [];
+  let hiddenAfterDepth = null;
+
+  for (const visibleRow of visibleRows) {
+    if (hiddenAfterDepth !== null && visibleRow.depth > hiddenAfterDepth) continue;
+    if (hiddenAfterDepth !== null && visibleRow.depth <= hiddenAfterDepth) hiddenAfterDepth = null;
+
+    result.push(visibleRow);
+    if (collapsedTaskIds.has(String(visibleRow.task.id ?? ``)) && visibleRow.task.subtasks.length > 0) {
+      hiddenAfterDepth = visibleRow.depth;
+    }
+  }
+
+  return result;
+}
+
+// 原逻辑在筛选开启时会忽略 collapsed 字段，需要在完成匹配后再次应用手动折叠范围。
+const pmIterationCardOriginalRefreshTable = Mp;
+Mp = function pmIterationCardRefreshTable(context) {
+  pmIterationCardOriginalRefreshTable(context);
+
+  const collapsedTaskIds = context.state.pmIterationManuallyCollapsedTaskIds;
+  if (!(collapsedTaskIds instanceof Set) || collapsedTaskIds.size === 0 || !Ed(context.state.filter)) return;
+
+  const nextVisibleRows = pmIterationApplyManualCollapse(context.state.visibleRows, collapsedTaskIds);
+  if (nextVisibleRows.length === context.state.visibleRows.length) return;
+
+  context.state.visibleRows = nextVisibleRows;
+  Pp(context);
+};
+
+// 表格仍保留原有列结构，只增加分组首尾标识，由样式拼成完整卡片外框。
+const pmIterationCardOriginalRenderTableRow = Cp;
+Cp = function pmIterationCardRenderTableRow(container, task, depth, context, groupTone = `a`) {
+  pmIterationCardOriginalRenderTableRow(container, task, depth, context, groupTone);
+  const row = container.lastElementChild;
+  if (!(row instanceof HTMLTableRowElement)) return;
+
+  const position = pmIterationCardPosition(task, depth, context);
+  row.addClass(`pm-iteration-card-row`);
+  row.toggleClass(`pm-iteration-card-start`, position.isStart);
+  row.toggleClass(`pm-iteration-card-end`, position.isEnd);
+  row.toggleClass(`pm-iteration-card-single`, position.isStart && position.isEnd);
+
+  const collapseToggle = row.querySelector(`.pm-collapse-toggle`);
+  if (collapseToggle instanceof HTMLElement) {
+    collapseToggle.addEventListener(`click`, (event) => {
+      event.stopPropagation();
+
+      const collapsedTaskIds = context.state.pmIterationManuallyCollapsedTaskIds
+        ?? new Set();
+      context.state.pmIterationManuallyCollapsedTaskIds = collapsedTaskIds;
+      if (task.collapsed) collapsedTaskIds.add(String(task.id ?? ``));
+      else collapsedTaskIds.delete(String(task.id ?? ``));
+    });
+  }
+};
+
 // 给 Bug 概况列增加稳定标识和最小宽度，防止内容重新退化为多行文本。
 const pmBugSummaryOriginalRenderTable = Ap;
 Ap = function pmBugSummaryRenderTable(context) {
@@ -5784,7 +6808,6 @@ Um.prototype.renderProjectHeader = function renderProjectHeader() {
   pmMountIterationViewSwitcher(this);
   pmMountIterationFilterLayout(this);
   pmMountIterationStickyHeader(this);
-  pmObserveIterationFilterLayout(this);
   pmSyncTableMultiSelectMode(this);
 };
 
@@ -5797,7 +6820,6 @@ Um.prototype.handleSavedViewUpdate = async function handleSavedViewUpdate(savedV
   pmMountIterationViewSwitcher(this);
   pmMountIterationFilterLayout(this);
   pmMountIterationStickyHeader(this);
-  pmObserveIterationFilterLayout(this);
 };
 
 /**
@@ -5865,8 +6887,10 @@ const projectViewLoadProject = Um.prototype.loadProject;
 // 首次进入或切换迭代后刷新概览。
 Um.prototype.loadProject = async function loadProject() {
   this.iterationTableMultiSelectMode = false;
-  this.iterationSummaryMembersExpanded = true;
+  this.iterationSummaryMembersExpanded = false;
   this.iterationOrphanedItemsExpanded = false;
+  this.iterationPressureSummaryFilter = ``;
+  this.iterationPressureTab = `member`;
   await projectViewLoadProject.call(this);
   pmRenderIterationSummary(this);
 };
@@ -5942,6 +6966,10 @@ Um.prototype.onClose = async function onClose() {
   if (this.iterationSummaryCommitFrame !== null && this.iterationSummaryCommitFrame !== undefined) {
     window.cancelAnimationFrame(this.iterationSummaryCommitFrame);
     this.iterationSummaryCommitFrame = null;
+  }
+  if (this.iterationLayoutFrame !== null && this.iterationLayoutFrame !== undefined) {
+    window.cancelAnimationFrame(this.iterationLayoutFrame);
+    this.iterationLayoutFrame = null;
   }
   this.iterationStickyResizeObserver?.disconnect();
   this.iterationStickyResizeObserver = null;
@@ -7414,9 +8442,61 @@ function pmRenderDashboardToolbar(context) {
     .onClick(() => void pmOpenGlobalMemberRoles(context));
 }
 
+/**
+ * 主动重新测量并渲染当前迭代，替代窗口和侧栏变化期间的高频尺寸监听。
+ */
+function pmRefreshCurrentProjectPage(view, button) {
+  if (!view.project || button.disabled) return;
+
+  const pageScrollTop = view.iterationPageScrollEl?.scrollTop ?? 0;
+  const tableWrapper = view.subview instanceof Yp ? view.subview.state.wrapper : null;
+  const tableScrollLeft = tableWrapper?.scrollLeft ?? 0;
+  button.disabled = true;
+  button.addClass(`is-refreshing`);
+
+  if (view.iterationLayoutFrame !== null && view.iterationLayoutFrame !== undefined) {
+    window.cancelAnimationFrame(view.iterationLayoutFrame);
+    view.iterationLayoutFrame = null;
+  }
+  view.iterationStickyMeasuredHeight = null;
+  view.iterationViewportMeasuredHeight = null;
+  view.iterationModuleMarginBottom = null;
+
+  try {
+    // 从概览、筛选栏到当前子视图完整重建一次，清除旧尺寸和虚拟列表缓存。
+    pmRenderIterationSummary(view);
+    view.renderProjectHeader();
+    view.renderCurrentView();
+  } catch (error) {
+    console.error(`[PM] 手动刷新当前迭代失败：`, error);
+    button.disabled = false;
+    button.removeClass(`is-refreshing`);
+    view.plugin.showNotice(`页面刷新失败，请重新打开当前迭代。`);
+    return;
+  }
+
+  window.requestAnimationFrame(() => {
+    view.iterationStickyMeasuredHeight = view.iterationStickyEl?.offsetHeight ?? 0;
+    view.iterationViewportMeasuredHeight = view.iterationPageScrollEl?.clientHeight
+      || view.contentEl.clientHeight;
+    pmUpdateIterationStickyOffset(
+      view,
+      view.iterationStickyMeasuredHeight,
+      view.iterationViewportMeasuredHeight,
+    );
+    if (view.subview instanceof Yp) {
+      pmApplyIterationFixedTableLayout(view.subview, true);
+      if (view.subview.state.wrapper) view.subview.state.wrapper.scrollLeft = tableScrollLeft;
+    }
+    if (view.iterationPageScrollEl) view.iterationPageScrollEl.scrollTop = pageScrollTop;
+    button.disabled = false;
+    button.removeClass(`is-refreshing`);
+  });
+}
+
 const projectViewRenderProjectToolbarWithFollow = Um.prototype.renderProjectToolbar;
 
-// 迭代详情标题旁展示关注按钮，确保项目页和详情页使用同一份关注状态。
+// 迭代详情标题旁展示关注按钮，并在设置入口前提供手动刷新页面能力。
 Um.prototype.renderProjectToolbar = function renderProjectToolbar() {
   projectViewRenderProjectToolbarWithFollow.call(this);
   if (!this.project) return;
@@ -7425,6 +8505,20 @@ Um.prototype.renderProjectToolbar = function renderProjectToolbar() {
   if (titleArea) {
     pmCreateProjectFollowButton(titleArea, this.plugin, this.project, 'pm-project-follow-button--detail');
   }
+
+  const actions = this.toolbarEl.querySelector(`.pm-toolbar-right`);
+  if (!actions || actions.querySelector(`button.pm-project-page-refresh`)) return;
+
+  const refreshButton = actions.ownerDocument.createElement(`button`);
+  refreshButton.type = `button`;
+  refreshButton.className = `pm-project-page-refresh`;
+  refreshButton.setAttribute(`aria-label`, `刷新当前页面`);
+  refreshButton.setAttribute(`title`, `刷新当前页面并重新适配窗口尺寸`);
+  const refreshIcon = refreshButton.createSpan(`pm-project-page-refresh-icon`);
+  e.setIcon(refreshIcon, `refresh-cw`);
+  refreshButton.createSpan({ text: `刷新`, cls: `pm-project-page-refresh-label` });
+  refreshButton.addEventListener(`click`, () => pmRefreshCurrentProjectPage(this, refreshButton));
+  actions.insertBefore(refreshButton, actions.lastElementChild);
 };
 
 /**
@@ -10873,10 +11967,7 @@ InsightsView.prototype.applyMemberCardFilter = function(member, source, scope, s
 const PMI_HEALTH_SNAPSHOTS_SETTING = `healthSnapshots`;
 const PMI_HEALTH_SNAPSHOT_LIMIT = 30;
 const PMI_HEALTH_TABS = [
-  [`overview`, `管理总览`],
-  [`iteration`, `迭代洞察`],
   [`people`, `人员洞察`],
-  [`risks`, `风险中心`],
 ];
 
 function pmiBugFactsByProject(host, projectId) {
@@ -11102,7 +12193,7 @@ function pmiRecordHealthSnapshots(host, projectHealth) {
 function pmiRenderHealthTabs(view, root, snapshot, t) {
   const tabs = root.createDiv(`pmi-health-tabs`);
   for (const [id, label] of PMI_HEALTH_TABS) {
-    const active = (view.pmiActiveHealthTab ?? `overview`) === id;
+    const active = (view.pmiActiveHealthTab ?? `people`) === id;
     const button = tabs.createEl(`button`, {
       text: label,
       cls: `pmi-health-tab${active ? ` is-active` : ``}`,
@@ -11379,12 +12470,14 @@ InsightsView.prototype.renderDashboard = function(snapshot, t) {
     }
   }
 
-  const activeTab = this.pmiActiveHealthTab ?? `overview`;
+  const activeTab = PMI_HEALTH_TABS.some(([id]) => id === this.pmiActiveHealthTab)
+    ? this.pmiActiveHealthTab
+    : `people`;
+  this.pmiActiveHealthTab = activeTab;
   if (activeTab === `people`) {
     pmiRenderDashboardBase.call(this, snapshot, t);
     if (this.dashboardEl) {
       const peopleControls = createDiv(`pmi-people-insight-controls`);
-      pmiRenderHealthTabs(this, peopleControls, snapshot, t);
       this.renderQuickFilters(peopleControls, snapshot, t);
       this.dashboardEl.prepend(peopleControls);
     }

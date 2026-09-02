@@ -804,12 +804,32 @@ function pmRenderIterationSummary(view) {
  * 根据完整吸附操作区的实际高度更新表头吸附偏移。
  */
 function pmUpdateIterationStickyOffset(view) {
-  if (!view.iterationStickyEl) return;
+  if (!view.iterationStickyEl || !view.iterationPageScrollEl) return;
+  if (view.iterationLayoutFrame !== null && view.iterationLayoutFrame !== undefined) return;
 
-  window.requestAnimationFrame(() => {
+  // 同一帧内可能收到多次尺寸通知，只保留一次布局计算，避免重复触发布局和样式重算。
+  view.iterationLayoutFrame = window.requestAnimationFrame(() => {
+    view.iterationLayoutFrame = null;
+    if (!view.iterationStickyEl || !view.iterationPageScrollEl) return;
+
     const stickyHeight = view.iterationStickyEl?.offsetHeight ?? 0;
-    view.contentEl.style.setProperty(`--pm-iteration-sticky-offset`, `${stickyHeight}px`);
-    view.contentEl.style.setProperty(`--pm-iteration-table-header-top`, `${stickyHeight}px`);
+    const viewportHeight = view.iterationPageScrollEl.clientHeight || view.contentEl.clientHeight;
+    const styleWindow = view.bodyEl.ownerDocument.defaultView ?? window;
+    const moduleMarginBottom = Number.parseFloat(styleWindow.getComputedStyle(view.bodyEl).marginBottom) || 0;
+    const moduleHeight = Math.max(0, viewportHeight - stickyHeight - moduleMarginBottom);
+    const stickyHeightValue = `${stickyHeight}px`;
+    const moduleHeightValue = `${moduleHeight}px`;
+
+    // 只有计算结果真正变化时才写入样式，切断 ResizeObserver 与布局写入之间的反馈链。
+    if (view.contentEl.style.getPropertyValue(`--pm-iteration-sticky-offset`) !== stickyHeightValue) {
+      view.contentEl.style.setProperty(`--pm-iteration-sticky-offset`, stickyHeightValue);
+    }
+    if (view.contentEl.style.getPropertyValue(`--pm-iteration-table-header-top`) !== stickyHeightValue) {
+      view.contentEl.style.setProperty(`--pm-iteration-table-header-top`, stickyHeightValue);
+    }
+    if (view.contentEl.style.getPropertyValue(`--pm-iteration-module-height`) !== moduleHeightValue) {
+      view.contentEl.style.setProperty(`--pm-iteration-module-height`, moduleHeightValue);
+    }
   });
 }
 
@@ -823,10 +843,16 @@ function pmMountIterationStickyHeader(view) {
   view.iterationStickyEl.empty();
   if (projectHeader) view.iterationStickyEl.appendChild(projectHeader);
 
+  if (view.iterationLayoutFrame !== null && view.iterationLayoutFrame !== undefined) {
+    window.cancelAnimationFrame(view.iterationLayoutFrame);
+    view.iterationLayoutFrame = null;
+  }
   view.iterationStickyResizeObserver?.disconnect();
   if (typeof ResizeObserver !== `undefined`) {
     view.iterationStickyResizeObserver = new ResizeObserver(() => pmUpdateIterationStickyOffset(view));
     view.iterationStickyResizeObserver.observe(view.iterationStickyEl);
+    // 监听稳定的滚动视口，不监听会被本函数写入高度变量的 contentEl，避免尺寸反馈循环。
+    view.iterationStickyResizeObserver.observe(view.iterationPageScrollEl);
   }
   pmUpdateIterationStickyOffset(view);
 }
@@ -1023,6 +1049,10 @@ const projectViewOnClose = Um.prototype.onClose;
 
 // 关闭迭代视图时同步删除可能存在的历史筛选记录。
 Um.prototype.onClose = async function onClose() {
+  if (this.iterationLayoutFrame !== null && this.iterationLayoutFrame !== undefined) {
+    window.cancelAnimationFrame(this.iterationLayoutFrame);
+    this.iterationLayoutFrame = null;
+  }
   this.iterationStickyResizeObserver?.disconnect();
   this.iterationStickyResizeObserver = null;
   await projectViewOnClose.call(this);
