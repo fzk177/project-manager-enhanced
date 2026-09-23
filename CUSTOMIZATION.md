@@ -9,14 +9,23 @@
 
 `vendor/main.vendor.js` 已包含早期个人改造；`scripts/patch-main.cjs` 记录后续可验证补丁。二者共同构成当前精确复现层。
 
-## 当前安装版恢复基线
+## 历史安装版恢复基线
 
 - 恢复日期：`2026-09-02`
 - `vendor/main.recovered.js` SHA-256：`6f36322c06b2a8e5174444edd96b217d78a3711042b57ea1318146102c1da3ae`
 - `vendor/styles.recovered.css` SHA-256：`1701fe1b44387e14f204451a0ef08503f9d7c3870cd53c7ccb6120fad27be3a6`
 - 构建入口：`scripts/build-recovered-runtime.cjs`
 
-近期多轮界面调试曾直接修改 vault 安装产物，现有 TypeScript 与旧补丁层不能完整重建这些能力。为避免发布时再次丢失定制，当前生产构建以本地已验收 Bundle 为不可变恢复基线，并在复制前强制校验哈希。该恢复层不宣称已经还原缺失的 TypeScript 源码。
+近期多轮界面调试曾直接修改 vault 安装产物，现有 TypeScript 与旧补丁层不能完整重建这些能力。为避免发布时再次丢失定制，当时的生产构建以本地已验收 Bundle 为不可变恢复基线，并在复制前强制校验哈希。该恢复层不宣称已经还原缺失的 TypeScript 源码。
+
+## 当前安装版恢复基线
+
+- 恢复日期：`2026-09-23`
+- `vendor/main.recovered-20260923.js` SHA-256：`408efdea370a8554ba255b8a8951c7650f6f38bf82eb231676f2a617d5d65c29`
+- `vendor/styles.recovered-20260923.css` SHA-256：`0bb4338c0b3bc0bac94e97ea56c9001980ac6852f69490080b9dc189f8315814`
+- 构建入口：`scripts/build-recovered-runtime.cjs`
+
+当前基线取自正在使用的 vault 安装版；保留 2026-09-02 恢复文件，不覆盖历史。新增能力仍保存在可校验的编译产物中，不宣称已还原到 TypeScript 源码。
 
 ## 后续补丁
 
@@ -31,6 +40,8 @@
 - `custom/iteration-detail.js` 与 `custom/iteration-detail.css` 提供迭代概览、需求搜索层级、临时筛选、渐进表格和吸附操作区。
 - 人员综合健康提供统一风险标签与风险详情面板，支持阻塞、超期、节点缺口、未分配、未估时、缺少交付时间和负载紧张等风险，并从每条任务打开原生任务详情。
 - 单风险详情压缩重复摘要，多风险详情按任务去重；人员综合健康默认折叠，无未安排事项时隐藏对应范围筛选。
+- 当前安装版支持交付批次提测、上线边界日是否计入工期，并按该规则计算节点产能、里程碑和人员压力。
+- 当前安装版完善迭代详情筛选栏、里程碑工时明细、人员综合健康与表格布局。
 - Project Manager Insights 0.2.4 内部模块、设置迁移和工作量洞察页面。
 
 ## 验收基线

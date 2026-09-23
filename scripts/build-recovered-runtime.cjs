@@ -5,13 +5,13 @@ const fs = require('fs')
 const path = require('path')
 
 const repositoryRoot = path.join(__dirname, '..')
-const recoveredMainPath = path.join(repositoryRoot, 'vendor', 'main.recovered.js')
-const recoveredStylesPath = path.join(repositoryRoot, 'vendor', 'styles.recovered.css')
+const recoveredMainPath = path.join(repositoryRoot, 'vendor', 'main.recovered-20260923.js')
+const recoveredStylesPath = path.join(repositoryRoot, 'vendor', 'styles.recovered-20260923.css')
 const outputMainPath = path.join(repositoryRoot, 'main.js')
 const outputStylesPath = path.join(repositoryRoot, 'styles.css')
 
-const RECOVERED_MAIN_SHA256 = '6f36322c06b2a8e5174444edd96b217d78a3711042b57ea1318146102c1da3ae'
-const RECOVERED_STYLES_SHA256 = '1701fe1b44387e14f204451a0ef08503f9d7c3870cd53c7ccb6120fad27be3a6'
+const RECOVERED_MAIN_SHA256 = '408efdea370a8554ba255b8a8951c7650f6f38bf82eb231676f2a617d5d65c29'
+const RECOVERED_STYLES_SHA256 = '0bb4338c0b3bc0bac94e97ea56c9001980ac6852f69490080b9dc189f8315814'
 
 /**
  * 校验从本地安装版恢复的编译产物，避免基线被意外修改后继续生成不可追溯的发布文件。
@@ -28,7 +28,7 @@ function readVerifiedSource(sourcePath, expectedHash, label) {
 const mainSource = readVerifiedSource(recoveredMainPath, RECOVERED_MAIN_SHA256, 'main.js')
 const stylesSource = readVerifiedSource(recoveredStylesPath, RECOVERED_STYLES_SHA256, 'styles.css')
 
-// 当前完整定制只保存在经过本地验收的编译 Bundle 中，构建时逐字节恢复，防止历史补丁再次丢失。
+// 当前完整定制以 2026-09-23 的安装版 Bundle 为基线；旧恢复基线保留在 vendor 中。
 fs.writeFileSync(outputMainPath, mainSource)
 fs.writeFileSync(outputStylesPath, stylesSource)
 
