@@ -1,0 +1,692 @@
+--- a/main.js
++++ b/main.js
+@@ -1762,0 +1763,4 @@
++
++/* 到期检查只显示一条汇总，避免启动时为每个历史逾期事项叠加通知。 */
++eh.prototype.check = async function pmCheckDueNoticesAsSummary() {
++  if (!this.plugin.settings.notificationsEnabled) return;
+@@ -1763,0 +1768,36 @@
++  const today = Zl();
++  const soonLimit = today.add({ days: this.plugin.settings.notificationLeadDays });
++  let projects;
++  try {
++    projects = await this.plugin.store.loadAllProjects(this.plugin.settings.projectsFolder);
++  } catch {
++    return;
++  }
++
++  let overdueCount = 0;
++  let soonCount = 0;
++  for (const project of projects) {
++    for (const { task } of q(project.tasks)) {
++      const due = K(task.due);
++      if (!due || task.completed) continue;
++
++      const key = `${task.id}-${task.due}`;
++      if (G.PlainDate.compare(due, today) < 0) {
++        if (this.notifiedIds.has(`${key}-overdue`)) continue;
++        this.notifiedIds.add(`${key}-overdue`);
++        overdueCount++;
++      } else if (G.PlainDate.compare(due, soonLimit) <= 0) {
++        if (this.notifiedIds.has(`${key}-soon`)) continue;
++        this.notifiedIds.add(`${key}-soon`);
++        soonCount++;
++      }
++    }
++  }
++
++  const summary = [
++    overdueCount ? `${overdueCount} 项已逾期` : '',
++    soonCount ? `${soonCount} 项临近到期` : '',
++  ].filter(Boolean).join('，');
++  if (summary) new e.Notice(`⚠️ 项目事项提醒：${summary}。请到项目图鉴查看。`, 6000);
++};
++
+@@ -8538,0 +8579,35 @@
++  }
++}
++
++function pmCreateDashboardMenu(container, label, iconName, value, options, onChange, searchable = false) {
++  const menu = container.createEl('details', { cls: 'pm-dashboard-filter-menu' });
++  const summary = menu.createEl('summary');
++  const icon = summary.createSpan({ cls: 'pm-dashboard-menu-icon' });
++  e.setIcon(icon, iconName);
++  const copy = summary.createSpan({ cls: 'pm-dashboard-menu-copy' });
++  copy.createSpan({ text: label, cls: 'pm-dashboard-menu-label' });
++  const selected = options.find((option) => option.value === value) ?? options[0];
++  copy.createEl('strong', { text: selected.label, cls: 'pm-dashboard-menu-value' });
++  const chevron = summary.createSpan({ cls: 'pm-dashboard-menu-chevron' });
++  e.setIcon(chevron, 'chevron-down');
++
++  const panel = menu.createDiv('pm-dashboard-menu-options');
++  const search = searchable ? panel.createEl('input', {
++    type: 'search',
++    placeholder: `搜索${label}`,
++    cls: 'pm-dashboard-menu-search',
++    attr: { 'aria-label': `搜索${label}选项` },
++  }) : null;
++  const choices = [];
++  for (const option of options) {
++    const active = option.value === value;
++    const choice = panel.createEl('button', {
++      text: option.label,
++      cls: `pm-dashboard-menu-option${active ? ' is-active' : ''}`,
++      attr: { type: 'button', 'aria-pressed': String(active) },
++    });
++    choice.addEventListener('click', () => {
++      menu.open = false;
++      if (!active) onChange(option.value);
++    });
++    choices.push(choice);
+@@ -8539,0 +8615,33 @@
++  if (search) {
++    const empty = panel.createDiv({ text: '没有匹配的选项', cls: 'pm-dashboard-menu-empty' });
++    empty.hidden = true;
++    search.addEventListener('input', () => {
++      const keyword = search.value.trim().toLocaleLowerCase('zh-CN');
++      let visible = 0;
++      for (const choice of choices) {
++        choice.hidden = !choice.textContent.toLocaleLowerCase('zh-CN').includes(keyword);
++        if (!choice.hidden) visible += 1;
++      }
++      empty.hidden = visible > 0;
++    });
++    search.addEventListener('keydown', (event) => {
++      if (event.key !== 'Enter' || event.isComposing) return;
++      event.preventDefault();
++      choices.find((choice) => !choice.hidden)?.click();
++    });
++  }
++  menu.addEventListener('toggle', () => {
++    if (menu.open) {
++      container.querySelectorAll('.pm-dashboard-filter-menu[open]').forEach((other) => {
++        if (other !== menu) other.open = false;
++      });
++      if (search) requestAnimationFrame(() => { if (menu.open && menu.isConnected) search.focus({ preventScroll: true }); });
++    }
++  });
++  menu.addEventListener('keydown', (event) => {
++    if (event.key !== 'Escape' || !menu.open) return;
++    event.preventDefault();
++    menu.open = false;
++    summary.focus();
++  });
++  return menu;
+@@ -8584 +8692 @@
+-  pmCreateFilterSelect(filters, '状态', pmDashboardState.projectStatus, [
++  pmCreateDashboardMenu(filters, '状态', 'workflow', pmDashboardState.projectStatus, [
+@@ -8595,2 +8703,5 @@
+-  pmCreateToggle(filters, '只看风险', pmDashboardState.riskOnly, (checked) => {
+-    pmDashboardState.riskOnly = checked;
++  pmCreateDashboardMenu(filters, '风险', 'circle-alert', pmDashboardState.riskOnly ? 'risk' : 'all', [
++    { value: 'all', label: '全部' },
++    { value: 'risk', label: '只看风险' },
++  ], (value) => {
++    pmDashboardState.riskOnly = value === 'risk';
+@@ -8600 +8711 @@
+-  pmCreateFilterSelect(filters, '归档', pmDashboardState.archiveStatus, [
++  pmCreateDashboardMenu(filters, '归档', 'archive', pmDashboardState.archiveStatus, [
+@@ -8903 +9014 @@
+-  pmCreateFilterSelect(filters, '模块', filter.module, options.modules, (value) => {
++  pmCreateDashboardMenu(filters, '模块', 'boxes', filter.module, options.modules, (value) => {
+@@ -8906,2 +9017,2 @@
+-  });
+-  pmCreateFilterSelect(filters, '阶段', filter.stage, options.stages, (value) => {
++  }, true);
++  pmCreateDashboardMenu(filters, '阶段', 'layers', filter.stage, options.stages, (value) => {
+@@ -8911 +9022 @@
+-  pmCreateFilterSelect(filters, '状态', filter.status, options.statuses, (value) => {
++  pmCreateDashboardMenu(filters, '状态', 'workflow', filter.status, options.statuses, (value) => {
+@@ -8915 +9026 @@
+-  pmCreateFilterSelect(filters, '负责人', filter.assignee, options.assignees, (value) => {
++  pmCreateDashboardMenu(filters, '负责人', 'users', filter.assignee, options.assignees, (value) => {
+@@ -8918 +9029 @@
+-  });
++  }, true);
+@@ -8970 +9081,2 @@
+-    const progressTrack = progressCell.createDiv('pm-requirement-progress-track');
++    const progressContent = progressCell.createDiv('pm-requirement-progress-content');
++    const progressTrack = progressContent.createDiv('pm-requirement-progress-track');
+@@ -8972 +9084 @@
+-    progressCell.createSpan({ text: `${progress}%` });
++    progressContent.createSpan({ text: `${progress}%` });
+@@ -9475,0 +9588,2 @@
++'use strict'
++
+@@ -9602,2 +9715,0 @@
+-'use strict'
+-
+--- a/styles.css
++++ b/styles.css
+@@ -4042,2 +4042,5 @@
+-  display: grid;
+-  grid-template-columns: minmax(70px, 1fr) 34px;
++  min-inline-size: 160px;
++}
++
++.pm-requirement-progress-content {
++  display: flex;
+@@ -4045,2 +4048,12 @@
+-  gap: 7px;
+-  min-inline-size: 120px;
++  gap: 8px;
++  inline-size: 100%;
++}
++
++.pm-requirement-progress-content .pm-requirement-progress-track {
++  flex: 1 1 auto;
++  min-inline-size: 70px;
++}
++
++.pm-requirement-progress-content span {
++  flex: 0 0 38px;
++  text-align: end;
+@@ -8407 +8420 @@
+-/* 需求与任务使用不同的识别胶囊、标题层级和树形连接线。 */
++/* 需求与任务使用不同的识别胶囊和标题层级。 */
+@@ -8519,23 +8531,0 @@
+-/* 子任务树线在事项 ID 列中连续展示，节点与父需求按钮保持同一轴线。 */
+-.pm-project-detail-root--table .pm-zentao-type-task[data-pm-depth]:not([data-pm-depth="0"]) .pm-table-cell-zentao-id--hierarchy::before,
+-.pm-project-detail-root--table .pm-zentao-type-task[data-pm-depth]:not([data-pm-depth="0"]) .pm-table-hierarchy-node::before {
+-  content: "";
+-  position: absolute;
+-  pointer-events: none;
+-  background: color-mix(in srgb, var(--color-purple) 34%, var(--background-modifier-border));
+-}
+-
+-.pm-project-detail-root--table .pm-zentao-type-task[data-pm-depth]:not([data-pm-depth="0"]) .pm-table-cell-zentao-id--hierarchy::before {
+-  top: 0;
+-  bottom: 0;
+-  left: 23px;
+-  width: 1px;
+-}
+-
+-.pm-project-detail-root--table .pm-zentao-type-task[data-pm-depth]:not([data-pm-depth="0"]) .pm-table-hierarchy-node::before {
+-  top: 50%;
+-  left: 50%;
+-  width: 18px;
+-  height: 1px;
+-}
+-
+@@ -10156,0 +10147,248 @@
++  }
++}
++
++/* 迭代健康度计算过程：奶油色卡片视觉，仅作用于该弹窗。 */
++.pm-health-calculation-modal {
++  --pmh-ink: #29241f;
++  --pmh-muted: #756d62;
++  --pmh-paper: #fffefa;
++  --pmh-canvas: #fff7e8;
++  --pmh-yellow: #ffda58;
++  --pmh-pink: #ffc0d1;
++  --pmh-blue: #b9e3ff;
++  --pmh-lavender: #dfd1ff;
++  --pmh-line: #d9d0c3;
++  --pmh-shadow-ink: #000;
++  width: min(1180px, 94vw);
++  border: 2px solid var(--pmh-ink);
++  border-radius: 18px;
++  background: var(--pmh-canvas);
++  box-shadow: 7px 7px 0 var(--pmh-shadow-ink);
++  color: var(--pmh-ink);
++  font-family: var(--font-interface);
++  overflow: hidden;
++}
++
++.pm-health-calculation-modal *,
++.pm-health-calculation-modal *::before,
++.pm-health-calculation-modal *::after {
++  box-sizing: border-box;
++}
++
++.pm-health-calculation-modal .modal-header {
++  background-color: var(--pmh-paper);
++  background-image: radial-gradient(#e0d8ca 1.2px, transparent 1.2px);
++  background-size: 24px 24px;
++  border-bottom: 2px solid var(--pmh-ink);
++  padding: 20px 28px 19px;
++}
++
++.pm-health-calculation-modal .modal-title {
++  color: var(--pmh-ink);
++  font-size: clamp(1.1rem, 2vw, 1.45rem);
++  font-weight: 900;
++  line-height: 1.4;
++  padding-right: 36px;
++}
++
++.pm-health-calculation-modal .modal-title::before {
++  display: block;
++  margin-bottom: 7px;
++  color: var(--pmh-muted);
++  content: "ITERATION HEALTH · CALCULATION";
++  font-size: 0.65rem;
++  font-weight: 850;
++  letter-spacing: 0.14em;
++}
++
++.pm-health-calculation-modal .modal-close-button {
++  top: 18px;
++  right: 20px;
++  color: var(--pmh-ink);
++}
++
++.pm-health-calculation-modal .modal-content {
++  padding: 22px 28px 30px;
++  background: var(--pmh-canvas);
++  color: var(--pmh-ink);
++}
++
++.pm-health-calculation-modal .pm-health-calculation-summary {
++  gap: 12px;
++  margin: 0 5px 22px 0;
++}
++
++.pm-health-calculation-modal .pm-health-calculation-summary-item {
++  min-height: 80px;
++  padding: 12px 14px;
++  border: 1.5px solid var(--pmh-ink);
++  border-radius: 12px;
++  background: var(--pmh-yellow);
++  box-shadow: 3px 3px 0 var(--pmh-shadow-ink);
++  color: #29241f;
++}
++
++.pm-health-calculation-modal .pm-health-calculation-summary-item span {
++  color: #574f47;
++  font-size: 0.72rem;
++  font-weight: 750;
++}
++
++.pm-health-calculation-modal .pm-health-calculation-summary-item strong {
++  color: #29241f;
++  font-size: 1.05rem;
++  font-weight: 900;
++}
++
++.pm-health-calculation-modal .pm-health-calculation-summary-item.is-warning strong,
++.pm-health-calculation-modal .pm-health-calculation-summary-item.is-danger strong {
++  color: #9a3d32;
++}
++
++.pm-health-calculation-modal .pm-health-calculation-summary-item.is-healthy strong {
++  color: #276342;
++}
++
++.pm-health-calculation-modal .pm-health-calculation-section,
++.pm-health-calculation-modal .pm-health-calculation-notes,
++.pm-health-calculation-modal .pm-health-calculation-task-details {
++  margin: 0 5px 22px 0;
++  border: 2px solid var(--pmh-ink);
++  border-radius: 15px;
++  background: var(--pmh-paper);
++  box-shadow: 4px 4px 0 var(--pmh-shadow-ink);
++}
++
++.pm-health-calculation-modal .pm-health-calculation-section,
++.pm-health-calculation-modal .pm-health-calculation-notes {
++  padding: 18px;
++  overflow-x: auto;
++}
++
++.pm-health-calculation-modal .pm-health-calculation-section h3,
++.pm-health-calculation-modal .pm-health-calculation-notes h3 {
++  margin: 0 0 13px;
++  color: var(--pmh-ink);
++  font-size: 0.92rem;
++  font-weight: 900;
++}
++
++.pm-health-calculation-modal .pm-health-calculation-table {
++  border: 1px solid var(--pmh-line);
++  border-collapse: separate;
++  border-spacing: 0;
++  border-radius: 9px;
++  color: var(--pmh-ink);
++  font-size: 0.78rem;
++  overflow: hidden;
++}
++
++.pm-health-calculation-modal .pm-health-calculation-table th,
++.pm-health-calculation-modal .pm-health-calculation-table td {
++  padding: 10px 11px;
++  border-right: 1px solid var(--pmh-line);
++  border-bottom: 1px solid var(--pmh-line);
++  line-height: 1.5;
++}
++
++.pm-health-calculation-modal .pm-health-calculation-table tr > :last-child {
++  border-right: 0;
++}
++
++.pm-health-calculation-modal .pm-health-calculation-table tbody tr:last-child td {
++  border-bottom: 0;
++}
++
++.pm-health-calculation-modal .pm-health-calculation-table th {
++  background: #fff2bf;
++  color: #574f47;
++  font-weight: 850;
++}
++
++.pm-health-calculation-modal .pm-health-calculation-table tbody tr:nth-child(even) td {
++  background: #fffaf0;
++}
++
++.pm-health-calculation-modal .pm-health-calculation-table tr.is-bottleneck td {
++  background: #fff0e9;
++  color: #9a3d32;
++  font-weight: 750;
++}
++
++.pm-health-calculation-modal .pm-health-calculation-stages {
++  gap: 12px;
++}
++
++.pm-health-calculation-modal .pm-health-calculation-stage {
++  gap: 6px;
++  padding: 14px;
++  border: 1.5px solid var(--pmh-ink);
++  border-radius: 11px;
++  background: var(--pmh-yellow);
++  box-shadow: 2px 2px 0 var(--pmh-shadow-ink);
++  color: #29241f;
++  font-size: 0.76rem;
++}
++
++.pm-health-calculation-modal .pm-health-calculation-stage h4 {
++  color: #29241f;
++  font-size: 0.82rem;
++  font-weight: 850;
++}
++
++.pm-health-calculation-modal .pm-health-calculation-task-details {
++  overflow: hidden;
++}
++
++.pm-health-calculation-modal .pm-health-calculation-task-details > summary {
++  padding: 14px 18px;
++  background: var(--pmh-yellow);
++  color: #29241f;
++  font-size: 0.82rem;
++  font-weight: 850;
++}
++
++.pm-health-calculation-modal .pm-health-calculation-task-details > summary:focus-visible {
++  outline: 3px solid #a85e00;
++  outline-offset: -3px;
++}
++
++.pm-health-calculation-modal .pm-health-calculation-task-wrapper {
++  border-color: var(--pmh-ink);
++}
++
++.pm-health-calculation-modal .pm-health-calculation-task-table {
++  border: 0;
++  border-radius: 0;
++}
++
++.pm-health-calculation-modal .pm-health-calculation-notes ul {
++  color: var(--pmh-muted);
++  font-size: 0.76rem;
++}
++
++.theme-dark .pm-health-calculation-modal {
++  --pmh-ink: #f7eddc;
++  --pmh-muted: #c7b7a3;
++  --pmh-paper: #302d29;
++  --pmh-canvas: #25231f;
++  --pmh-line: #5d554b;
++  --pmh-shadow-ink: #000;
++}
++
++.theme-dark .pm-health-calculation-modal .modal-header {
++  background-image: radial-gradient(#504b43 1.2px, transparent 1.2px);
++}
++
++.theme-dark .pm-health-calculation-modal .pm-health-calculation-table tbody tr:nth-child(even) td {
++  background: #3a352f;
++}
++
++.theme-dark .pm-health-calculation-modal .pm-health-calculation-table tr.is-bottleneck td {
++  background: #54402f;
++  color: #ffc0d1;
++}
++
++@media (max-width: 900px) {
++  .pm-health-calculation-modal .pm-health-calculation-summary {
++    grid-template-columns: repeat(3, minmax(0, 1fr));
+@@ -10159,0 +10398,21 @@
++@media (max-width: 650px) {
++  .pm-health-calculation-modal .modal-header {
++    padding: 18px;
++  }
++
++  .pm-health-calculation-modal .modal-content {
++    padding: 18px;
++  }
++
++  .pm-health-calculation-modal .pm-health-calculation-summary {
++    grid-template-columns: repeat(2, minmax(0, 1fr));
++  }
++
++  .pm-health-calculation-modal .pm-health-calculation-stages {
++    grid-template-columns: minmax(0, 1fr);
++  }
++
++  .pm-health-calculation-modal .pm-health-calculation-section .pm-health-calculation-table {
++    min-width: 650px;
++  }
++}
+@@ -10427,4 +10686,13 @@
+-/* 重新构建时也不显示子任务的树形连接线。 */
+-.pm-project-detail-root--table .pm-zentao-type-task[data-pm-depth]:not([data-pm-depth="0"]) .pm-table-cell-zentao-id--hierarchy::before,
+-.pm-project-detail-root--table .pm-zentao-type-task[data-pm-depth]:not([data-pm-depth="0"]) .pm-table-hierarchy-node::before {
+-  content: none;
++.pm-project-list-container .pm-dashboard-global-filters {
++  flex: 1 1 750px;
++  justify-content: flex-end;
++  gap: 15px;
++  padding: 0 6px 7px 0;
++}
++
++.pm-project-list-container input.pm-dashboard-search {
++  flex: 1 1 250px;
++  inline-size: auto;
++  max-inline-size: 440px;
++  min-inline-size: 220px;
++  transition: box-shadow 160ms ease, transform 160ms ease;
+@@ -10432,0 +10701,192 @@
++.pm-project-list-container input.pm-dashboard-search:hover,
++.pm-project-list-container input.pm-dashboard-search:focus {
++  transform: translate(1px, 1px);
++  box-shadow: 4px 4px 0 var(--pm-dashboard-ink);
++}
++
++.pm-project-list-container .pm-dashboard-filter-menu {
++  position: relative;
++  flex: 0 1 185px;
++  min-inline-size: 150px;
++}
++
++.pm-project-list-container .pm-dashboard-filter-menu[open] {
++  z-index: 20;
++}
++
++.pm-project-list-container .pm-dashboard-filter-menu > summary {
++  box-sizing: border-box;
++  display: flex;
++  align-items: center;
++  gap: 10px;
++  min-block-size: 60px;
++  padding: 7px 12px;
++  border: 2px solid var(--pm-dashboard-ink);
++  border-radius: 18px;
++  box-shadow: 5px 5px 0 var(--pm-dashboard-ink);
++  color: var(--pm-dashboard-ink);
++  background: var(--pm-dashboard-paper);
++  cursor: pointer;
++  list-style: none;
++  transition: background 160ms ease, box-shadow 160ms ease, transform 160ms ease;
++}
++
++.pm-project-list-container .pm-dashboard-filter-menu > summary::marker { content: ''; }
++.pm-project-list-container .pm-dashboard-filter-menu > summary::-webkit-details-marker { display: none; }
++
++.pm-project-list-container .pm-dashboard-filter-menu > summary:hover {
++  background: #fff8e5;
++  box-shadow: 3px 3px 0 var(--pm-dashboard-ink);
++  transform: translate(2px, 2px);
++}
++
++.pm-project-list-container .pm-dashboard-filter-menu > summary:focus-visible {
++  outline: 3px solid var(--pm-dashboard-yellow);
++  outline-offset: 3px;
++}
++
++.pm-project-list-container .pm-dashboard-menu-icon {
++  display: grid;
++  flex: 0 0 40px;
++  place-items: center;
++  block-size: 40px;
++  border: 2px solid var(--pm-dashboard-ink);
++  border-radius: 11px;
++  background: var(--pm-dashboard-yellow);
++}
++
++.pm-project-list-container .pm-dashboard-menu-icon svg {
++  inline-size: 21px;
++  block-size: 21px;
++}
++
++.pm-project-list-container .pm-dashboard-menu-copy {
++  display: grid;
++  flex: 1 1 auto;
++  min-inline-size: 0;
++  line-height: 1.2;
++}
++
++.pm-project-list-container .pm-dashboard-menu-label {
++  color: #87909f;
++  font-size: 13px;
++  font-weight: 700;
++}
++
++.pm-project-list-container .pm-dashboard-menu-value {
++  overflow: hidden;
++  color: var(--pm-dashboard-ink);
++  font-size: 15px;
++  font-weight: 800;
++  text-overflow: ellipsis;
++  white-space: nowrap;
++}
++
++.pm-project-list-container .pm-dashboard-menu-chevron {
++  display: inline-flex;
++  flex: 0 0 16px;
++  color: #87909f;
++  transition: transform 160ms ease;
++}
++
++.pm-project-list-container .pm-dashboard-menu-chevron svg {
++  inline-size: 16px;
++  block-size: 16px;
++}
++
++.pm-project-list-container .pm-dashboard-filter-menu[open] .pm-dashboard-menu-chevron {
++  transform: rotate(180deg);
++}
++
++.pm-project-list-container .pm-dashboard-menu-options {
++  position: absolute;
++  top: calc(100% + 10px);
++  right: 0;
++  z-index: 21;
++  box-sizing: border-box;
++  inline-size: max(100%, 210px);
++  max-inline-size: calc(100vw - 48px);
++  padding: 7px;
++  border: 2px solid var(--pm-dashboard-ink);
++  border-radius: 14px;
++  box-shadow: 5px 5px 0 var(--pm-dashboard-ink);
++  background: var(--pm-dashboard-paper);
++  max-block-size: min(45vh, 320px);
++  overflow-y: auto;
++  animation: pm-dashboard-menu-enter 160ms ease-out both;
++}
++
++.pm-project-list-container .pm-dashboard-menu-options input.pm-dashboard-menu-search {
++  box-sizing: border-box;
++  inline-size: 100%;
++  block-size: 34px;
++  margin: 0 0 5px;
++  padding: 0 10px;
++  border: 1px solid var(--pm-dashboard-ink);
++  border-radius: 8px;
++  box-shadow: none;
++  color: var(--pm-dashboard-ink);
++  background: var(--pm-dashboard-paper);
++  font-size: 12px;
++}
++
++.pm-project-list-container .pm-dashboard-menu-empty {
++  padding: 8px 10px;
++  color: #756d62;
++  font-size: 12px;
++}
++
++.pm-project-list-container button.pm-dashboard-menu-option[hidden],
++.pm-project-list-container .pm-dashboard-menu-empty[hidden] {
++  display: none;
++}
++
++.pm-project-list-container button.pm-dashboard-menu-option {
++  display: block;
++  inline-size: 100%;
++  min-block-size: 38px;
++  margin: 0;
++  padding: 8px 11px;
++  border: 0;
++  border-radius: 8px;
++  box-shadow: none;
++  color: var(--pm-dashboard-ink);
++  background: transparent;
++  font-size: 14px;
++  font-weight: 650;
++  text-align: left;
++  cursor: pointer;
++  transition: background 140ms ease;
++}
++
++.pm-project-list-container button.pm-dashboard-menu-option:hover,
++.pm-project-list-container button.pm-dashboard-menu-option:focus-visible {
++  background: color-mix(in srgb, var(--pm-dashboard-yellow) 28%, var(--pm-dashboard-paper));
++}
++
++.pm-project-list-container button.pm-dashboard-menu-option.is-active {
++  background: color-mix(in srgb, var(--pm-dashboard-yellow) 45%, var(--pm-dashboard-paper));
++  font-weight: 800;
++}
++
++@keyframes pm-dashboard-menu-enter {
++  from { opacity: 0; transform: translateY(-6px); }
++  to { opacity: 1; transform: translateY(0); }
++}
++
++@media (max-width: 700px) {
++  .pm-project-list-container .pm-dashboard-global-filters { justify-content: flex-start; }
++  .pm-project-list-container input.pm-dashboard-search { flex-basis: 100%; max-inline-size: none; }
++  .pm-project-list-container .pm-dashboard-filter-menu { flex: 1 1 150px; }
++}
++
++@media (prefers-reduced-motion: reduce) {
++  .pm-project-list-container input.pm-dashboard-search,
++  .pm-project-list-container .pm-dashboard-filter-menu > summary,
++  .pm-project-list-container .pm-dashboard-menu-chevron,
++  .pm-project-list-container button.pm-dashboard-menu-option {
++    transition: none;
++  }
++  .pm-project-list-container .pm-dashboard-menu-options { animation: none; }
++}
++

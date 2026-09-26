@@ -27,6 +27,8 @@
 
 当前基线取自正在使用的 vault 安装版；保留 2026-09-02 恢复文件，不覆盖历史。新增能力仍保存在可校验的编译产物中，不宣称已还原到 TypeScript 源码。
 
+2026-09-26 安装版后续改动由 `custom/iteration-card-scroll.js`、`custom/iteration-owner-filter.js`、`custom/zentao-sync.js`、`custom/zentao-sync.css` 和 `custom/installed-20260926.patch` 重放。构建会校验补丁前后哈希，确保输出与安装版逐字节一致。
+
 ## 后续补丁
 
 - 项目状态读取、保存与项目面板分类。

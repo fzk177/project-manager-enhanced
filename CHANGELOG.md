@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.4.2] - 2026-09-26
+
+### Changed
+
+- 将当前安装版的到期提醒汇总、项目筛选菜单、迭代健康弹窗和相关界面调整纳入可重复构建。
+- 增加迭代卡片滚动、负责人筛选与禅道同步补丁，并使用哈希校验安装版产物。
+
 ## [1.4.1] - 2026-09-23
 
 ### Added
